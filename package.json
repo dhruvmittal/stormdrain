@@ -1,0 +1,38 @@
+{
+  "name": "stormdrain",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsup src/index.ts --format cjs",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.2",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.0.2",
+    "commander": "^15.0.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "isomorphic-git": "^1.40.0",
+    "yaml": "^2.9.0"
+  },
+  "bin": {
+    "stormdrain": "dist/index.js"
+  }
+}
