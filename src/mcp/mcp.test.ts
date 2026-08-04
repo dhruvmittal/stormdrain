@@ -168,4 +168,28 @@ describe('StormDrainMcpServer Protocol', () => {
     const recallText = ((recallRes as any).content[0] as { type: string; text: string }).text;
     expect(recallText).toContain('Custom Context Fact');
   });
+
+  it('should execute sd_init and sd_scan tools successfully via MCP', async () => {
+    const initRes = await client.callTool({
+      name: 'sd_init',
+      arguments: {
+        name: 'test-mcp-init',
+        directory: testDir
+      }
+    });
+
+    const initText = ((initRes as any).content[0] as { type: string; text: string }).text;
+    expect(initText).toContain('Successfully initialized context "test-mcp-init"');
+
+    const scanRes = await client.callTool({
+      name: 'sd_scan',
+      arguments: {
+        directory: testDir,
+        context: 'test-mcp-init'
+      }
+    });
+
+    const scanText = ((scanRes as any).content[0] as { type: string; text: string }).text;
+    expect(scanText).toContain('Successfully scanned workspace');
+  });
 });

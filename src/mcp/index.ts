@@ -52,11 +52,16 @@ export class StormDrainMcpServer {
         description: 'Optional target context namespace override (defaults to auto-resolved workspace context)'
       };
 
+      const targetFileProp = {
+        type: 'string',
+        description: 'Optional file path (e.g. src/core/config.ts) to pull connected DAG subgraph memories'
+      };
+
       return {
         tools: [
           {
             name: 'sd_recall',
-            description: `Get top memories for the current context. Use this at the start of a session.\n\n### Top Injected Memories ###\n${injectedMemory}`,
+            description: `Get top memories for current context, or graph-connected memories for a specific target file.\n\n### Top Injected Memories ###\n${injectedMemory}`,
             inputSchema: {
               type: 'object',
               properties: {
@@ -64,6 +69,7 @@ export class StormDrainMcpServer {
                   type: 'number',
                   description: 'Maximum number of memories to recall (default 10)'
                 },
+                target_file: targetFileProp,
                 context: contextProp
               }
             }
@@ -85,7 +91,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_add',
-            description: 'Create a new memory in the current context.',
+            description: 'Create a new memory in the current context, optionally linked to a target file vertex.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -107,6 +113,7 @@ export class StormDrainMcpServer {
                   items: { type: 'string' },
                   description: 'Tags for categorization'
                 },
+                target_file: targetFileProp,
                 context: contextProp
               },
               required: ['type', 'title', 'content']
@@ -126,6 +133,38 @@ export class StormDrainMcpServer {
               },
               required: ['id']
             }
+          },
+          {
+            name: 'sd_scan',
+            description: 'Scan workspace source files (C++, MATLAB, Python, TS/JS, Rust, C, Go) and update file vertices & import DAG edges in the memory graph.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                directory: {
+                  type: 'string',
+                  description: 'Optional workspace directory path to scan (defaults to current working directory)'
+                },
+                context: contextProp
+              }
+            }
+          },
+          {
+            name: 'sd_init',
+            description: 'Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                name: {
+                  type: 'string',
+                  description: 'Context name (e.g. project name)'
+                },
+                directory: {
+                  type: 'string',
+                  description: 'Optional directory path to bind and scan (defaults to current working directory)'
+                }
+              },
+              required: ['name']
+            }
           }
         ]
       };
@@ -139,11 +178,19 @@ export class StormDrainMcpServer {
       try {
         if (request.params.name === 'sd_recall') {
           const limit = (request.params.arguments?.limit as number) || 10;
-          const results = ctx.recallTopMemories(limit) as Array<{ type: string; title: string; id: string; confidence: number }>;
+          const targetFile = request.params.arguments?.target_file as string | undefined;
+
+          let results: Array<any>;
+          if (targetFile) {
+            results = ctx.recallGraph(targetFile, 2);
+          } else {
+            results = ctx.recallTopMemories(limit) as Array<{ type: string; title: string; id: string; confidence: number }>;
+          }
           
           const content = results.map((r) => {
             const mem = ctx.getMemory(r.id);
-            return `## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id}, Confidence: ${r.confidence})\n${mem?.content || ''}\n---`;
+            const depthLabel = r.depth !== undefined ? ` [DAG Depth ${r.depth}]` : '';
+            return `## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id}${depthLabel})\n${mem?.content || ''}\n---`;
           }).join('\n\n');
 
           return { content: [{ type: 'text', text: content || 'No memories found.' }] };
@@ -161,15 +208,49 @@ export class StormDrainMcpServer {
         }
 
         if (request.params.name === 'sd_add') {
-          const args = request.params.arguments as { type: MemoryType; title: string; content: string; tags?: string[] };
-          const id = ctx.addMemory(args.type, args.title, args.content, args.tags || [], 'indexer');
-          return { content: [{ type: 'text', text: `Successfully added memory ${id} to context "${targetContext}"` }] };
+          const args = request.params.arguments as {
+            type: MemoryType;
+            title: string;
+            content: string;
+            tags?: string[];
+            target_file?: string;
+          };
+          const id = ctx.addMemory(args.type, args.title, args.content, args.tags || [], 'indexer', undefined, args.target_file);
+          const linkMsg = args.target_file ? ` (linked to ${args.target_file})` : '';
+          return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"` }] };
         }
 
         if (request.params.name === 'sd_update') {
           const args = request.params.arguments as { id: string; title?: string; content?: string; tags?: string[]; type?: MemoryType };
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type);
           return { content: [{ type: 'text', text: `Successfully updated memory ${args.id} in context "${targetContext}"` }] };
+        }
+
+        if (request.params.name === 'sd_scan') {
+          const dir = (request.params.arguments?.directory as string) || process.cwd();
+          const count = ctx.syncFileGraph(dir);
+          return { content: [{ type: 'text', text: `Successfully scanned workspace "${dir}" and updated ${count} file vertices and dependency edges in context "${targetContext}".` }] };
+        }
+
+        if (request.params.name === 'sd_init') {
+          const name = request.params.arguments?.name as string;
+          const dir = (request.params.arguments?.directory as string) || process.cwd();
+
+          const existing = this.config.getContext(name);
+          if (!existing) {
+            this.config.addContext(name, [dir]);
+          } else {
+            this.config.bindPathToContext(name, dir);
+          }
+          this.config.setActiveContext(name);
+
+          const targetCtx = new ContextManager(name);
+          try {
+            const count = targetCtx.syncFileGraph(dir);
+            return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", and created ${count} file vertices in DAG skeleton.` }] };
+          } finally {
+            await targetCtx.close();
+          }
         }
 
         throw new Error(`Tool not found: ${request.params.name}`);

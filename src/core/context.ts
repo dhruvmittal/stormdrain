@@ -9,6 +9,7 @@ import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
 import { Memory, MemoryType } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
+import { generateWorkspaceFileVertices, makeFileVertexId } from '../utils/fileGraphScanner';
 
 export class ContextManager {
   public readonly name: string;
@@ -36,11 +37,26 @@ export class ContextManager {
     return path.join(this.memoriesPath, `${safeId}.md`);
   }
 
-  public addMemory(type: MemoryType, title: string, content: string, tags: string[] = [], source: Memory['metadata']['source'] = 'manual'): string {
-    const id = `mem_${crypto.randomBytes(6).toString('hex')}`;
-    
+  public addMemory(
+    type: MemoryType,
+    title: string,
+    content: string,
+    tags: string[] = [],
+    source: Memory['metadata']['source'] = 'manual',
+    customId?: string,
+    targetFile?: string,
+    relationType = 'affects'
+  ): string {
+    const id = customId || `mem_${crypto.randomBytes(6).toString('hex')}`;
+    const relations: Array<{ target: string; type: string }> = [];
+
+    if (targetFile) {
+      const targetVertexId = makeFileVertexId(targetFile);
+      relations.push({ target: targetVertexId, type: relationType });
+    }
+
     const memory: Memory = {
-      metadata: createMemoryMetadata(id, type, title, this.name, tags, [], source),
+      metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source),
       content
     };
 
@@ -87,8 +103,60 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
+  public syncFileGraph(workspaceDir: string): number {
+    const vertices = generateWorkspaceFileVertices(workspaceDir);
+    let createdCount = 0;
+
+    for (const v of vertices) {
+      const relations = v.imports.map(impPath => ({
+        target: makeFileVertexId(impPath),
+        type: 'imports'
+      }));
+
+      const memory: Memory = {
+        metadata: createMemoryMetadata(v.id, 'codemap', v.title, this.name, v.tags, relations, 'auto-scan'),
+        content: v.content
+      };
+
+      this.saveMemory(memory, `[stormdrain] sync: file vertex "${v.relativePath}"`);
+      createdCount++;
+    }
+
+    return createdCount;
+  }
+
+  public recallGraph(fileOrMemoryId: string, maxDepth = 2) {
+    let startNodeId = fileOrMemoryId;
+    if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.')) {
+      startNodeId = makeFileVertexId(fileOrMemoryId);
+    }
+
+    try {
+      const stmt = this.db.prepare(`
+        WITH RECURSIVE graph_nodes(node_id, depth) AS (
+          SELECT ? AS node_id, 0 AS depth
+          UNION
+          SELECT 
+            CASE WHEN r.source_id = g.node_id THEN r.target_id ELSE r.source_id END AS node_id,
+            g.depth + 1
+          FROM relations r
+          JOIN graph_nodes g ON (r.source_id = g.node_id OR r.target_id = g.node_id)
+          WHERE g.depth < ?
+        )
+        SELECT DISTINCT m.*, fts.content as content_snippet, g.depth
+        FROM graph_nodes g
+        JOIN memories m ON m.id = g.node_id
+        LEFT JOIN memories_fts fts ON fts.id = m.id
+        ORDER BY g.depth ASC, m.confidence DESC;
+      `);
+
+      return stmt.all(startNodeId, maxDepth);
+    } catch {
+      return [];
+    }
+  }
+
   public searchMemories(query: string) {
-    // FTS5 query
     const stmt = this.db.prepare(`
       SELECT m.*, fts.content as content_snippet
       FROM memories_fts fts
@@ -98,7 +166,6 @@ export class ContextManager {
       LIMIT 20
     `);
     
-    // Sanitize query to avoid FTS5 syntax errors
     const safeQuery = query
       .split(/\s+/)
       .map(term => term.replace(/[^a-zA-Z0-9_\-\u00C0-\u024F]/g, ''))
@@ -131,7 +198,6 @@ export class ContextManager {
       memory.metadata.accessed = new Date().toISOString();
       memory.metadata.access_count += 1;
       
-      // Access boost logic (simple implementation)
       if (memory.metadata.confidence < 1.0) {
         memory.metadata.confidence = Math.min(1.0, memory.metadata.confidence + 0.05);
       }

@@ -16,7 +16,7 @@ const config = new ConfigManager();
 
 program
   .command('init')
-  .description('Initialize a context and generate an initial codebase codemap')
+  .description('Initialize a context, bind workspace directory, and build codebase file DAG')
   .argument('[name]', 'Context name (defaults to directory name or resolved context)')
   .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
   .action(async (name, dir) => {
@@ -35,13 +35,32 @@ program
 
     config.setActiveContext(targetContextName);
 
-    const { title, content } = generateCodebaseCodemap(targetDir);
     const ctx = new ContextManager(targetContextName);
     try {
-      const id = ctx.addMemory('codemap', title, content, ['codemap', 'auto-init', 'structure']);
-      console.log(`Successfully initialized context "${targetContextName}" with codebase codemap memory (${id})`);
+      const fileCount = ctx.syncFileGraph(targetDir);
+      console.log(`Successfully initialized context "${targetContextName}" with ${fileCount} file vertices in DAG skeleton.`);
     } finally {
       await ctx.close();
+    }
+  });
+
+program
+  .command('graph')
+  .description('Graph operations')
+  .argument('<action>', 'scan')
+  .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
+  .option('-c, --context <name>', 'Target context override')
+  .action(async (action, dir, options) => {
+    if (action === 'scan') {
+      const targetDir = dir || process.cwd();
+      const targetCtxName = config.resolveContext(options.context, targetDir);
+      const ctx = new ContextManager(targetCtxName);
+      try {
+        const count = ctx.syncFileGraph(targetDir);
+        console.log(`Scanned workspace source files and updated ${count} file vertices & import DAG edges in context "${targetCtxName}".`);
+      } finally {
+        await ctx.close();
+      }
     }
   });
 
@@ -114,16 +133,18 @@ program
 program
   .command('add')
   .description('Add a new memory')
-  .argument('<type>', 'Type of memory (fact, lesson, pattern, etc.)')
+  .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, etc.)')
   .argument('<title>', 'Title of the memory')
   .argument('<content>', 'Markdown content of the memory')
   .option('-c, --context <name>', 'Target context override')
+  .option('-t, --target <file>', 'Target file to link memory onto in the DAG')
   .action(async (type, title, content, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const id = ctx.addMemory(type as any, title, content);
-      console.log(`Added memory ${id} to context "${targetCtxName}"`);
+      const id = ctx.addMemory(type as any, title, content, [], 'manual', undefined, options.target);
+      const linkMsg = options.target ? ` (linked to ${options.target})` : '';
+      console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
     } finally {
       await ctx.close();
     }
@@ -155,16 +176,25 @@ program
 
 program
   .command('recall')
-  .description('Recall top memories for current context')
+  .description('Recall top memories for current context or graph-connected memories for a target file')
   .option('-c, --context <name>', 'Target context override')
+  .option('-t, --target <file>', 'Target file to traverse graph from')
   .action(async (options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const results = ctx.recallTopMemories(5);
-      console.log(`Top memories for context "${targetCtxName}":`);
-      for (const r of results as any[]) {
-        console.log(`- [${r.type}] ${r.title} (Confidence: ${r.confidence})`);
+      if (options.target) {
+        const results = ctx.recallGraph(options.target, 2);
+        console.log(`Graph memories for target "${options.target}" in context "${targetCtxName}":`);
+        for (const r of results as any[]) {
+          console.log(`- [Depth ${r.depth}] [${r.type}] ${r.title} (${r.id})`);
+        }
+      } else {
+        const results = ctx.recallTopMemories(5);
+        console.log(`Top memories for context "${targetCtxName}":`);
+        for (const r of results as any[]) {
+          console.log(`- [${r.type}] ${r.title} (Confidence: ${r.confidence})`);
+        }
       }
     } finally {
       await ctx.close();
