@@ -63,6 +63,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext }) => {
               <th>Title</th>
               <th>Confidence</th>
               <th>Last Updated</th>
+              <th>Last Accessed</th>
             </tr>
           </thead>
           <tbody>
@@ -78,11 +79,25 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext }) => {
                   </div>
                 </td>
                 <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{formatDate(m.updated)}</td>
+                <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                  {m.accessed ? (
+                    <div>
+                      {formatDate(m.accessed)}
+                      {m.access_count > 0 && (
+                        <span style={{ marginLeft: 6, fontSize: '0.78rem', color: 'var(--accent-color)', background: 'rgba(59, 130, 246, 0.12)', padding: '2px 6px', borderRadius: '4px' }}>
+                          {m.access_count} {m.access_count === 1 ? 'read' : 'reads'}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span style={{ color: 'var(--border-color)' }}>—</span>
+                  )}
+                </td>
               </tr>
             ))}
             {memories.length === 0 && (
               <tr>
-                <td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '30px' }}>
+                <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '30px' }}>
                   {searchQuery ? `No memories found matching "${searchQuery}"` : 'No memories found in this context.'}
                 </td>
               </tr>
