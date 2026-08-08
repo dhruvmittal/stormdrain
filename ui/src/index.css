@@ -13,6 +13,8 @@
   --color-pattern: #8b5cf6;
   --color-warning: #ef4444;
   --color-guide: #ec4899;
+  --color-codemap: #06b6d4;
+  --color-sequence: #6366f1;
 }
 
 body {
@@ -195,7 +197,79 @@ tr:hover td {
 .badge-pattern { background-color: rgba(139, 92, 246, 0.2); color: var(--color-pattern); }
 .badge-warning { background-color: rgba(239, 68, 68, 0.2); color: var(--color-warning); }
 .badge-guide { background-color: rgba(236, 72, 153, 0.2); color: var(--color-guide); }
+.badge-codemap { background-color: rgba(6, 182, 212, 0.2); color: var(--color-codemap); }
+.badge-sequence { background-color: rgba(99, 102, 241, 0.2); color: var(--color-sequence); }
 .badge-default { background-color: var(--bg-surface-hover); color: var(--text-main); }
+
+/* Filter Pills */
+.filter-pills-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.filter-pill:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.filter-pill.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-hover);
+  border-color: var(--accent-color);
+}
+
+.filter-pill-count {
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+
+.filter-pill.active .filter-pill-count {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+/* Sortable Headers */
+th.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+th.sortable-th:hover {
+  color: var(--text-main);
+}
+
+th.sortable-th .th-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+th.sortable-th.sorted {
+  color: var(--accent-hover);
+}
 
 /* Graph */
 .graph-container {
