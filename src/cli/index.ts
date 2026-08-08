@@ -37,8 +37,8 @@ program
 
     const ctx = new ContextManager(targetContextName);
     try {
-      const fileCount = ctx.syncFileGraph(targetDir);
-      console.log(`Successfully initialized context "${targetContextName}" with ${fileCount} file vertices in DAG skeleton.`);
+      const { createdCount } = ctx.syncFileGraph(targetDir);
+      console.log(`Successfully initialized context "${targetContextName}" with ${createdCount} file vertices in DAG skeleton.`);
     } finally {
       await ctx.close();
     }
@@ -47,17 +47,35 @@ program
 program
   .command('graph')
   .description('Graph operations')
-  .argument('<action>', 'scan')
-  .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
+  .argument('<action>', 'scan, consolidate')
+  .argument('[target]', 'Workspace directory path for scan, or target file path for consolidate')
   .option('-c, --context <name>', 'Target context override')
-  .action(async (action, dir, options) => {
+  .action(async (action, target, options) => {
     if (action === 'scan') {
-      const targetDir = dir || process.cwd();
+      const targetDir = target || process.cwd();
       const targetCtxName = config.resolveContext(options.context, targetDir);
       const ctx = new ContextManager(targetCtxName);
       try {
-        const count = ctx.syncFileGraph(targetDir);
-        console.log(`Scanned workspace source files and updated ${count} file vertices & import DAG edges in context "${targetCtxName}".`);
+        const { createdCount, decayedCount } = ctx.syncFileGraph(targetDir);
+        const decayMsg = decayedCount > 0 ? ` (${decayedCount} memories decayed due to file content changes)` : '';
+        console.log(`Scanned workspace source files and updated ${createdCount} file vertices & import DAG edges in context "${targetCtxName}"${decayMsg}.`);
+      } finally {
+        await ctx.close();
+      }
+    } else if (action === 'consolidate') {
+      if (!target) {
+        console.error('Error: Please specify target file path to consolidate (e.g. stormdrain graph consolidate src/core/config.ts)');
+        process.exit(1);
+      }
+      const targetCtxName = config.resolveContext(options.context, process.cwd());
+      const ctx = new ContextManager(targetCtxName);
+      try {
+        const res = ctx.consolidateNeighborhood(target);
+        if (!res.consolidatedId) {
+          console.log(`No micro-memories (>= 2) found to consolidate for "${target}".`);
+        } else {
+          console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${target}".`);
+        }
       } finally {
         await ctx.close();
       }

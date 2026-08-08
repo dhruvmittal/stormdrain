@@ -103,11 +103,38 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  public syncFileGraph(workspaceDir: string): number {
+  public syncFileGraph(workspaceDir: string): { createdCount: number; decayedCount: number } {
     const vertices = generateWorkspaceFileVertices(workspaceDir);
     let createdCount = 0;
+    let decayedCount = 0;
 
     for (const v of vertices) {
+      const existing = this.getMemory(v.id);
+      if (existing) {
+        const hashMatch = existing.content.match(/Hash: `([^`]+)`/);
+        const oldHash = hashMatch ? hashMatch[1] : '';
+        if (oldHash && oldHash !== v.hash) {
+          // File content changed! Find all memories attached to this file vertex
+          const attachedRelations = this.db.prepare(`
+            SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
+          `).all(v.id) as Array<{ source_id: string }>;
+
+          for (const rel of attachedRelations) {
+            const attachedMem = this.getMemory(rel.source_id);
+            if (attachedMem && attachedMem.metadata.type !== 'codemap') {
+              const oldConf = attachedMem.metadata.confidence;
+              attachedMem.metadata.confidence = Math.max(0.3, Math.round(oldConf * 0.75 * 100) / 100);
+              attachedMem.metadata.updated = new Date().toISOString();
+              if (!attachedMem.metadata.tags.includes('stale')) {
+                attachedMem.metadata.tags.push('stale');
+              }
+              this.saveMemory(attachedMem, `[stormdrain] decay: memory ${attachedMem.metadata.id} due to ${v.relativePath} hash change`);
+              decayedCount++;
+            }
+          }
+        }
+      }
+
       const relations = v.imports.map(impPath => ({
         target: makeFileVertexId(impPath),
         type: 'imports'
@@ -122,7 +149,58 @@ export class ContextManager {
       createdCount++;
     }
 
-    return createdCount;
+    return { createdCount, decayedCount };
+  }
+
+  public consolidateNeighborhood(targetFileOrId: string): { consolidatedId: string; mergedCount: number } {
+    const targetId = targetFileOrId.startsWith('file_') ? targetFileOrId : makeFileVertexId(targetFileOrId);
+
+    // Find non-codemap memories attached to this target vertex
+    const relations = this.db.prepare(`
+      SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
+    `).all(targetId) as Array<{ source_id: string }>;
+
+    const memories: Memory[] = [];
+    for (const rel of relations) {
+      const mem = this.getMemory(rel.source_id);
+      if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
+        memories.push(mem);
+      }
+    }
+
+    if (memories.length < 2) {
+      return { consolidatedId: '', mergedCount: 0 };
+    }
+
+    const title = `Consolidated Knowledge Guide: ${targetFileOrId}`;
+    const allTags = new Set<string>(['consolidated-guide', 'super-memory']);
+    
+    let combinedContent = `# Consolidated Guide for ${targetFileOrId}\n\n`;
+    combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${targetFileOrId}\`.\n\n---\n\n`;
+
+    for (const mem of memories) {
+      mem.metadata.tags.forEach(t => allTags.add(t));
+      combinedContent += `### [${mem.metadata.type.toUpperCase()}] ${mem.metadata.title} (ID: ${mem.metadata.id})\n`;
+      combinedContent += `${mem.content}\n\n`;
+      combinedContent += `*Tags: ${mem.metadata.tags.join(', ')}*\n\n---\n\n`;
+
+      // Mark source memory as consolidated
+      mem.metadata.tags.push('consolidated');
+      mem.metadata.confidence = Math.max(0.4, Math.round(mem.metadata.confidence * 0.7 * 100) / 100);
+      this.saveMemory(mem, `[stormdrain] consolidate: marked ${mem.metadata.id} as consolidated`);
+    }
+
+    const consolidatedId = this.addMemory(
+      'guide',
+      title,
+      combinedContent,
+      Array.from(allTags),
+      'consolidator',
+      undefined,
+      targetFileOrId
+    );
+
+    return { consolidatedId, mergedCount: memories.length };
   }
 
   public recallGraph(fileOrMemoryId: string, maxDepth = 2) {

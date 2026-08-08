@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 export interface FileVertexMemory {
   id: string;
@@ -9,6 +10,7 @@ export interface FileVertexMemory {
   content: string;
   tags: string[];
   imports: string[]; // List of relative file paths imported by this file
+  hash: string; // SHA-256 checksum prefix of file content
 }
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -184,7 +186,13 @@ export function generateWorkspaceFileVertices(workspaceDir: string): FileVertexM
     const ext = path.extname(relFile);
     const id = makeFileVertexId(relFile);
 
-    let summaryText = `File Node: \`${relFile}\`\nExtension: \`${ext}\`\nImports (${imports.length}): ${imports.map(i => `\`${i}\``).join(', ') || 'None'}`;
+    let fileHash = '';
+    try {
+      const rawBuf = fs.readFileSync(fullPath);
+      fileHash = crypto.createHash('sha256').update(rawBuf).digest('hex').substring(0, 16);
+    } catch {}
+
+    let summaryText = `File Node: \`${relFile}\`\nExtension: \`${ext}\`\nHash: \`${fileHash}\`\nImports (${imports.length}): ${imports.map(i => `\`${i}\``).join(', ') || 'None'}`;
 
     // Read top comment/docstring if available
     try {
@@ -203,7 +211,8 @@ export function generateWorkspaceFileVertices(workspaceDir: string): FileVertexM
       title: `[File] ${relFile}`,
       content: summaryText,
       tags: ['file-vertex', 'codebase-graph', ext.substring(1)],
-      imports
+      imports,
+      hash: fileHash
     });
   }
 

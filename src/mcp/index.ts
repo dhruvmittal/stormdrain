@@ -165,6 +165,21 @@ export class StormDrainMcpServer {
               },
               required: ['name']
             }
+          },
+          {
+            name: 'sd_consolidate',
+            description: 'Consolidate multiple micro-memories attached to a target file vertex into a unified knowledge guide.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                target_file: {
+                  type: 'string',
+                  description: 'Target file path (e.g. src/core/config.ts) whose micro-memories should be consolidated'
+                },
+                context: contextProp
+              },
+              required: ['target_file']
+            }
           }
         ]
       };
@@ -228,8 +243,8 @@ export class StormDrainMcpServer {
 
         if (request.params.name === 'sd_scan') {
           const dir = (request.params.arguments?.directory as string) || process.cwd();
-          const count = ctx.syncFileGraph(dir);
-          return { content: [{ type: 'text', text: `Successfully scanned workspace "${dir}" and updated ${count} file vertices and dependency edges in context "${targetContext}".` }] };
+          const { createdCount, decayedCount } = ctx.syncFileGraph(dir);
+          return { content: [{ type: 'text', text: `Successfully scanned workspace "${dir}" and updated ${createdCount} file vertices (${decayedCount} memories decayed) in context "${targetContext}".` }] };
         }
 
         if (request.params.name === 'sd_init') {
@@ -246,11 +261,20 @@ export class StormDrainMcpServer {
 
           const targetCtx = new ContextManager(name);
           try {
-            const count = targetCtx.syncFileGraph(dir);
-            return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", and created ${count} file vertices in DAG skeleton.` }] };
+            const { createdCount } = targetCtx.syncFileGraph(dir);
+            return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", and created ${createdCount} file vertices in DAG skeleton.` }] };
           } finally {
             await targetCtx.close();
           }
+        }
+
+        if (request.params.name === 'sd_consolidate') {
+          const targetFile = request.params.arguments?.target_file as string;
+          const res = ctx.consolidateNeighborhood(targetFile);
+          if (!res.consolidatedId) {
+            return { content: [{ type: 'text', text: `No micro-memories (>= 2) found to consolidate for "${targetFile}".` }] };
+          }
+          return { content: [{ type: 'text', text: `Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${targetFile}".` }] };
         }
 
         throw new Error(`Tool not found: ${request.params.name}`);
