@@ -32,7 +32,9 @@ describe('Web API Server', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
+      try {
+        fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch {}
     }
     delete process.env.STORMDRAIN_TEST_DIR;
   });

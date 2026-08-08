@@ -142,7 +142,14 @@ export function parseFileImports(workspaceDir: string, relativeFilePath: string,
 
 function resolveCandidateImport(rawImport: string, fileDir: string, allFiles: Set<string>, outSet: Set<string>) {
   // Normalize module path (convert dots or slashes)
-  const cleanImport = rawImport.replace(/\\/g, '/');
+  let cleanImport = rawImport.replace(/\\/g, '/');
+
+  // Handle Python relative dot imports (e.g. .utils -> ./utils, ..utils -> ../utils)
+  if (cleanImport.startsWith('..')) {
+    cleanImport = '../' + cleanImport.replace(/^\.\.+/, '');
+  } else if (cleanImport.startsWith('.')) {
+    cleanImport = './' + cleanImport.replace(/^\.+/, '');
+  }
 
   // Try direct relative resolve
   const directRel = path.normalize(path.join(fileDir, cleanImport)).replace(/\\/g, '/');
