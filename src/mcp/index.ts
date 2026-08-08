@@ -7,6 +7,7 @@ import {
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 import { MemoryType } from '../types';
+import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 
 export class StormDrainMcpServer {
   private server: Server;
@@ -259,10 +260,12 @@ export class StormDrainMcpServer {
           }
           this.config.setActiveContext(name);
 
+          scaffoldAgentsMd(dir);
+
           const targetCtx = new ContextManager(name);
           try {
             const { createdCount } = targetCtx.syncFileGraph(dir);
-            return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", and created ${createdCount} file vertices in DAG skeleton.` }] };
+            return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", scaffolded AGENTS.md, and created ${createdCount} file vertices in DAG skeleton.` }] };
           } finally {
             await targetCtx.close();
           }

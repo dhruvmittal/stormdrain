@@ -5,6 +5,7 @@ import { ContextManager } from '../core/context';
 import { StormDrainMcpServer } from '../mcp/index';
 import { startWebServer } from '../web/server';
 import { generateCodebaseCodemap } from '../utils/codemapGenerator';
+import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 
 const program = new Command();
 program
@@ -34,6 +35,13 @@ program
     }
 
     config.setActiveContext(targetContextName);
+
+    const scaffoldRes = scaffoldAgentsMd(targetDir);
+    if (scaffoldRes.created) {
+      console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+    } else if (scaffoldRes.updated) {
+      console.log(`Appended StormDrain instructions to existing "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+    }
 
     const ctx = new ContextManager(targetContextName);
     try {
