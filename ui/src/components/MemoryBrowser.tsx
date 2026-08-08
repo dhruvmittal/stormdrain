@@ -118,9 +118,9 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext }) => {
         </button>
       </div>
 
-      <div style={{ padding: '24px 30px 0 30px' }}>
+      <div style={{ padding: '20px 30px 0 30px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
         {/* Segmented Type Filter Pills */}
-        <div className="filter-pills-bar">
+        <div className="filter-pills-bar" style={{ marginBottom: 0, flex: '1 1 auto' }}>
           {MEMORY_TYPES.map(type => {
             const count = typeCounts[type] || 0;
             const isActive = selectedType === type;
@@ -141,22 +141,23 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext }) => {
           })}
         </div>
 
-        {/* Search Bar */}
-        <div style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '8px 12px' }}>
-          <Search size={18} style={{ color: 'var(--text-muted)', marginRight: 10 }} />
+        {/* Compact Inline Search Bar */}
+        <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '20px', padding: '6px 14px', width: '250px', transition: 'all 0.2s ease' }}>
+          <Search size={15} style={{ color: 'var(--text-muted)', marginRight: 8, flexShrink: 0 }} />
           <input 
             type="text"
-            placeholder="Search memories by text, title, or tag..."
+            placeholder="Search memories..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '100%', outline: 'none', fontSize: '0.95rem' }}
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '100%', outline: 'none', fontSize: '0.85rem' }}
           />
           {searchQuery && (
             <button 
               onClick={() => setSearchQuery('')}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0, marginLeft: 4 }}
+              title="Clear search"
             >
-              <X size={16} />
+              <X size={14} />
             </button>
           )}
         </div>
