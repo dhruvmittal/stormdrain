@@ -5,6 +5,7 @@ import { Search, Plus, ArrowUp, ArrowDown, ArrowUpDown, X } from 'lucide-react';
 
 interface MemoryBrowserProps {
   activeContext: string;
+  dataVersion?: number;
 }
 
 type SortField = 'type' | 'title' | 'confidence' | 'updated' | 'accessed';
@@ -12,7 +13,7 @@ type SortDirection = 'asc' | 'desc';
 
 const MEMORY_TYPES = ['all', 'fact', 'lesson', 'pattern', 'warning', 'guide', 'codemap', 'sequence'] as const;
 
-const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext }) => {
+const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersion = 0 }) => {
   const [memories, setMemories] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
@@ -28,7 +29,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext }) => {
 
   useEffect(() => {
     fetchMemories(searchQuery);
-  }, [activeContext, searchQuery]);
+  }, [activeContext, searchQuery, dataVersion]);
+
 
   // Compute type counts dynamically across current context
   const typeCounts = useMemo(() => {

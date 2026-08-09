@@ -7,13 +7,14 @@ import { Search, X, Crosshair, Layers } from 'lucide-react';
 
 interface GraphViewProps {
   activeContext: string;
+  dataVersion?: number;
 }
 
 type ScopeDepth = 0 | 1 | 2;
 
 const MEMORY_TYPES = ['all', 'fact', 'lesson', 'pattern', 'warning', 'guide', 'codemap'] as const;
 
-export const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
+export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion = 0 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   
@@ -27,8 +28,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
 
   // UI & Filter state
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [dataVersion, setDataVersion] = useState(0);
+  const [localVersion, setLocalVersion] = useState(0);
+  const effectiveVersion = dataVersion + localVersion;
   const [searchQuery, setSearchQuery] = useState('');
+
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
@@ -302,7 +305,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
       isMounted = false;
       if (simulationRef.current) simulationRef.current.stop();
     };
-  }, [activeContext, dataVersion, getTypeColor]);
+  }, [activeContext, effectiveVersion, getTypeColor]);
+
 
   // 2. Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
   const applyActiveFilterStyling = useCallback(() => {
@@ -641,7 +645,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
           onClose={() => setEditingId(null)}
           onSave={() => {
             setEditingId(null);
-            setDataVersion(v => v + 1);
+            setLocalVersion(v => v + 1);
           }}
         />
       )}

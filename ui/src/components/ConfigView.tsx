@@ -40,7 +40,11 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
   }
 };
 
-export const ConfigView: React.FC = () => {
+interface ConfigViewProps {
+  dataVersion?: number;
+}
+
+export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0 }) => {
   const [settings, setSettings] = useState<StormDrainSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
@@ -48,7 +52,8 @@ export const ConfigView: React.FC = () => {
 
   useEffect(() => {
     loadSettings();
-  }, []);
+  }, [dataVersion]);
+
 
   const loadSettings = async () => {
     setLoading(true);
