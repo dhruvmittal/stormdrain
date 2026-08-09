@@ -87,4 +87,95 @@ describe('ConfigManager', () => {
     config.bindPathToContext('proj-bound', '/my/bound/path');
     expect(config.resolveContextByCwd('/my/bound/path/subfolder')).toBe('proj-bound');
   });
+
+  it('should initialize and return default settings', () => {
+    const config = new ConfigManager();
+    const settings = config.getSettings();
+    expect(settings.readTool.enabled).toBe(true);
+    expect(settings.readTool.mode).toBe('auto');
+    expect(settings.readTool.tokenBudget).toBe(500);
+    expect(settings.graph.forwardWeight).toBe(0.80);
+    expect(settings.graph.reverseWeight).toBe(0.25);
+    expect(settings.decay.decayRate).toBe(0.85);
+    expect(settings.git.debounceMs).toBe(1500);
+  });
+
+  it('should update settings partially and persist to disk', () => {
+    const config = new ConfigManager();
+    const updated = config.updateSettings({
+      readTool: {
+        enabled: true,
+        mode: 'tokensave',
+        cachePolicy: 'always',
+        tokenBudget: 800,
+        maxHops: 3,
+        includeSymbols: false
+      },
+      graph: {
+        forwardWeight: 0.90,
+        reverseWeight: 0.35,
+        cumulativeMassThreshold: 0.90,
+        pushThreshold: 0.0005,
+        consolidationThreshold: 5
+      }
+    });
+
+    expect(updated.readTool.mode).toBe('tokensave');
+    expect(updated.readTool.tokenBudget).toBe(800);
+    expect(updated.graph.forwardWeight).toBe(0.90);
+    // Unmodified sub-fields should retain defaults
+    expect(updated.decay.decayRate).toBe(0.85);
+    expect(updated.git.debounceMs).toBe(1500);
+
+    // Verify reloaded instance reads from disk
+    const config2 = new ConfigManager();
+    const loaded = config2.getSettings();
+    expect(loaded.readTool.mode).toBe('tokensave');
+    expect(loaded.readTool.tokenBudget).toBe(800);
+    expect(loaded.graph.forwardWeight).toBe(0.90);
+  });
+
+  it('should reset settings to default values', () => {
+    const config = new ConfigManager();
+    config.updateSettings({
+      readTool: {
+        enabled: false,
+        mode: 'disabled',
+        cachePolicy: 'always',
+        tokenBudget: 1200,
+        maxHops: 1,
+        includeSymbols: false
+      }
+    });
+    expect(config.getSettings().readTool.tokenBudget).toBe(1200);
+
+    const reset = config.resetSettings();
+    expect(reset.readTool.enabled).toBe(true);
+    expect(reset.readTool.mode).toBe('auto');
+    expect(reset.readTool.tokenBudget).toBe(500);
+  });
+
+  it('should honor environment variable overrides for settings', () => {
+    process.env.STORMDRAIN_TOKEN_BUDGET = '950';
+    process.env.STORMDRAIN_READ_MODE = 'standalone';
+    process.env.STORMDRAIN_FORWARD_WEIGHT = '0.95';
+    process.env.STORMDRAIN_REVERSE_WEIGHT = '0.40';
+    process.env.STORMDRAIN_DECAY_RATE = '0.70';
+
+    const config = new ConfigManager();
+    const settings = config.getSettings();
+
+    expect(settings.readTool.tokenBudget).toBe(950);
+    expect(settings.readTool.mode).toBe('standalone');
+    expect(settings.graph.forwardWeight).toBe(0.95);
+    expect(settings.graph.reverseWeight).toBe(0.40);
+    expect(settings.decay.decayRate).toBe(0.70);
+
+    delete process.env.STORMDRAIN_TOKEN_BUDGET;
+    delete process.env.STORMDRAIN_READ_MODE;
+    delete process.env.STORMDRAIN_FORWARD_WEIGHT;
+    delete process.env.STORMDRAIN_REVERSE_WEIGHT;
+    delete process.env.STORMDRAIN_DECAY_RATE;
+  });
 });
+

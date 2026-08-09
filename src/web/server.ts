@@ -53,6 +53,33 @@ export const startWebServer = (port: number = 3456) => {
     }
   });
 
+  app.get('/api/config', (req, res) => {
+    try {
+      res.json(config.getSettings());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/config', (req, res) => {
+    try {
+      const updated = config.updateSettings(req.body);
+      res.json({ success: true, settings: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/config/reset', (req, res) => {
+    try {
+      const reset = config.resetSettings();
+      res.json({ success: true, settings: reset });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
     if (query) {
@@ -132,6 +159,11 @@ export const startWebServer = (port: number = 3456) => {
 
   // Fallback for SPA routing
   app.use((req, res) => {
+    // Never send HTML fallback for API endpoints or non-GET requests
+    if (req.path.startsWith('/api') || req.method !== 'GET') {
+      res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
+      return;
+    }
     const indexPath = path.join(publicDir, 'index.html');
     if (fs.existsSync(indexPath)) {
       res.sendFile(indexPath);
@@ -139,6 +171,7 @@ export const startWebServer = (port: number = 3456) => {
       res.status(404).send(`UI dist files not found at ${publicDir}`);
     }
   });
+
 
   const server = app.listen(port, () => {
     console.log(`StormDrain Web UI running on http://localhost:${port}`);

@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { Database, Network, LayoutDashboard, BrainCircuit, ChevronLeft, ChevronRight, Check } from 'lucide-react';
+import { Database, Network, LayoutDashboard, BrainCircuit, ChevronLeft, ChevronRight, Check, SlidersHorizontal } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import MemoryBrowser from './components/MemoryBrowser';
 import GraphView from './components/GraphView';
+import ConfigView from './components/ConfigView';
 import { api } from './api';
 import './index.css';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'browser' | 'graph'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'browser' | 'graph' | 'settings'>('dashboard');
   const [contexts, setContexts] = useState<string[]>([]);
   const [activeContext, setActiveContext] = useState<string>('');
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -115,6 +116,14 @@ function App() {
             <Network size={18} style={{ flexShrink: 0 }} /> 
             {!collapsed && <span>Graph View</span>}
           </div>
+          <div 
+            className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('settings')}
+            data-tooltip="Configuration"
+          >
+            <SlidersHorizontal size={18} style={{ flexShrink: 0 }} /> 
+            {!collapsed && <span>Configuration</span>}
+          </div>
         </div>
 
         <div className="context-selector" ref={popoverRef}>
@@ -163,9 +172,11 @@ function App() {
         {activeTab === 'dashboard' && <Dashboard activeContext={activeContext} />}
         {activeTab === 'browser' && <MemoryBrowser activeContext={activeContext} />}
         {activeTab === 'graph' && <GraphView activeContext={activeContext} />}
+        {activeTab === 'settings' && <ConfigView />}
       </div>
     </div>
   );
 }
 
 export default App;
+

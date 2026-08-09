@@ -57,3 +57,44 @@ export interface MultiHopRecallResponse {
   downstream: MultiHopMemoryResult[];
   all: MultiHopMemoryResult[];
 }
+
+export interface ReadToolSettings {
+  enabled: boolean;
+  mode: 'auto' | 'tokensave' | 'standalone' | 'disabled';
+  cachePolicy: 'first_read_only' | 'always' | 'on_file_changed';
+  tokenBudget: number;
+  maxHops: number;
+  includeSymbols: boolean;
+}
+
+export interface GraphSettings {
+  forwardWeight: number;
+  reverseWeight: number;
+  cumulativeMassThreshold: number;
+  pushThreshold: number;
+  consolidationThreshold: number;
+}
+
+export interface DecaySettings {
+  decayRate: number;
+  minFloor: number;
+}
+
+export interface GitSettings {
+  enabled: boolean;
+  debounceMs: number;
+}
+
+export interface StormDrainSettings {
+  readTool: ReadToolSettings;
+  graph: GraphSettings;
+  decay: DecaySettings;
+  git: GitSettings;
+}
+
+export interface GlobalConfig {
+  contexts: Record<string, ContextConfig>;
+  activeContext: string; // The currently active context
+  settings?: StormDrainSettings;
+}
+

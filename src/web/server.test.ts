@@ -134,4 +134,57 @@ describe('Web API Server', () => {
     expect(data.nodes).toBeDefined();
     expect(data.links).toBeDefined();
   });
+
+  it('should get, update, and reset configuration settings', async () => {
+    // 1. GET initial config
+    const getRes = await fetch(`${baseUrl}/api/config`);
+    expect(getRes.status).toBe(200);
+    const initialConfig = await getRes.json();
+    expect(initialConfig.readTool).toBeDefined();
+    expect(initialConfig.readTool.mode).toBe('auto');
+    expect(initialConfig.readTool.tokenBudget).toBe(500);
+
+    // 2. POST config update
+    const updateRes = await fetch(`${baseUrl}/api/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        readTool: {
+          tokenBudget: 750,
+          mode: 'standalone'
+        },
+        graph: {
+          forwardWeight: 0.88
+        }
+      })
+    });
+    expect(updateRes.status).toBe(200);
+    const updateData = await updateRes.json();
+    expect(updateData.success).toBe(true);
+    expect(updateData.settings.readTool.tokenBudget).toBe(750);
+    expect(updateData.settings.readTool.mode).toBe('standalone');
+    expect(updateData.settings.graph.forwardWeight).toBe(0.88);
+
+    // 3. POST config reset
+    const resetRes = await fetch(`${baseUrl}/api/config/reset`, {
+      method: 'POST'
+    });
+    expect(resetRes.status).toBe(200);
+    const resetData = await resetRes.json();
+    expect(resetData.success).toBe(true);
+    expect(resetData.settings.readTool.tokenBudget).toBe(500);
+    expect(resetData.settings.readTool.mode).toBe('auto');
+  });
+
+  it('should handle configuration error states gracefully', async () => {
+    // Test config error when sending non-object / invalid body that triggers error
+    const errRes = await fetch(`${baseUrl}/api/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'invalid-json'
+    });
+    expect(errRes.status).toBeGreaterThanOrEqual(400);
+  });
 });
+
+

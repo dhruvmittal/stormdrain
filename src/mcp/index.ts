@@ -62,7 +62,7 @@ export class StormDrainMcpServer {
         tools: [
           {
             name: 'sd_recall',
-            description: `Get top memories for current context, or graph-connected memories for a specific target file.\n\n### Top Injected Memories ###\n${injectedMemory}`,
+            description: `MANDATORY PRE-ACTION TOOL: Always call this tool with 'target_file' before modifying, refactoring, or investigating any file. It retrieves essential architectural invariants, upstream caller constraints (to prevent breaking changes), and downstream dependency rules via multi-hop topological PageRank.\n\n### Top Injected Memories ###\n${injectedMemory}`,
             inputSchema: {
               type: 'object',
               properties: {
@@ -77,7 +77,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_search',
-            description: 'Full-text and semantic search across memories.',
+            description: 'SEARCH TOOL: Perform SQLite FTS5 full-text and semantic keyword search across all persistent memories.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -92,7 +92,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_add',
-            description: 'Create a new memory in the current context, optionally linked to a target file vertex.',
+            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions, or reusable patterns to persistent memory immediately upon discovery. Always pass target_file when the memory applies to a specific file.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -122,7 +122,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_update',
-            description: 'Update an existing memory by ID.',
+            description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, or tags by ID.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -137,7 +137,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_scan',
-            description: 'Scan workspace source files (C++, MATLAB, Python, TS/JS, Rust, C, Go) and update file vertices & import DAG edges in the memory graph.',
+            description: 'GRAPH SYNC TOOL: Scan workspace source files (TypeScript, Python, C++, Go, Rust, MATLAB) to synchronize the codebase dependency DAG edges and file vertices in persistent memory.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -151,7 +151,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_init',
-            description: 'Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.',
+            description: 'INITIALIZATION TOOL: Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -169,7 +169,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_consolidate',
-            description: 'Consolidate multiple micro-memories attached to a target file vertex into a unified knowledge guide.',
+            description: 'CONSOLIDATION TOOL: Consolidate multiple micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield to suppress repetitive micro-memories from polluting future LLM prompts.',
             inputSchema: {
               type: 'object',
               properties: {

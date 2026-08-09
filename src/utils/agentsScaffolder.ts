@@ -1,10 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-export const STORMDRAIN_AGENT_SECTION = `## StormDrain Persistent Memory
-This project uses StormDrain for persistent cross-session architectural memory.
-- **Recall Knowledge**: Call \`sd_recall(target_file="path/to/file")\` before refactoring or debugging to check established patterns, past lessons, and invariants.
+export const STORMDRAIN_AGENT_SECTION = `## StormDrain Persistent Memory Protocol
+This project uses StormDrain for persistent cross-session architectural memory. You have access to StormDrain tools (\`sd_recall\`, \`sd_add\`, \`sd_consolidate\`, \`sd_scan\`).
+- **Pre-Edit Invariant Check (MANDATORY)**: Call \`sd_recall(target_file="path/to/file")\` before modifying or investigating any file to check topological invariants and caller contracts.
 - **Record Discoveries**: Call \`sd_add(type, title, content, target_file)\` when discovering non-obvious bugs, architectural decisions, or reusable patterns.
+- **Consolidate Micro-Memories**: Call \`sd_consolidate(target_file="path/to/file")\` when a file vertex accumulates multiple micro-memories.
 - **Sync Code Graph**: Call \`sd_scan()\` whenever new source files or imports are added or reorganized.`;
 
 export function scaffoldAgentsMd(targetDir: string): { created: boolean; updated: boolean; filePath: string } {
