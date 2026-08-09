@@ -177,5 +177,29 @@ describe('ConfigManager', () => {
     delete process.env.STORMDRAIN_REVERSE_WEIGHT;
     delete process.env.STORMDRAIN_DECAY_RATE;
   });
+
+  it('should reject binding home or root directory to project context', () => {
+    const config = new ConfigManager();
+    config.addContext('project-safe', []);
+
+    expect(config.bindPathToContext('project-safe', os.homedir())).toBe(false);
+    expect(config.bindPathToContext('project-safe', '/')).toBe(false);
+    expect(config.getContext('project-safe')?.paths).toEqual([]);
+
+    // _global can bind if explicitly done
+    expect(config.bindPathToContext('_global', os.homedir())).toBe(true);
+  });
+
+  it('should unbind path from context', () => {
+    const config = new ConfigManager();
+    const fakePath = path.join(testDir, 'workspace');
+    config.addContext('proj-unbind', [fakePath]);
+
+    expect(config.getContext('proj-unbind')?.paths).toContain(fakePath);
+    expect(config.unbindPathFromContext('proj-unbind', fakePath)).toBe(true);
+    expect(config.getContext('proj-unbind')?.paths).not.toContain(fakePath);
+    expect(config.unbindPathFromContext('proj-unbind', fakePath)).toBe(false);
+  });
 });
+
 

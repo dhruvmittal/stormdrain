@@ -81,4 +81,10 @@ describe('fileGraphScanner', () => {
     expect(serverVertex).toBeDefined();
     expect(serverVertex?.imports.some(i => i.endsWith('config.ts'))).toBe(true);
   });
+
+  it('should throw when trying to scan user home directory or filesystem root', () => {
+    expect(() => scanWorkspaceSourceFiles(os.homedir())).toThrow(/Cannot scan root or user home directory/);
+    expect(() => scanWorkspaceSourceFiles('/')).toThrow(/Cannot scan root or user home directory/);
+  });
 });
+

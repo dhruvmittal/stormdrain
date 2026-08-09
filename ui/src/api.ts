@@ -153,7 +153,9 @@ export interface ReadToolSettings {
   tokenBudget: number;
   maxHops: number;
   includeSymbols: boolean;
+  highlightAsPrimary: boolean;
 }
+
 
 export interface GraphSettings {
   forwardWeight: number;

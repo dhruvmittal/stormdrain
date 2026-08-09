@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { getBasePath, ensureDirectories } from '../utils/paths';
 import { GlobalConfig, ContextConfig, StormDrainSettings } from '../types';
+
 
 export const DEFAULT_SETTINGS: StormDrainSettings = {
   readTool: {
@@ -168,10 +170,22 @@ export class ConfigManager {
     this.saveConfig();
   }
 
+  public static isSystemOrHomeRoot(targetPath: string): boolean {
+    if (!targetPath) return false;
+    const norm = path.resolve(targetPath);
+    const home = path.resolve(os.homedir());
+    const root = path.parse(norm).root;
+    return norm === home || norm === root || norm === '/root' || norm === '/home';
+  }
+
   public bindPathToContext(contextName: string, workspacePath: string): boolean {
     this.loadConfig();
     if (!this.config.contexts[contextName]) {
       throw new Error(`Context ${contextName} does not exist.`);
+    }
+
+    if (ConfigManager.isSystemOrHomeRoot(workspacePath) && contextName !== '_global') {
+      return false;
     }
 
     const normPath = path.resolve(workspacePath);
@@ -185,14 +199,39 @@ export class ConfigManager {
     return false;
   }
 
+  public unbindPathFromContext(contextName: string, workspacePath: string): boolean {
+    this.loadConfig();
+    if (!this.config.contexts[contextName]) {
+      throw new Error(`Context ${contextName} does not exist.`);
+    }
+
+    const normPath = path.resolve(workspacePath);
+    const existingPaths = this.config.contexts[contextName].paths || [];
+    const filtered = existingPaths.filter(p => path.resolve(p) !== normPath);
+
+    if (filtered.length !== existingPaths.length) {
+      this.config.contexts[contextName].paths = filtered;
+      this.saveConfig();
+      return true;
+    }
+    return false;
+  }
+
   public resolveContextByCwd(cwd: string): string | null {
     this.loadConfig();
+    if (ConfigManager.isSystemOrHomeRoot(cwd)) {
+      return null;
+    }
+
     const normCwd = path.resolve(cwd);
     let match: string | null = null;
     let matchLen = 0;
 
     for (const ctx of Object.values(this.config.contexts)) {
       for (const p of ctx.paths || []) {
+        if (ConfigManager.isSystemOrHomeRoot(p) && ctx.name !== '_global') {
+          continue;
+        }
         const normP = path.resolve(p);
         if (normCwd === normP || normCwd.startsWith(normP + path.sep)) {
           if (normP.length > matchLen) {
@@ -204,6 +243,7 @@ export class ConfigManager {
     }
     return match;
   }
+
 
   public resolveContext(explicitContext?: string, cwd: string = process.cwd()): string {
     this.loadConfig();

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
 
 export interface FileVertexMemory {
@@ -35,7 +36,15 @@ export function makeFileVertexId(relativePath: string): string {
 
 export function scanWorkspaceSourceFiles(workspaceDir: string): string[] {
   const normWorkspace = path.resolve(workspaceDir);
+  const home = path.resolve(os.homedir());
+  const root = path.parse(normWorkspace).root;
+
+  if (normWorkspace === home || normWorkspace === root || normWorkspace === '/root' || normWorkspace === '/home') {
+    throw new Error(`Cannot scan root or user home directory "${normWorkspace}" directly without explicit subpath scoping.`);
+  }
+
   const filePaths: string[] = [];
+
 
   function walk(dir: string) {
     try {

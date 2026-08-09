@@ -364,5 +364,32 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(text).toContain('StormDrain Architectural Invariants & Caller Constraints');
     expect(text).toContain('Metrics Calculation Invariant');
   });
+
+  it('should execute sd_prune tool to prune orphan codemaps', async () => {
+    const wsDir = path.join(testDir, 'safe_workspace');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'app.ts'), 'export const app = 1;', 'utf8');
+
+    // Add an orphan memory
+    await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'codemap',
+        title: '[File] foreign/path.ts',
+        content: 'File Node: `foreign/path.ts`'
+      }
+    });
+
+    const pruneRes = await client.callTool({
+      name: 'sd_prune',
+      arguments: {
+        directory: wsDir
+      }
+    });
+
+    const text = ((pruneRes as any).content[0] as { type: string; text: string }).text;
+    expect(text).toContain('Successfully pruned 1 orphaned codemap vertices');
+  });
 });
+
 

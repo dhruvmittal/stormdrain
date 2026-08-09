@@ -20,7 +20,8 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
     cachePolicy: 'first_read_only',
     tokenBudget: 500,
     maxHops: 2,
-    includeSymbols: true
+    includeSymbols: true,
+    highlightAsPrimary: true
   },
   graph: {
     forwardWeight: 0.80,
@@ -172,6 +173,25 @@ export const ConfigView: React.FC = () => {
               <span className="slider round"></span>
             </label>
           </div>
+
+          <div className="config-field">
+            <div className="config-field-info">
+              <label>Highlight as Primary File Reader</label>
+              <span>Instruct agents via imperative MCP docstrings and AGENTS.md to prioritize sd_read</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.readTool.highlightAsPrimary}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  readTool: { ...settings.readTool, highlightAsPrimary: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
 
           <div className="config-field vertical">
             <div className="config-field-info">

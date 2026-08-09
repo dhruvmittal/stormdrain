@@ -88,4 +88,26 @@ describe('ContextManager', () => {
     expect((top[0] as any).id).toBe(id2);
     expect((top[1] as any).id).toBe(id1);
   });
+
+  it('should prune orphan codemap vertices that do not exist in workspace', () => {
+    const wsDir = path.join(testDir, 'workspace');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'active.ts'), 'export const a = 1;', 'utf8');
+
+    // Sync file graph creates active.ts vertex
+    ctx.syncFileGraph(wsDir);
+    expect(ctx.getMemory('file_active_ts')).not.toBeNull();
+
+    // Manually add an orphan codemap for a file that does not exist in wsDir
+    const orphanId = 'file_foreign_repo_bad_ts';
+    ctx.addMemory('codemap', '[File] foreign/repo/bad.ts', 'File Node: `foreign/repo/bad.ts`', [], 'auto-scan', orphanId);
+    expect(ctx.getMemory(orphanId)).not.toBeNull();
+
+    // Run prune
+    const res = ctx.pruneOrphanCodemaps([wsDir]);
+    expect(res.prunedCount).toBe(1);
+    expect(ctx.getMemory(orphanId)).toBeNull();
+    expect(ctx.getMemory('file_active_ts')).not.toBeNull();
+  });
 });
+

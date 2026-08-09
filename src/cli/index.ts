@@ -150,8 +150,24 @@ program
     } else if (action === 'bind' && name) {
       try {
         const bindPath = dir || process.cwd();
-        config.bindPathToContext(name, bindPath);
-        console.log(`Bound path "${bindPath}" to context "${name}"`);
+        const ok = config.bindPathToContext(name, bindPath);
+        if (ok) {
+          console.log(`Bound path "${bindPath}" to context "${name}"`);
+        } else {
+          console.log(`Path "${bindPath}" was already bound or rejected (root/home directory guard).`);
+        }
+      } catch (e: any) {
+        console.error(e.message);
+      }
+    } else if (action === 'unbind' && name) {
+      try {
+        const unbindPath = dir || process.cwd();
+        const ok = config.unbindPathFromContext(name, unbindPath);
+        if (ok) {
+          console.log(`Unbound path "${unbindPath}" from context "${name}"`);
+        } else {
+          console.log(`Path "${unbindPath}" was not bound to context "${name}"`);
+        }
       } catch (e: any) {
         console.error(e.message);
       }
@@ -159,7 +175,34 @@ program
   });
 
 program
+  .command('prune')
+  .description('Prune leaked or orphaned codemap file vertices from the DAG')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-d, --dir <directory>', 'Explicit workspace directory root')
+  .action(async (options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const ctxConfig = config.getContext(targetCtxName);
+      const validRoots = options.dir
+        ? [path.resolve(options.dir)]
+        : (ctxConfig?.paths || [process.cwd()]).filter(p => !ConfigManager.isSystemOrHomeRoot(p));
+
+      if (validRoots.length === 0) {
+        console.error('No valid workspace roots found to prune against. Please pass -d <directory>.');
+        return;
+      }
+
+      const { prunedCount } = ctx.pruneOrphanCodemaps(validRoots);
+      console.log(`Pruned ${prunedCount} orphaned codemap vertices from context "${targetCtxName}".`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
   .command('add')
+
   .description('Add a new memory')
   .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, etc.)')
   .argument('<title>', 'Title of the memory')

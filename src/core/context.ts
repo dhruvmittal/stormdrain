@@ -152,7 +152,39 @@ export class ContextManager {
     return { createdCount, decayedCount };
   }
 
+  public pruneOrphanCodemaps(validWorkspaceRoots: string[]): { prunedCount: number } {
+    const normRoots = validWorkspaceRoots.map(r => path.resolve(r));
+    const allCodemaps = this.db.prepare(`
+      SELECT id, title FROM memories WHERE type = 'codemap'
+    `).all() as Array<{ id: string; title: string }>;
+
+    let prunedCount = 0;
+    for (const cm of allCodemaps) {
+      const relPathMatch = cm.title.match(/^\[File\]\s*(.+)$/);
+      const relPath = relPathMatch ? relPathMatch[1].trim() : '';
+
+      let existsInRoots = false;
+      if (relPath) {
+        for (const root of normRoots) {
+          const fullPath = path.resolve(root, relPath);
+          if (fs.existsSync(fullPath)) {
+            existsInRoots = true;
+            break;
+          }
+        }
+      }
+
+      if (!existsInRoots) {
+        this.deleteMemory(cm.id);
+        prunedCount++;
+      }
+    }
+
+    return { prunedCount };
+  }
+
   public consolidateNeighborhood(targetFileOrId: string): { consolidatedId: string; mergedCount: number } {
+
     const targetId = targetFileOrId.startsWith('file_') ? targetFileOrId : makeFileVertexId(targetFileOrId);
 
     // Find non-codemap memories attached to this target vertex

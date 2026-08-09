@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -9,6 +11,7 @@ import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
 import { MemoryType } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
+
 
 export class StormDrainMcpServer {
   private server: Server;
@@ -226,11 +229,26 @@ export class StormDrainMcpServer {
               },
               required: ['target_file']
             }
+          },
+          {
+            name: 'sd_prune',
+            description: 'GRAPH PRUNE TOOL: Prune leaked or orphaned codemap file vertices from the DAG that do not belong to the workspace.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                directory: {
+                  type: 'string',
+                  description: 'Optional directory path to validate against (defaults to context bound paths)'
+                },
+                context: contextProp
+              }
+            }
           }
         );
 
         return { tools };
       });
+
 
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -362,14 +380,40 @@ export class StormDrainMcpServer {
         }
 
         if (request.params.name === 'sd_scan') {
-          const dir = (request.params.arguments?.directory as string) || process.cwd();
+          let dir = request.params.arguments?.directory as string | undefined;
+          if (!dir) {
+            const ctxConfig = this.config.getContext(targetContext);
+            const validBound = ctxConfig?.paths?.find(p => !ConfigManager.isSystemOrHomeRoot(p));
+            if (validBound && fs.existsSync(validBound)) {
+              dir = validBound;
+            } else if (!ConfigManager.isSystemOrHomeRoot(process.cwd())) {
+              dir = process.cwd();
+            } else {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `Error: No workspace directory specified for sd_scan, and current working directory is home/root directory. Please pass explicit 'directory' argument (e.g. { directory: "/path/to/project" }).`
+                }],
+                isError: true
+              };
+            }
+          }
           const { createdCount, decayedCount } = ctx.syncFileGraph(dir);
           return { content: [{ type: 'text', text: `Successfully scanned workspace "${dir}" and updated ${createdCount} file vertices (${decayedCount} memories decayed) in context "${targetContext}".` }] };
         }
 
         if (request.params.name === 'sd_init') {
           const name = request.params.arguments?.name as string;
-          const dir = (request.params.arguments?.directory as string) || process.cwd();
+          let dir = (request.params.arguments?.directory as string) || process.cwd();
+          if (ConfigManager.isSystemOrHomeRoot(dir) && name !== '_global') {
+            return {
+              content: [{
+                type: 'text',
+                text: `Error: Cannot initialize context "${name}" on root or home directory "${dir}". Please specify a project sub-directory.`
+              }],
+              isError: true
+            };
+          }
 
           const existing = this.config.getContext(name);
           if (!existing) {
@@ -399,6 +443,24 @@ export class StormDrainMcpServer {
           return { content: [{ type: 'text', text: `Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${targetFile}".` }] };
         }
 
+        if (request.params.name === 'sd_prune') {
+          const dir = request.params.arguments?.directory as string | undefined;
+          const ctxConfig = this.config.getContext(targetContext);
+          const validRoots = dir
+            ? [path.resolve(dir)]
+            : (ctxConfig?.paths || [process.cwd()]).filter(p => !ConfigManager.isSystemOrHomeRoot(p));
+
+          if (validRoots.length === 0) {
+            return {
+              content: [{ type: 'text', text: 'Error: No valid workspace roots found to prune against. Please specify a directory.' }],
+              isError: true
+            };
+          }
+
+          const { prunedCount } = ctx.pruneOrphanCodemaps(validRoots);
+          return { content: [{ type: 'text', text: `Successfully pruned ${prunedCount} orphaned codemap vertices from context "${targetContext}".` }] };
+        }
+
         throw new Error(`Tool not found: ${request.params.name}`);
       } catch (err: any) {
         return {
@@ -418,10 +480,13 @@ export class StormDrainMcpServer {
   public async run() {
     const cwd = process.cwd();
     const resolvedContext = this.config.resolveContext(undefined, cwd);
-    this.config.bindPathToContext(resolvedContext, cwd);
+    if (!ConfigManager.isSystemOrHomeRoot(cwd)) {
+      this.config.bindPathToContext(resolvedContext, cwd);
+    }
 
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error(`StormDrain MCP server running on stdio for workspace "${cwd}" [context: "${resolvedContext}"]`);
   }
+
 }

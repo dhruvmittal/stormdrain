@@ -74,6 +74,8 @@ export const deleteMemoryFromDb = (db: Database.Database, id: string) => {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM memories WHERE id = ?').run(id);
     db.prepare('DELETE FROM memories_fts WHERE id = ?').run(id);
+    db.prepare('DELETE FROM relations WHERE target_id = ?').run(id);
   });
   tx();
 };
+
