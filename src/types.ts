@@ -37,3 +37,23 @@ export interface GlobalConfig {
   contexts: Record<string, ContextConfig>;
   activeContext: string; // The currently active context
 }
+
+export interface MultiHopMemoryResult {
+  id: string;
+  type: MemoryType;
+  title: string;
+  confidence: number;
+  depth: number;
+  direction: 'direct' | 'upstream_caller' | 'downstream_dependency';
+  relevanceScore: number;
+  targetFile?: string;
+  tags: string[];
+  content_snippet?: string;
+}
+
+export interface MultiHopRecallResponse {
+  direct: MultiHopMemoryResult[];
+  upstream: MultiHopMemoryResult[];
+  downstream: MultiHopMemoryResult[];
+  all: MultiHopMemoryResult[];
+}

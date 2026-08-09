@@ -178,4 +178,26 @@ describe('90%+ Branch Coverage Target Tests', () => {
       expect([200, 404]).toContain(spaRes.status);
     });
   });
+
+  describe('MCP List Tools with Top Memories', () => {
+    it('should format injected top memories in listTools schema', async () => {
+      const config = new ConfigManager();
+      config.addContext('mcp-list-tools-ctx', [tempDir]);
+      config.setActiveContext('mcp-list-tools-ctx');
+
+      const { ContextManager } = await import('./context');
+      const ctx = new ContextManager('mcp-list-tools-ctx');
+      ctx.addMemory('warning', 'List Top Memory', 'Detailed instructions for LLM prompt.');
+      await ctx.close();
+
+      const mcpServer = new StormDrainMcpServer();
+      const serverInstance = (mcpServer as any).server;
+      const listHandler = serverInstance._requestHandlers.get('tools/list');
+      const listResult = await listHandler({ method: 'tools/list', params: {} });
+      expect(listResult.tools.length).toBeGreaterThan(0);
+      const recallTool = listResult.tools.find((t: any) => t.name === 'sd_recall');
+      expect(recallTool).toBeDefined();
+      expect(recallTool.description).toContain('List Top Memory');
+    });
+  });
 });

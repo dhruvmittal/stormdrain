@@ -196,20 +196,51 @@ export class StormDrainMcpServer {
           const limit = (request.params.arguments?.limit as number) || 10;
           const targetFile = request.params.arguments?.target_file as string | undefined;
 
-          let results: Array<any>;
           if (targetFile) {
-            results = ctx.recallGraph(targetFile, 2);
-          } else {
-            results = ctx.recallTopMemories(limit) as Array<{ type: string; title: string; id: string; confidence: number }>;
-          }
-          
-          const content = results.map((r) => {
-            const mem = ctx.getMemory(r.id);
-            const depthLabel = r.depth !== undefined ? ` [DAG Depth ${r.depth}]` : '';
-            return `## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id}${depthLabel})\n${mem?.content || ''}\n---`;
-          }).join('\n\n');
+            const multiHop = ctx.recallMultiHop(targetFile, { maxDepth: 3, maxResults: limit, cumulativeThreshold: 0.98 });
+            
+            if (multiHop.all.length === 0) {
+              return { content: [{ type: 'text', text: `No memories found for target file "${targetFile}" or its topological neighborhood.` }] };
+            }
 
-          return { content: [{ type: 'text', text: content || 'No memories found.' }] };
+            const sections: string[] = [];
+
+            if (multiHop.direct.length > 0) {
+              sections.push(`### 🎯 Direct File Invariants (${targetFile})`);
+              for (const r of multiHop.direct) {
+                const mem = ctx.getMemory(r.id);
+                sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
+              }
+            }
+
+            if (multiHop.upstream.length > 0) {
+              sections.push(`### ⚠️ Upstream Consumer Constraints (Callers at Risk)`);
+              for (const r of multiHop.upstream) {
+                const mem = ctx.getMemory(r.id);
+                const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+                sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
+              }
+            }
+
+            if (multiHop.downstream.length > 0) {
+              sections.push(`### 📦 Downstream Dependency Invariants (Foundations)`);
+              for (const r of multiHop.downstream) {
+                const mem = ctx.getMemory(r.id);
+                const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+                sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
+              }
+            }
+
+            return { content: [{ type: 'text', text: sections.join('\n\n') }] };
+          } else {
+            const results = ctx.recallTopMemories(limit) as Array<{ type: string; title: string; id: string; confidence: number }>;
+            const content = results.map((r) => {
+              const mem = ctx.getMemory(r.id);
+              return `## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id})\n${mem?.content || ''}\n---`;
+            }).join('\n\n');
+
+            return { content: [{ type: 'text', text: content || 'No memories found.' }] };
+          }
         }
 
         if (request.params.name === 'sd_search') {
