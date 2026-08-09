@@ -6,15 +6,18 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
+import { FileReader } from '../core/reader';
 import { MemoryType } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 
 export class StormDrainMcpServer {
   private server: Server;
   private config: ConfigManager;
+  private reader: FileReader;
 
   constructor() {
     this.config = new ConfigManager();
+    this.reader = new FileReader(this.config);
     
     this.server = new Server(
       {
@@ -35,6 +38,7 @@ export class StormDrainMcpServer {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       const active = this.config.resolveContext();
       const ctx = new ContextManager(active);
+      const settings = this.config.getSettings();
       
       let injectedMemory = 'No top memories found.';
       try {
@@ -58,38 +62,79 @@ export class StormDrainMcpServer {
         description: 'Optional file path (e.g. src/core/config.ts) to pull connected DAG subgraph memories'
       };
 
-      return {
-        tools: [
-          {
-            name: 'sd_recall',
-            description: `MANDATORY PRE-ACTION TOOL: Always call this tool with 'target_file' before modifying, refactoring, or investigating any file. It retrieves essential architectural invariants, upstream caller constraints (to prevent breaking changes), and downstream dependency rules via multi-hop topological PageRank.\n\n### Top Injected Memories ###\n${injectedMemory}`,
-            inputSchema: {
-              type: 'object',
-              properties: {
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of memories to recall (default 10)'
-                },
-                target_file: targetFileProp,
-                context: contextProp
-              }
-            }
-          },
-          {
-            name: 'sd_search',
-            description: 'SEARCH TOOL: Perform SQLite FTS5 full-text and semantic keyword search across all persistent memories.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                query: {
-                  type: 'string',
-                  description: 'Search query'
-                },
-                context: contextProp
+      const tools: any[] = [];
+
+      // Optional Super-Reader Tool (sd_read)
+      if (settings.readTool.enabled) {
+        const readDesc = settings.readTool.highlightAsPrimary
+          ? `PRIMARY FILE READER: Read source file contents with automatic topological invariant injection, AST symbol outlines, upstream caller constraints, and downstream contracts. Always use this tool instead of standard file viewing tools to ensure you do not violate architectural contracts.`
+          : `FILE READER WITH INVARIANTS: Read source file contents with topological memory injection, AST symbol outlines, upstream caller constraints, and downstream contracts.`;
+
+        tools.push({
+          name: 'sd_read',
+          description: readDesc,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description: 'Path to file to view/read. Can be relative to workspace or absolute.'
               },
-              required: ['query']
+              start_line: {
+                type: 'number',
+                description: 'Optional start line number (1-indexed)'
+              },
+              end_line: {
+                type: 'number',
+                description: 'Optional end line number (1-indexed)'
+              },
+              include_invariants: {
+                type: 'boolean',
+                description: 'Whether to inject architectural invariants and upstream caller constraints (default true)'
+              },
+              include_symbols: {
+                type: 'boolean',
+                description: 'Whether to extract and prepend AST exported symbols (classes, functions, interfaces)'
+              },
+              context: contextProp
+            },
+            required: ['path']
+          }
+        });
+      }
+
+      tools.push(
+        {
+          name: 'sd_recall',
+          description: `MANDATORY PRE-ACTION TOOL: Always call this tool with 'target_file' before modifying, refactoring, or investigating any file. It retrieves essential architectural invariants, upstream caller constraints (to prevent breaking changes), and downstream dependency rules via multi-hop topological PageRank.\n\n### Top Injected Memories ###\n${injectedMemory}`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              limit: {
+                type: 'number',
+                description: 'Maximum number of memories to recall (default 10)'
+              },
+              target_file: targetFileProp,
+              context: contextProp
             }
-          },
+          }
+        },
+        {
+          name: 'sd_search',
+          description: 'SEARCH TOOL: Perform SQLite FTS5 full-text and semantic keyword search across all persistent memories.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'Search query'
+              },
+              context: contextProp
+            },
+            required: ['query']
+          }
+        },
+
           {
             name: 'sd_add',
             description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions, or reusable patterns to persistent memory immediately upon discovery. Always pass target_file when the memory applies to a specific file.',
@@ -182,9 +227,11 @@ export class StormDrainMcpServer {
               required: ['target_file']
             }
           }
-        ]
-      };
-    });
+        );
+
+        return { tools };
+      });
+
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const explicitContext = request.params.arguments?.context as string | undefined;
@@ -192,9 +239,50 @@ export class StormDrainMcpServer {
       const ctx = new ContextManager(targetContext);
 
       try {
+        if (request.params.name === 'sd_read') {
+          const args = request.params.arguments as {
+            path?: string;
+            filePath?: string;
+            start_line?: number;
+            startLine?: number;
+            end_line?: number;
+            endLine?: number;
+            include_invariants?: boolean;
+            includeInvariants?: boolean;
+            include_symbols?: boolean;
+            includeSymbols?: boolean;
+            context?: string;
+          };
+
+          const targetPath = args.path || args.filePath;
+          if (!targetPath) {
+            throw new Error('Argument "path" is required for sd_read.');
+          }
+
+          const startLine = args.start_line !== undefined ? args.start_line : args.startLine;
+          const endLine = args.end_line !== undefined ? args.end_line : args.endLine;
+          const includeInvariants = args.include_invariants !== undefined ? args.include_invariants : args.includeInvariants;
+          const includeSymbols = args.include_symbols !== undefined ? args.include_symbols : args.includeSymbols;
+
+          const result = await this.reader.readFile({
+            filePath: targetPath,
+            startLine,
+            endLine,
+            includeInvariants,
+            includeSymbols,
+            context: targetContext,
+            cwd: process.cwd()
+          });
+
+          return {
+            content: [{ type: 'text', text: result.content }]
+          };
+        }
+
         if (request.params.name === 'sd_recall') {
           const limit = (request.params.arguments?.limit as number) || 10;
           const targetFile = request.params.arguments?.target_file as string | undefined;
+
 
           if (targetFile) {
             const multiHop = ctx.recallMultiHop(targetFile, { maxDepth: 3, maxResults: limit, cumulativeThreshold: 0.98 });

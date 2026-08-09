@@ -10,7 +10,8 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
     cachePolicy: 'first_read_only',
     tokenBudget: 500,
     maxHops: 2,
-    includeSymbols: true
+    includeSymbols: true,
+    highlightAsPrimary: true
   },
   graph: {
     forwardWeight: 0.80,
@@ -43,7 +44,11 @@ export class ConfigManager {
     if (!fs.existsSync(this.configPath)) {
       const defaultCfg: GlobalConfig = {
         contexts: {
-          '_global': { name: '_global', paths: [], parent: null }
+          _global: {
+            name: '_global',
+            paths: [],
+            parent: null
+          }
         },
         activeContext: '_global',
         settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS))
@@ -85,6 +90,9 @@ export class ConfigManager {
       if (['auto', 'tokensave', 'standalone', 'disabled'].includes(mode)) {
         merged.readTool.mode = mode;
       }
+    }
+    if (process.env.STORMDRAIN_READ_PRIMARY !== undefined) {
+      merged.readTool.highlightAsPrimary = process.env.STORMDRAIN_READ_PRIMARY !== 'false' && process.env.STORMDRAIN_READ_PRIMARY !== '0';
     }
     if (process.env.STORMDRAIN_FORWARD_WEIGHT) {
       const parsed = parseFloat(process.env.STORMDRAIN_FORWARD_WEIGHT);

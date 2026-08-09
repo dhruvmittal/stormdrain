@@ -2,10 +2,12 @@ import { Command } from 'commander';
 import * as path from 'path';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
+import { FileReader } from '../core/reader';
 import { StormDrainMcpServer } from '../mcp/index';
 import { startWebServer } from '../web/server';
 import { generateCodebaseCodemap } from '../utils/codemapGenerator';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
+
 
 const program = new Command();
 program
@@ -201,8 +203,36 @@ program
   });
 
 program
+  .command('read')
+  .description('Read a workspace file with injected topological invariants, symbol outlines, and line numbers')
+  .argument('<path>', 'Path to file to read')
+  .option('-s, --start <number>', 'Start line number (1-indexed)')
+  .option('-e, --end <number>', 'End line number (1-indexed)')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--no-invariants', 'Disable invariant header injection')
+  .option('--symbols', 'Include exported symbol outline')
+  .action(async (targetPath, options) => {
+    const reader = new FileReader(config);
+    try {
+      const result = await reader.readFile({
+        filePath: targetPath,
+        startLine: options.start ? parseInt(options.start, 10) : undefined,
+        endLine: options.end ? parseInt(options.end, 10) : undefined,
+        includeInvariants: options.invariants,
+        includeSymbols: options.symbols,
+        context: options.context
+      });
+      console.log(result.content);
+    } catch (err: any) {
+      console.error(`Error reading file: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+program
   .command('recall')
   .description('Recall top memories for current context or graph-connected memories for a target file')
+
   .option('-c, --context <name>', 'Target context override')
   .option('-t, --target <file>', 'Target file to traverse graph from')
   .action(async (options) => {

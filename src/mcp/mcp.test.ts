@@ -38,11 +38,13 @@ describe('StormDrainMcpServer Protocol', () => {
     const response = await client.listTools();
     const toolNames = response.tools.map(t => t.name);
 
+    expect(toolNames).toContain('sd_read');
     expect(toolNames).toContain('sd_recall');
     expect(toolNames).toContain('sd_search');
     expect(toolNames).toContain('sd_add');
     expect(toolNames).toContain('sd_update');
   });
+
 
   it('should execute sd_add tool to create a memory', async () => {
     const res = await client.callTool({
@@ -332,4 +334,35 @@ describe('StormDrainMcpServer Protocol', () => {
     const text = ((consolidateRes as any).content[0] as { type: string; text: string }).text;
     expect(text).toContain('Successfully consolidated 2 micro-memories');
   });
+
+  it('should execute sd_read tool to read file and inject invariants', async () => {
+    const samplePath = path.join(testDir, 'sample_read.ts');
+    fs.writeFileSync(samplePath, 'export function calculateMetrics() {\n  return 42;\n}\n', 'utf8');
+
+    await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'warning',
+        title: 'Metrics Calculation Invariant',
+        content: 'Must normalize inputs before calculating',
+        target_file: 'sample_read.ts'
+      }
+    });
+
+    const readRes = await client.callTool({
+      name: 'sd_read',
+      arguments: {
+        path: samplePath,
+        start_line: 1,
+        end_line: 3
+      }
+    });
+
+    const text = ((readRes as any).content[0] as { type: string; text: string }).text;
+    expect(text).toContain('1: export function calculateMetrics() {');
+    expect(text).toContain('2:   return 42;');
+    expect(text).toContain('StormDrain Architectural Invariants & Caller Constraints');
+    expect(text).toContain('Metrics Calculation Invariant');
+  });
 });
+
