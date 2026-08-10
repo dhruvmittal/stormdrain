@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import * as fs from 'fs';
 import * as path from 'path';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
@@ -51,6 +52,33 @@ export const startWebServer = (port: number = 3456) => {
       res.status(400).json({ error: err.message });
     }
   });
+
+  app.get('/api/config', (req, res) => {
+    try {
+      res.json(config.getSettings());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/config', (req, res) => {
+    try {
+      const updated = config.updateSettings(req.body);
+      res.json({ success: true, settings: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/config/reset', (req, res) => {
+    try {
+      const reset = config.resetSettings();
+      res.json({ success: true, settings: reset });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
@@ -110,18 +138,40 @@ export const startWebServer = (port: number = 3456) => {
 
   app.get('/api/graph', withContext(async (req, res, ctx) => {
     const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence FROM memories`).all();
-    const relations = ctx.getDb().prepare(`SELECT source_id, target_id, type FROM relations`).all();
+    const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all();
     res.json({ nodes: memories, links: relations });
   }));
 
   // Serve static files if they exist (for production build)
-  const publicDir = path.join(__dirname, '../ui/dist');
+  const getProjectRoot = (): string => {
+    let curr = __dirname;
+    while (curr && curr !== path.parse(curr).root) {
+      if (fs.existsSync(path.join(curr, 'package.json')) && fs.existsSync(path.join(curr, 'ui/dist'))) {
+        return curr;
+      }
+      curr = path.dirname(curr);
+    }
+    return process.cwd();
+  };
+
+  const publicDir = path.resolve(getProjectRoot(), 'ui/dist');
   app.use(express.static(publicDir));
 
   // Fallback for SPA routing
   app.use((req, res) => {
-    res.sendFile(path.join(publicDir, 'index.html'));
+    // Never send HTML fallback for API endpoints or non-GET requests
+    if (req.path.startsWith('/api') || req.method !== 'GET') {
+      res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
+      return;
+    }
+    const indexPath = path.join(publicDir, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(404).send(`UI dist files not found at ${publicDir}`);
+    }
   });
+
 
   const server = app.listen(port, () => {
     console.log(`StormDrain Web UI running on http://localhost:${port}`);

@@ -117,4 +117,16 @@ Then navigate to [http://localhost:3456](http://localhost:3456) in your browser 
 
 ---
 
+## 🧭 Multi-Hop Topological Recall
+
+To retrieve relevant context across interconnected codebases without the context explosion of recursive BFS, StormDrain models the repository as a directed dependency graph $G = (V, E)$ and applies an **Asymmetric Localized PageRank (Andersen-Chung-Lang / ACL Push)** algorithm:
+
+* **Asymmetric Propagation**: Traversal pushes residual mass from a target file with directional weights—prioritizing downstream dependencies ($W = 0.80$) over upstream callers ($W = 0.25$) to avoid repository-wide fan-out.
+* **Capacity-Conditioned Push**: Pushes require $\frac{r(u)}{W_{\text{total}}(u)} \ge \epsilon$ where $W_{\text{total}}(u) = d_{\text{in}}(u) + d_{\text{out}}(u)$ ($\epsilon = 10^{-4}$), preventing high-degree utility sinks (e.g., global loggers) from triggering runaway exploration.
+* **Cumulative Mass Truncation**: Vertices are sorted by PageRank mass $p(v)$ and cut off once cumulative mass reaches a target threshold ($1 - \delta \ge 0.85$), strictly bounding frontier size.
+* **Hop-Layer Normalization**: Nodes are grouped by shortest-path distance $h(v)$. Mass is normalized against the layer's aggregate mass ($\psi(v) = \frac{p(v)}{\text{LayerMass}_{h(v)}}$) to prevent deep-hop starvation caused by exponential damping.
+* **Consolidation Shield & Tiered Briefings**: Suppresses micro-memories when an attached consolidated guide is present, partitioning context into **Direct Invariants** ($h=0$), **Upstream Caller Constraints** ($h \ge 1$), and **Downstream Dependency Invariants** ($h \ge 1$).
+
+---
+
 *Built for advanced agentic coding workflows.*

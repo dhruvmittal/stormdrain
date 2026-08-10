@@ -53,7 +53,19 @@ export class GitManager {
 
     if (this.commitMessageQueue.length === 0) return;
 
-    const combinedMessage = this.commitMessageQueue.join('\n');
+    let combinedMessage = '';
+    if (this.commitMessageQueue.length > 20) {
+      combinedMessage = `[stormdrain] Batch update: ${this.commitMessageQueue.length} operations\n\n` +
+        this.commitMessageQueue.slice(0, 15).join('\n') +
+        `\n... and ${this.commitMessageQueue.length - 15} more operations`;
+    } else {
+      combinedMessage = this.commitMessageQueue.join('\n');
+    }
+
+    if (combinedMessage.length > 4000) {
+      combinedMessage = combinedMessage.substring(0, 3990) + '...';
+    }
+
     this.commitMessageQueue = [];
 
     try {
@@ -61,6 +73,7 @@ export class GitManager {
       await execFileAsync('git', ['add', '.'], { cwd: this.dir, env });
       await execFileAsync('git', ['commit', '-m', combinedMessage], { cwd: this.dir, env });
     } catch (err: any) {
+
       // Ignored - usually means no changes to commit
       const output = (err.stdout || '') + (err.stderr || '');
       if (!output.includes('nothing to commit') && !output.includes('clean')) {

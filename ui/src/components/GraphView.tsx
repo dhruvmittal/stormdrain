@@ -1,83 +1,272 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { api } from '../api';
 import MemoryEditor from './MemoryEditor';
+import { Search, X, Crosshair, Layers } from 'lucide-react';
+
 
 interface GraphViewProps {
   activeContext: string;
+  dataVersion?: number;
 }
 
-const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [dataVersion, setDataVersion] = useState(0);
+type ScopeDepth = 0 | 1 | 2;
 
+const MEMORY_TYPES = ['all', 'fact', 'lesson', 'pattern', 'warning', 'guide', 'codemap'] as const;
+
+export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion = 0 }) => {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  
+  // D3 persistent refs
+  const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
+  const containerRef = useRef<d3.Selection<SVGGElement, unknown, null, undefined> | null>(null);
+  const nodeSelectionRef = useRef<d3.Selection<SVGGElement, any, SVGGElement, unknown> | null>(null);
+  const linkSelectionRef = useRef<d3.Selection<SVGLineElement, any, SVGGElement, unknown> | null>(null);
+  const rawGraphDataRef = useRef<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
+
+  // UI & Filter state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [localVersion, setLocalVersion] = useState(0);
+  const effectiveVersion = dataVersion + localVersion;
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [selectedType, setSelectedType] = useState<string>('all');
+  const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
+  const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
+  const [focusAnchorTitle, setFocusAnchorTitle] = useState<string | null>(null);
+  
+  const [matchStats, setMatchStats] = useState<{
+    matchCount: number;
+    inScopeCount: number;
+    totalCount: number;
+    isFiltering: boolean;
+    hasNoMatches: boolean;
+  }>({
+    matchCount: 0,
+    inScopeCount: 0,
+    totalCount: 0,
+    isFiltering: false,
+    hasNoMatches: false,
+  });
+
+  const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
+
+  // 300ms Search Debounce
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
+  // Global Keyboard Shortcuts (/ to search, Esc to clear)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '/' && document.activeElement !== searchInputRef.current) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      } else if (e.key === 'Escape') {
+        if (searchQuery || selectedType !== 'all' || focusAnchorId) {
+          setSearchQuery('');
+          setDebouncedQuery('');
+          setSelectedType('all');
+          setFocusAnchorId(null);
+          setFocusAnchorTitle(null);
+          searchInputRef.current?.blur();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [searchQuery, selectedType, focusAnchorId]);
+
+  const getTypeColor = useCallback((type: string) => {
+    const colors: Record<string, string> = {
+      codemap: '#06b6d4',  // Cyan for file vertices
+      fact: '#10b981',     // Green
+      lesson: '#f59e0b',   // Amber
+      pattern: '#8b5cf6',  // Purple
+      warning: '#ef4444',  // Red
+      guide: '#ec4899',    // Pink
+      sequence: '#6366f1'  // Indigo
+    };
+    return colors[type] || '#94a3b8';
+  }, []);
+
+  // 1. D3 Graph Simulation & Geometry Lifecycle
   useEffect(() => {
     if (!activeContext || !svgRef.current) return;
 
-    const renderGraph = async () => {
-      const data = await api.getGraph(activeContext);
-      
-      const width = svgRef.current?.clientWidth || 800;
-      const height = svgRef.current?.clientHeight || 600;
+    let isMounted = true;
 
-      // Clear previous
+    const initGraph = async () => {
+      const rawData = await api.getGraph(activeContext);
+      if (!isMounted || !rawData || !rawData.nodes) return;
+
+      const width = svgRef.current?.parentElement?.clientWidth || 900;
+      const height = svgRef.current?.parentElement?.clientHeight || 700;
+
+      // Filter valid links where both source & target exist in nodes
+      const nodeIds = new Set((rawData.nodes || []).map((n: any) => n.id));
+      const validLinks = (rawData.links || []).filter(
+        (l: any) => nodeIds.has(l.source) && nodeIds.has(l.target)
+      );
+
+      // Deep copy nodes & links for D3 simulation
+      const nodes = (rawData.nodes || []).map((n: any) => ({ ...n }));
+      const links = validLinks.map((l: any) => ({ ...l }));
+      rawGraphDataRef.current = { nodes, links };
+
+      // Compute type distributions
+      const counts: Record<string, number> = { all: nodes.length };
+      for (const n of nodes) {
+        counts[n.type] = (counts[n.type] || 0) + 1;
+      }
+      setTypeCounts(counts);
+
+      // Build O(1) adjacency lookup graph
+      const adj = new Map<string, Set<string>>();
+      for (const n of nodes) {
+        adj.set(n.id, new Set());
+      }
+      for (const l of validLinks) {
+        const src = typeof l.source === 'object' ? l.source.id : l.source;
+        const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+        if (!adj.has(src)) adj.set(src, new Set());
+        if (!adj.has(tgt)) adj.set(tgt, new Set());
+        adj.get(src)!.add(tgt);
+        adj.get(tgt)!.add(src);
+      }
+      adjacencyRef.current = adj;
+
+      // Clear previous SVG content
       d3.select(svgRef.current).selectAll('*').remove();
 
       const svg = d3.select(svgRef.current)
         .attr('viewBox', [0, 0, width, height]);
 
-      const simulation = d3.forceSimulation(data.nodes as any)
-        .force('link', d3.forceLink(data.links).id((d: any) => d.id).distance(100))
-        .force('charge', d3.forceManyBody().strength(-300))
-        .force('center', d3.forceCenter(width / 2, height / 2));
+      // Add Zoom Container
+      const container = svg.append('g').attr('class', 'zoom-container');
+      containerRef.current = container;
 
-      const link = svg.append('g')
-        .attr('stroke', 'var(--border-color)')
-        .attr('stroke-opacity', 0.6)
+      const zoom = d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.15, 6])
+        .on('zoom', (event) => {
+          container.attr('transform', event.transform);
+        });
+
+      svg.call(zoom as any);
+
+      // Force Simulation
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+      }
+
+      const simulation = d3.forceSimulation(nodes as any)
+        .force('link', d3.forceLink(links).id((d: any) => d.id).distance(120))
+        .force('charge', d3.forceManyBody().strength(-360))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collide', d3.forceCollide(38));
+
+      simulationRef.current = simulation;
+
+      // Draw Links
+      const link = container.append('g')
+        .attr('class', 'graph-links')
         .selectAll('line')
-        .data(data.links)
+        .data(links)
         .join('line')
-        .attr('stroke-width', 2);
+        .attr('stroke', (d: any) => d.type === 'imports' ? '#38bdf8' : 'var(--border-color)')
+        .attr('stroke-dasharray', (d: any) => d.type === 'imports' ? '4 2' : 'none')
+        .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2)
+        .attr('stroke-opacity', 0.6);
 
-      const getTypeColor = (type: string) => {
-        const colors: Record<string, string> = {
-          fact: 'var(--color-fact)',
-          lesson: 'var(--color-lesson)',
-          pattern: 'var(--color-pattern)',
-          warning: 'var(--color-warning)',
-          guide: 'var(--color-guide)',
-        };
-        return colors[type] || 'var(--text-muted)';
-      };
+      linkSelectionRef.current = link as any;
 
-      const node = svg.append('g')
+      // Draw Nodes
+      const node = container.append('g')
+        .attr('class', 'graph-nodes')
         .selectAll('g')
-        .data(data.nodes as any)
+        .data(nodes as any)
         .join('g')
         .call(d3.drag()
           .on('start', dragstarted)
           .on('drag', dragged)
           .on('end', dragended) as any);
 
+      nodeSelectionRef.current = node as any;
+
       node.append('circle')
-        .attr('r', (d: any) => 8 + (d.confidence * 8))
+        .attr('class', 'node-circle')
+        .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
         .attr('fill', (d: any) => getTypeColor(d.type))
         .attr('stroke', 'var(--bg-color)')
         .attr('stroke-width', 2);
 
       node.append('text')
+        .attr('class', 'node-label')
         .text((d: any) => d.title)
-        .attr('x', 15)
-        .attr('y', 5)
-        .attr('fill', 'var(--text-main)')
-        .style('font-size', '12px')
+        .attr('x', 14)
+        .attr('y', 4)
+        .attr('fill', (d: any) => d.type === 'codemap' ? '#38bdf8' : 'var(--text-main)')
+        .style('font-size', (d: any) => d.type === 'codemap' ? '11px' : '12px')
+        .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400')
         .style('pointer-events', 'none');
 
-      node.on('click', (_event: any, d: any) => {
-        setEditingId(d.id);
-      });
       node.style('cursor', 'pointer');
+
+      // Click: Open Memory Editor (for non-codemaps)
+      node.on('click', (_event: any, d: any) => {
+        if (!d.id.startsWith('file_')) {
+          setEditingId(d.id);
+        }
+      });
+
+      // ContextMenu / Right-click: Focus from here
+      node.on('contextmenu', (event: any, d: any) => {
+        event.preventDefault();
+        setFocusAnchorId(prev => (prev === d.id ? null : d.id));
+        setFocusAnchorTitle(prev => (prev === d.title ? null : d.title));
+      });
+
+      // Hover: Light up incident edges and direct neighbors
+      node.on('mouseenter', (_event: any, d: any) => {
+        const neighbors = adjacencyRef.current.get(d.id) || new Set();
+        
+        // Highlight incident links
+        if (linkSelectionRef.current) {
+          linkSelectionRef.current
+            .transition()
+            .duration(120)
+            .attr('stroke-opacity', (l: any) => {
+              const srcId = typeof l.source === 'object' ? l.source.id : l.source;
+              const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
+              return (srcId === d.id || tgtId === d.id) ? 1.0 : 0.08;
+            })
+            .attr('stroke-width', (l: any) => {
+              const srcId = typeof l.source === 'object' ? l.source.id : l.source;
+              const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
+              return (srcId === d.id || tgtId === d.id) ? 2.5 : 0.8;
+            });
+        }
+
+        // Elevate hovered node & neighbor labels
+        if (nodeSelectionRef.current) {
+          nodeSelectionRef.current.select('.node-label')
+            .filter((n: any) => n.id === d.id || neighbors.has(n.id))
+            .transition()
+            .duration(120)
+            .style('opacity', 1.0);
+        }
+      });
+
+      node.on('mouseleave', () => {
+        // Trigger filter styling to restore active state
+        applyActiveFilterStyling();
+      });
 
       simulation.on('tick', () => {
         link
@@ -105,18 +294,350 @@ const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
         d.fx = null;
         d.fy = null;
       }
+
+      // Initial filter styling pass
+      applyActiveFilterStyling();
     };
 
-    renderGraph();
-  }, [activeContext, dataVersion]);
+    initGraph();
+
+    return () => {
+      isMounted = false;
+      if (simulationRef.current) simulationRef.current.stop();
+    };
+  }, [activeContext, effectiveVersion, getTypeColor]);
+
+
+  // 2. Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
+  const applyActiveFilterStyling = useCallback(() => {
+    if (!nodeSelectionRef.current || !linkSelectionRef.current) return;
+
+    const { nodes } = rawGraphDataRef.current;
+    if (!nodes || nodes.length === 0) return;
+
+
+    const query = debouncedQuery.trim().toLowerCase();
+    const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
+    // Compute Tier 1 (Match Set)
+    const tier1Set = new Set<string>();
+    
+    if (focusAnchorId) {
+      tier1Set.add(focusAnchorId);
+    } else if (isFiltering) {
+      for (const n of nodes) {
+        const matchesType = selectedType === 'all' || n.type === selectedType;
+        const matchesQuery = !query || 
+          n.title?.toLowerCase().includes(query) || 
+          n.content?.toLowerCase().includes(query) ||
+          n.id?.toLowerCase().includes(query);
+
+        if (matchesType && matchesQuery) {
+          tier1Set.add(n.id);
+        }
+      }
+    }
+
+    const hasNoMatches = isFiltering && tier1Set.size === 0;
+
+    // Compute Tier 2 (1-Hop Direct Neighbors)
+    const tier2Set = new Set<string>();
+    if (!hasNoMatches && scopeDepth >= 1 && tier1Set.size > 0) {
+      for (const matchId of tier1Set) {
+        const neighbors = adjacencyRef.current.get(matchId);
+        if (neighbors) {
+          for (const nb of neighbors) {
+            if (!tier1Set.has(nb)) {
+              tier2Set.add(nb);
+            }
+          }
+        }
+      }
+    }
+
+    // Compute Tier 3 (2-Hop Extended Neighbors)
+    const tier3Set = new Set<string>();
+    if (!hasNoMatches && scopeDepth >= 2 && tier2Set.size > 0) {
+      for (const hop1Id of tier2Set) {
+        const extended = adjacencyRef.current.get(hop1Id);
+        if (extended) {
+          for (const ext of extended) {
+            if (!tier1Set.has(ext) && !tier2Set.has(ext)) {
+              tier3Set.add(ext);
+            }
+          }
+        }
+      }
+    }
+
+    // In-scope union for stats
+    const inScopeSet = new Set<string>([...tier1Set, ...tier2Set, ...tier3Set]);
+
+    setMatchStats({
+      matchCount: tier1Set.size,
+      inScopeCount: inScopeSet.size,
+      totalCount: nodes.length,
+      isFiltering,
+      hasNoMatches,
+    });
+
+    // Interrupt any ongoing transitions
+    nodeSelectionRef.current.interrupt();
+    linkSelectionRef.current.interrupt();
+
+    // If not filtering OR if 0 matches, show full baseline graph
+    if (!isFiltering || hasNoMatches) {
+      nodeSelectionRef.current
+        .transition()
+        .duration(200)
+        .style('opacity', 1.0)
+        .style('filter', 'none');
+
+      nodeSelectionRef.current.select('.node-circle')
+        .transition()
+        .duration(200)
+        .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
+        .attr('stroke', 'var(--bg-color)')
+        .attr('stroke-width', 2);
+
+      nodeSelectionRef.current.select('.node-label')
+        .transition()
+        .duration(200)
+        .style('opacity', 1.0)
+        .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400');
+
+      linkSelectionRef.current
+        .transition()
+        .duration(200)
+        .attr('stroke-opacity', 0.6)
+        .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2);
+
+      return;
+    }
+
+    // Apply 4-Tier Visual Hierarchy
+    nodeSelectionRef.current
+      .transition()
+      .duration(220)
+      .style('opacity', (d: any) => {
+        if (tier1Set.has(d.id)) return 1.0;
+        if (tier2Set.has(d.id)) return 0.75;
+        if (tier3Set.has(d.id)) return 0.50;
+        return 0.25; // Tier 4: Ambient
+      })
+      .style('filter', (d: any) => {
+        if (tier1Set.has(d.id) || tier2Set.has(d.id) || tier3Set.has(d.id)) return 'none';
+        return 'grayscale(0.6)';
+      });
+
+    nodeSelectionRef.current.select('.node-circle')
+      .transition()
+      .duration(220)
+      .attr('r', (d: any) => {
+        const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
+        if (tier1Set.has(d.id)) return base + 3;
+        return base;
+      })
+      .attr('stroke', (d: any) => {
+        if (tier1Set.has(d.id)) return '#38bdf8';
+        if (tier2Set.has(d.id)) return 'var(--text-main)';
+        return 'var(--bg-color)';
+      })
+      .attr('stroke-width', (d: any) => {
+        if (tier1Set.has(d.id)) return 3;
+        if (tier2Set.has(d.id)) return 2;
+        return 1;
+      });
+
+    nodeSelectionRef.current.select('.node-label')
+      .transition()
+      .duration(220)
+      .style('opacity', (d: any) => {
+        if (tier1Set.has(d.id)) return 1.0;
+        if (tier2Set.has(d.id)) return 0.85;
+        if (tier3Set.has(d.id)) return 0.50;
+        return 0.0; // Ambient labels hidden until hovered
+      })
+      .style('font-weight', (d: any) => {
+        if (tier1Set.has(d.id)) return '700';
+        if (tier2Set.has(d.id)) return '600';
+        return '400';
+      });
+
+    // Link Styling Across Tiers
+    linkSelectionRef.current
+      .transition()
+      .duration(220)
+      .attr('stroke-opacity', (l: any) => {
+        const srcId = typeof l.source === 'object' ? l.source.id : l.source;
+        const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
+
+        const srcTier1 = tier1Set.has(srcId);
+        const tgtTier1 = tier1Set.has(tgtId);
+        const srcInScope = inScopeSet.has(srcId);
+        const tgtInScope = inScopeSet.has(tgtId);
+
+        if (srcTier1 && tgtTier1) return 0.95;
+        if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
+        if (srcInScope && tgtInScope) return 0.50;
+        return 0.08; // Ambient edge
+      })
+      .attr('stroke-width', (l: any) => {
+        const srcId = typeof l.source === 'object' ? l.source.id : l.source;
+        const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
+
+        if (tier1Set.has(srcId) && tier1Set.has(tgtId)) return 2.8;
+        if (inScopeSet.has(srcId) && inScopeSet.has(tgtId)) return 1.8;
+        return 0.8;
+      });
+
+  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId]);
+
+  // Trigger filter updates on filter state changes
+  useEffect(() => {
+    applyActiveFilterStyling();
+  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, applyActiveFilterStyling]);
+
+  const clearAllFilters = () => {
+    setSearchQuery('');
+    setDebouncedQuery('');
+    setSelectedType('all');
+    setFocusAnchorId(null);
+    setFocusAnchorTitle(null);
+  };
 
   return (
-    <div className="graph-container">
-      <div className="page-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: 'rgba(15, 23, 42, 0.8)', backdropFilter: 'blur(10px)', padding: '20px 30px' }}>
-        <h2>Graph View</h2>
+    <div className="graph-container" style={{ width: '100%', height: 'calc(100vh - 40px)', position: 'relative', overflow: 'hidden' }}>
+      {/* Top Header Title */}
+      <div className="page-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(10px)', padding: '15px 30px' }}>
+        <h2>Graph View ({activeContext})</h2>
       </div>
+
+      {/* Floating Glassmorphic Command & Filter HUD */}
+      <div className="graph-floating-toolbar">
+        {/* Search Row */}
+        <div className="graph-search-row">
+          <div className="graph-search-input-wrapper">
+            <Search size={14} className="graph-search-icon" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder="Search graph nodes... (Press / to focus)"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button className="graph-clear-btn" onClick={() => setSearchQuery('')} title="Clear search">
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          {/* Dynamic Match Stats Badge */}
+          {matchStats.isFiltering && (
+            <div className={`graph-badge ${matchStats.hasNoMatches ? 'no-match' : ''}`}>
+              {matchStats.hasNoMatches ? (
+                'No matches'
+              ) : (
+                `${matchStats.matchCount} matched · ${matchStats.inScopeCount} in scope`
+              )}
+            </div>
+          )}
+
+          {/* Reset button if active */}
+          {(matchStats.isFiltering || focusAnchorId) && (
+            <button
+              onClick={clearAllFilters}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                padding: '5px 8px',
+                fontSize: '0.72rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4
+              }}
+              title="Reset all filters (Esc)"
+            >
+              <X size={12} /> Reset
+            </button>
+          )}
+        </div>
+
+        {/* Focus Anchor Badge (When right-clicked / pinned) */}
+        {focusAnchorId && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Focal Anchor:</span>
+            <div className="graph-focus-anchor-badge">
+              <Crosshair size={12} />
+              <span>{focusAnchorTitle || focusAnchorId}</span>
+              <button 
+                onClick={() => { setFocusAnchorId(null); setFocusAnchorTitle(null); }}
+                style={{ background: 'transparent', border: 'none', color: '#c4b5fd', cursor: 'pointer', padding: 0, display: 'flex' }}
+              >
+                <X size={11} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Type Filter Pills */}
+        <div className="graph-type-pills-row">
+          {MEMORY_TYPES.map((type) => {
+            const count = typeCounts[type] || 0;
+            const isActive = selectedType === type;
+            return (
+              <button
+                key={type}
+                className={`graph-type-pill ${isActive ? 'active' : ''}`}
+                onClick={() => setSelectedType(type)}
+              >
+                <span style={{ textTransform: 'capitalize' }}>{type}</span>
+                <span style={{ opacity: 0.7, fontSize: '0.68rem' }}>({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Scope Depth Segmented Switcher */}
+        <div className="graph-scope-row">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
+            <span>Neighborhood Scope:</span>
+          </div>
+          <div className="graph-scope-segmented">
+            <button
+              className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
+              onClick={() => setScopeDepth(0)}
+              title="Highlight only exact matches (0-hop)"
+            >
+              Exact (0)
+            </button>
+            <button
+              className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
+              onClick={() => setScopeDepth(1)}
+              title="Highlight matches + immediate neighbors (1-hop)"
+            >
+              + Direct (1-hop)
+            </button>
+            <button
+              className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
+              onClick={() => setScopeDepth(2)}
+              title="Highlight matches + extended topological paths (2-hop)"
+            >
+              + Extended (2-hop)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Main D3 Graph SVG */}
       <svg ref={svgRef} className="graph-svg" style={{ width: '100%', height: '100%', display: 'block' }}></svg>
       
+      {/* Edit Modal */}
       {editingId && (
         <MemoryEditor
           activeContext={activeContext}
@@ -124,7 +645,7 @@ const GraphView: React.FC<GraphViewProps> = ({ activeContext }) => {
           onClose={() => setEditingId(null)}
           onSave={() => {
             setEditingId(null);
-            setDataVersion(v => v + 1);
+            setLocalVersion(v => v + 1);
           }}
         />
       )}
