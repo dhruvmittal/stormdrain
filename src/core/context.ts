@@ -9,7 +9,7 @@ import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
 import { Memory, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
-import { generateWorkspaceFileVertices, makeFileVertexId } from '../utils/fileGraphScanner';
+import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
 
 export class ContextManager {
   public readonly name: string;
@@ -103,8 +103,8 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  public syncFileGraph(workspaceDir: string): { createdCount: number; decayedCount: number } {
-    const vertices = generateWorkspaceFileVertices(workspaceDir);
+  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number } {
+    const vertices = generateWorkspaceFileVertices(workspaceDir, scanOptions);
     let createdCount = 0;
     let decayedCount = 0;
 
@@ -181,6 +181,49 @@ export class ContextManager {
     }
 
     return { prunedCount };
+  }
+
+  public removeVerticesByPattern(
+    pattern: string,
+    options?: { dryRun?: boolean }
+  ): { matchedCount: number; removedCount: number; matchedFiles: string[] } {
+    const dryRun = options?.dryRun ?? false;
+
+    // Get all codemap memories
+    const allCodemaps = this.db.prepare(`
+      SELECT id, title FROM memories WHERE type = 'codemap'
+    `).all() as Array<{ id: string; title: string }>;
+
+    // Build glob matcher from pattern
+    const matcher = buildPatternMatcher(pattern);
+
+    const matchedFiles: string[] = [];
+    const matchedIds: string[] = [];
+
+    for (const cm of allCodemaps) {
+      // Extract relative path from title: "[File] src/foo.ts" or "[Submodule] lib/bar"
+      const relPathMatch = cm.title.match(/^\[(File|Submodule|Codemap)\]\s*(.+)$/);
+      const relPath = relPathMatch ? relPathMatch[2].trim() : '';
+
+      if (relPath && matcher(relPath)) {
+        matchedFiles.push(relPath);
+        matchedIds.push(cm.id);
+      }
+    }
+
+    let removedCount = 0;
+    if (!dryRun) {
+      for (const id of matchedIds) {
+        this.deleteMemory(id);
+        removedCount++;
+      }
+    }
+
+    return {
+      matchedCount: matchedFiles.length,
+      removedCount,
+      matchedFiles
+    };
   }
 
   public consolidateNeighborhood(targetFileOrId: string): { consolidatedId: string; mergedCount: number } {
@@ -585,4 +628,55 @@ export class ContextManager {
     this.db.close();
     await this.git.commit();
   }
+}
+
+/**
+ * Convert a glob-like pattern to a matcher function.
+ * Supports: * (any chars except /), ** (any chars including /), ? (single char),
+ * exact paths, and directory prefixes (trailing / or no extension).
+ */
+function buildPatternMatcher(pattern: string): (filePath: string) => boolean {
+  const trimmed = pattern.trim();
+
+  // Exact match shortcut
+  if (!trimmed.includes('*') && !trimmed.includes('?')) {
+    // Directory prefix match: "src/old" matches "src/old/foo.ts"
+    return (fp: string) => fp === trimmed || fp.startsWith(trimmed + '/') || fp.startsWith(trimmed.replace(/\/$/, '') + '/');
+  }
+
+  // Convert glob to regex
+  let regexStr = '^';
+  let i = 0;
+  while (i < trimmed.length) {
+    const ch = trimmed[i];
+    if (ch === '*') {
+      if (trimmed[i + 1] === '*') {
+        // ** matches anything including path separators
+        if (trimmed[i + 2] === '/') {
+          regexStr += '(?:.*/)?';
+          i += 3;
+        } else {
+          regexStr += '.*';
+          i += 2;
+        }
+      } else {
+        // * matches anything except /
+        regexStr += '[^/]*';
+        i++;
+      }
+    } else if (ch === '?') {
+      regexStr += '[^/]';
+      i++;
+    } else if ('.+^${}()|[]\\'.includes(ch)) {
+      regexStr += '\\' + ch;
+      i++;
+    } else {
+      regexStr += ch;
+      i++;
+    }
+  }
+  regexStr += '$';
+
+  const regex = new RegExp(regexStr);
+  return (fp: string) => regex.test(fp);
 }

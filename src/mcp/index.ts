@@ -193,6 +193,11 @@ export class StormDrainMcpServer {
                   type: 'string',
                   description: 'Optional workspace directory path to scan (defaults to current working directory)'
                 },
+                submodule_policy: {
+                  type: 'string',
+                  enum: ['dive', 'sum'],
+                  description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
+                },
                 context: contextProp
               }
             }
@@ -210,6 +215,11 @@ export class StormDrainMcpServer {
                 directory: {
                   type: 'string',
                   description: 'Optional directory path to bind and scan (defaults to current working directory)'
+                },
+                submodule_policy: {
+                  type: 'string',
+                  enum: ['dive', 'sum'],
+                  description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
                 }
               },
               required: ['name']
@@ -398,7 +408,9 @@ export class StormDrainMcpServer {
               };
             }
           }
-          const { createdCount, decayedCount } = ctx.syncFileGraph(dir);
+          const submodulePolicy = (request.params.arguments?.submodule_policy as string) || 'sum';
+          const scanOptions = { submodulePolicies: submodulePolicy as 'dive' | 'sum' };
+          const { createdCount, decayedCount } = ctx.syncFileGraph(dir, scanOptions);
           return { content: [{ type: 'text', text: `Successfully scanned workspace "${dir}" and updated ${createdCount} file vertices (${decayedCount} memories decayed) in context "${targetContext}".` }] };
         }
 
@@ -427,7 +439,9 @@ export class StormDrainMcpServer {
 
           const targetCtx = new ContextManager(name);
           try {
-            const { createdCount } = targetCtx.syncFileGraph(dir);
+            const submodulePolicy = (request.params.arguments?.submodule_policy as string) || 'sum';
+            const scanOptions = { submodulePolicies: submodulePolicy as 'dive' | 'sum' };
+            const { createdCount } = targetCtx.syncFileGraph(dir, scanOptions);
             return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", scaffolded AGENTS.md, and created ${createdCount} file vertices in DAG skeleton.` }] };
           } finally {
             await targetCtx.close();

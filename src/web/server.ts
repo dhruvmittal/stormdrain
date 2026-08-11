@@ -53,6 +53,22 @@ export const startWebServer = (port: number = 3456) => {
     }
   });
 
+  app.delete('/api/contexts/:name', (req, res) => {
+    const name = req.params.name ? String(req.params.name) : '';
+    try {
+      // Close cached context manager before deletion
+      const cached = contextCache.get(name);
+      if (cached) {
+        cached.close();
+        contextCache.delete(name);
+      }
+      config.deleteContext(name, true);
+      res.json({ success: true, active: config.getActiveContext() });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   app.get('/api/config', (req, res) => {
     try {
       res.json(config.getSettings());
