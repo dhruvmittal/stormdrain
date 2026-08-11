@@ -7,7 +7,7 @@ import { initDb } from '../db/schema';
 import { syncMemoryToDb, deleteMemoryFromDb } from '../db/sync';
 import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
-import { Memory, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse } from '../types';
+import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
 
@@ -37,6 +37,23 @@ export class ContextManager {
     return path.join(this.memoriesPath, `${safeId}.md`);
   }
 
+  public resolveTargetId(target: string): string {
+    const trimmed = target.trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('mem_') || trimmed.startsWith('file_')) {
+      return trimmed;
+    }
+    // Check if target exists as a memory in DB
+    try {
+      const exists = this.db.prepare('SELECT id FROM memories WHERE id = ?').get(trimmed);
+      if (exists) {
+        return trimmed;
+      }
+    } catch {}
+    // Otherwise treat as a file path
+    return makeFileVertexId(trimmed);
+  }
+
   public addMemory(
     type: MemoryType,
     title: string,
@@ -44,15 +61,45 @@ export class ContextManager {
     tags: string[] = [],
     source: Memory['metadata']['source'] = 'manual',
     customId?: string,
-    targetFile?: string,
-    relationType = 'affects'
+    targetOrTargets?: string | string[],
+    relationType: string = 'affects',
+    explicitRelations?: MemoryRelation[]
   ): string {
     const id = customId || `mem_${crypto.randomBytes(6).toString('hex')}`;
-    const relations: Array<{ target: string; type: string }> = [];
+    const relations: MemoryRelation[] = [];
+    const relationKeys = new Set<string>();
 
-    if (targetFile) {
-      const targetVertexId = makeFileVertexId(targetFile);
-      relations.push({ target: targetVertexId, type: relationType });
+    const addRel = (target: string, relType: string) => {
+      const resolvedTarget = this.resolveTargetId(target);
+      if (!resolvedTarget) return;
+      const key = `${resolvedTarget}:${relType}`;
+      if (!relationKeys.has(key)) {
+        relationKeys.add(key);
+        relations.push({ target: resolvedTarget, type: relType as any });
+      }
+    };
+
+    if (explicitRelations && Array.isArray(explicitRelations)) {
+      for (const rel of explicitRelations) {
+        if (rel && rel.target) {
+          addRel(rel.target, rel.type || 'related_to');
+        }
+      }
+    }
+
+    if (targetOrTargets) {
+      const targetList = Array.isArray(targetOrTargets) 
+        ? targetOrTargets 
+        : targetOrTargets.split(',').map(s => s.trim()).filter(Boolean);
+
+      for (const t of targetList) {
+        const resolved = this.resolveTargetId(t);
+        let effectiveType = relationType;
+        if (resolved.startsWith('mem_') && relationType === 'affects') {
+          effectiveType = 'related_to';
+        }
+        addRel(t, effectiveType);
+      }
     }
 
     const memory: Memory = {
@@ -64,7 +111,20 @@ export class ContextManager {
     return id;
   }
 
-  public updateMemory(id: string, content?: string, title?: string, tags?: string[], type?: MemoryType) {
+  public updateMemory(
+    id: string,
+    content?: string,
+    title?: string,
+    tags?: string[],
+    type?: MemoryType,
+    options?: {
+      relations?: MemoryRelation[];
+      addRelations?: MemoryRelation[];
+      removeRelations?: Array<{ target: string; type?: string }>;
+      addTargets?: string | string[];
+      removeTargets?: string | string[];
+    }
+  ) {
     const memory = this.getMemory(id);
     if (!memory) throw new Error(`Memory ${id} not found.`);
 
@@ -72,11 +132,118 @@ export class ContextManager {
     if (title !== undefined) memory.metadata.title = title;
     if (tags !== undefined) memory.metadata.tags = tags;
     if (type !== undefined) memory.metadata.type = type;
+
+    if (options) {
+      if (options.relations) {
+        memory.metadata.relations = options.relations.map(r => ({
+          target: this.resolveTargetId(r.target),
+          type: r.type || 'related_to'
+        }));
+      }
+
+      if (options.addRelations) {
+        const existingKeys = new Set(memory.metadata.relations.map(r => `${r.target}:${r.type}`));
+        for (const rel of options.addRelations) {
+          const resolved = this.resolveTargetId(rel.target);
+          const relType = rel.type || 'related_to';
+          const key = `${resolved}:${relType}`;
+          if (!existingKeys.has(key)) {
+            existingKeys.add(key);
+            memory.metadata.relations.push({ target: resolved, type: relType });
+          }
+        }
+      }
+
+      if (options.addTargets) {
+        const targets = Array.isArray(options.addTargets) ? options.addTargets : [options.addTargets];
+        const existingKeys = new Set(memory.metadata.relations.map(r => `${r.target}:${r.type}`));
+        for (const t of targets) {
+          const resolved = this.resolveTargetId(t);
+          const relType = resolved.startsWith('mem_') ? 'related_to' : 'affects';
+          const key = `${resolved}:${relType}`;
+          if (!existingKeys.has(key)) {
+            existingKeys.add(key);
+            memory.metadata.relations.push({ target: resolved, type: relType });
+          }
+        }
+      }
+
+      if (options.removeRelations) {
+        memory.metadata.relations = memory.metadata.relations.filter(r => {
+          return !options.removeRelations!.some(rem => {
+            const remTarget = this.resolveTargetId(rem.target);
+            return r.target === remTarget && (!rem.type || r.type === rem.type);
+          });
+        });
+      }
+
+      if (options.removeTargets) {
+        const targets = (Array.isArray(options.removeTargets) ? options.removeTargets : [options.removeTargets])
+          .map(t => this.resolveTargetId(t));
+        memory.metadata.relations = memory.metadata.relations.filter(r => !targets.includes(r.target));
+      }
+    }
     
     memory.metadata.updated = new Date().toISOString();
-
     this.saveMemory(memory, `[stormdrain] update: ${memory.metadata.type} "${memory.metadata.title}"`);
   }
+
+  public addRelation(sourceId: string, target: string, type: string = 'related_to'): boolean {
+    const memory = this.getMemory(sourceId);
+    if (!memory) throw new Error(`Source memory "${sourceId}" not found.`);
+
+    const resolvedTarget = this.resolveTargetId(target);
+    if (!resolvedTarget) throw new Error(`Invalid target "${target}".`);
+
+    const exists = memory.metadata.relations.some(r => r.target === resolvedTarget && r.type === type);
+    if (exists) return false;
+
+    memory.metadata.relations.push({ target: resolvedTarget, type });
+    memory.metadata.updated = new Date().toISOString();
+    this.saveMemory(memory, `[stormdrain] relate: ${sourceId} -> ${resolvedTarget} (${type})`);
+    return true;
+  }
+
+  public removeRelation(sourceId: string, target: string, type?: string): boolean {
+    const memory = this.getMemory(sourceId);
+    if (!memory) throw new Error(`Source memory "${sourceId}" not found.`);
+
+    const resolvedTarget = this.resolveTargetId(target);
+    const initialLen = memory.metadata.relations.length;
+
+    memory.metadata.relations = memory.metadata.relations.filter(r => {
+      if (r.target !== resolvedTarget) return true;
+      if (type && r.type !== type) return true;
+      return false;
+    });
+
+    if (memory.metadata.relations.length === initialLen) {
+      return false;
+    }
+
+    memory.metadata.updated = new Date().toISOString();
+    this.saveMemory(memory, `[stormdrain] unrelate: ${sourceId} -x- ${resolvedTarget}`);
+    return true;
+  }
+
+  public getRelations(memoryId: string): {
+    outgoing: MemoryRelation[];
+    incoming: Array<{ source: string; type: string }>;
+  } {
+    const mem = this.getMemory(memoryId);
+    const outgoing = mem ? mem.metadata.relations : [];
+
+    const resolvedId = this.resolveTargetId(memoryId);
+    const incomingRows = this.db.prepare(`
+      SELECT source_id as source, type FROM relations WHERE target_id = ?
+    `).all(resolvedId) as Array<{ source: string; type: string }>;
+
+    return {
+      outgoing,
+      incoming: incomingRows
+    };
+  }
+
 
   public getMemory(id: string): Memory | null {
     const memPath = this.getSafeMemPath(id);
@@ -290,15 +457,24 @@ export class ContextManager {
     } = {}
   ): MultiHopRecallResponse {
     let startNodeId = fileOrMemoryId;
+    let isDirectMemoryQuery = false;
     if (fileOrMemoryId.startsWith('mem_')) {
+      isDirectMemoryQuery = true;
       const rel = this.db.prepare(`
         SELECT target_id FROM relations WHERE source_id = ? AND type IN ('affects', 'applies_to')
       `).get(fileOrMemoryId) as { target_id: string } | undefined;
-      if (rel) {
+      if (rel && rel.target_id.startsWith('file_')) {
         startNodeId = rel.target_id;
       }
     } else if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.')) {
       startNodeId = makeFileVertexId(fileOrMemoryId);
+    } else {
+      try {
+        const memExists = this.db.prepare('SELECT id FROM memories WHERE id = ?').get(fileOrMemoryId);
+        if (memExists) {
+          isDirectMemoryQuery = true;
+        }
+      } catch {}
     }
 
     const maxDepth = options.maxDepth ?? 3;
@@ -548,8 +724,92 @@ export class ContextManager {
             tags,
             content_snippet: row.content_snippet
           });
+
+          // Also pull in connected memory-to-memory conceptual links (supports, related_to, depends_on, references, part_of)
+          const connectedMems = this.db.prepare(`
+            SELECT m.*, fts.content as content_snippet,
+              (SELECT GROUP_CONCAT(tag) FROM tags WHERE memory_id = m.id) as tags_str,
+              r.type as rel_type
+            FROM relations r
+            JOIN memories m ON (m.id = r.target_id AND r.source_id = ?) OR (m.id = r.source_id AND r.target_id = ?)
+            LEFT JOIN memories_fts fts ON fts.id = m.id
+            WHERE m.type != 'codemap' AND m.id != ?
+          `).all(row.id, row.id, row.id) as Array<any>;
+
+          for (const conn of connectedMems) {
+            if (finalMemories.some(fm => fm.id === conn.id)) continue;
+            const connTags = (conn.tags_str || '').split(',').filter(Boolean);
+            const connTypeWeight = typeWeights[conn.type] || 1.0;
+            const connHopDecay = Math.pow(0.75, h + 1);
+            const connScore = conn.confidence * psi * connHopDecay * connTypeWeight * 0.85;
+
+            finalMemories.push({
+              id: conn.id,
+              type: conn.type as MemoryType,
+              title: conn.title,
+              confidence: conn.confidence,
+              depth: h + 1,
+              direction: dir,
+              relevanceScore: Math.round(connScore * 1000) / 1000,
+              targetFile: `via ${row.title} (${conn.rel_type})`,
+              tags: connTags,
+              content_snippet: conn.content_snippet
+            });
+          }
         }
       }
+
+      // If direct memory query, ensure target memory and its direct relations are present
+      if (isDirectMemoryQuery) {
+        const directMem = this.db.prepare(`
+          SELECT m.*, fts.content as content_snippet,
+            (SELECT GROUP_CONCAT(tag) FROM tags WHERE memory_id = m.id) as tags_str
+          FROM memories m
+          LEFT JOIN memories_fts fts ON fts.id = m.id
+          WHERE m.id = ?
+        `).get(fileOrMemoryId) as any;
+
+        if (directMem && !finalMemories.some(fm => fm.id === directMem.id)) {
+          finalMemories.unshift({
+            id: directMem.id,
+            type: directMem.type as MemoryType,
+            title: directMem.title,
+            confidence: directMem.confidence,
+            depth: 0,
+            direction: 'direct',
+            relevanceScore: 1.0,
+            tags: (directMem.tags_str || '').split(',').filter(Boolean),
+            content_snippet: directMem.content_snippet
+          });
+        }
+
+        const relatedToQuery = this.db.prepare(`
+          SELECT m.*, fts.content as content_snippet,
+            (SELECT GROUP_CONCAT(tag) FROM tags WHERE memory_id = m.id) as tags_str,
+            r.type as rel_type
+          FROM relations r
+          JOIN memories m ON (m.id = r.target_id AND r.source_id = ?) OR (m.id = r.source_id AND r.target_id = ?)
+          LEFT JOIN memories_fts fts ON fts.id = m.id
+          WHERE m.type != 'codemap' AND m.id != ?
+        `).all(fileOrMemoryId, fileOrMemoryId, fileOrMemoryId) as Array<any>;
+
+        for (const conn of relatedToQuery) {
+          if (finalMemories.some(fm => fm.id === conn.id)) continue;
+          finalMemories.push({
+            id: conn.id,
+            type: conn.type as MemoryType,
+            title: conn.title,
+            confidence: conn.confidence,
+            depth: 1,
+            direction: 'direct',
+            relevanceScore: 0.9,
+            targetFile: `via ${fileOrMemoryId} (${conn.rel_type})`,
+            tags: (conn.tags_str || '').split(',').filter(Boolean),
+            content_snippet: conn.content_snippet
+          });
+        }
+      }
+
 
       // Sort by relevance score descending
       finalMemories.sort((a, b) => b.relevanceScore - a.relevanceScore);

@@ -140,7 +140,7 @@ export class StormDrainMcpServer {
 
           {
             name: 'sd_add',
-            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions, or reusable patterns to persistent memory immediately upon discovery. Always pass target_file when the memory applies to a specific file.',
+            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions, or reusable patterns to persistent memory immediately upon discovery. Can be associated with one or multiple files and/or other memories.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -163,6 +163,31 @@ export class StormDrainMcpServer {
                   description: 'Tags for categorization'
                 },
                 target_file: targetFileProp,
+                targets: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Multiple target file paths or memory IDs to associate with this memory'
+                },
+                relations: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'string', description: 'Target memory ID or file path' },
+                      type: { 
+                        type: 'string', 
+                        enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
+                        description: 'Semantic relation type' 
+                      }
+                    },
+                    required: ['target']
+                  },
+                  description: 'Explicit typed relation edges to other memories or files'
+                },
+                relation_type: {
+                  type: 'string',
+                  description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
+                },
                 context: contextProp
               },
               required: ['type', 'title', 'content']
@@ -170,7 +195,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_update',
-            description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, or tags by ID.',
+            description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, tags, or relation links by ID.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -178,9 +203,42 @@ export class StormDrainMcpServer {
                 title: { type: 'string' },
                 content: { type: 'string' },
                 tags: { type: 'array', items: { type: 'string' } },
+                type: { type: 'string', enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence'] },
+                add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
+                remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
+                relations: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'string' },
+                      type: { type: 'string' }
+                    },
+                    required: ['target']
+                  },
+                  description: 'Replace full relations list'
+                },
                 context: contextProp
               },
               required: ['id']
+            }
+          },
+          {
+            name: 'sd_relate',
+            description: 'RELATION TOOL: Connect two memories, or link a memory to a file vertex in the knowledge graph with an explicit semantic relationship (e.g. "supports", "contradicts", "supersedes", "related_to", "references", "depends_on", "part_of", "affects", "applies_to").',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                source_id: { type: 'string', description: 'Source memory ID (e.g. "mem_123456")' },
+                target: { type: 'string', description: 'Target memory ID or file path (e.g. "mem_789012" or "src/index.ts")' },
+                type: { 
+                  type: 'string', 
+                  enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
+                  description: 'Semantic relation type (default: "related_to" between memories, "affects" for files)'
+                },
+                context: contextProp
+              },
+              required: ['source_id', 'target']
             }
           },
           {
@@ -377,16 +435,69 @@ export class StormDrainMcpServer {
             content: string;
             tags?: string[];
             target_file?: string;
+            targets?: string[] | string;
+            relations?: Array<{ target: string; type?: string }>;
+            relation_type?: string;
           };
-          const id = ctx.addMemory(args.type, args.title, args.content, args.tags || [], 'indexer', undefined, args.target_file);
-          const linkMsg = args.target_file ? ` (linked to ${args.target_file})` : '';
+          const targets = args.targets || args.target_file;
+          const id = ctx.addMemory(
+            args.type,
+            args.title,
+            args.content,
+            args.tags || [],
+            'indexer',
+            undefined,
+            targets,
+            args.relation_type || 'affects',
+            args.relations as any
+          );
+          const mem = ctx.getMemory(id);
+          let linkMsg = '';
+          if (args.target_file && !args.targets && (!args.relations || args.relations.length === 0)) {
+            linkMsg = ` (linked to ${args.target_file})`;
+          } else if (mem && mem.metadata.relations.length > 0) {
+            linkMsg = ` (linked to ${mem.metadata.relations.length} target(s): ${mem.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})`;
+          }
           return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"` }] };
         }
 
         if (request.params.name === 'sd_update') {
-          const args = request.params.arguments as { id: string; title?: string; content?: string; tags?: string[]; type?: MemoryType };
-          ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type);
+          const args = request.params.arguments as {
+            id: string;
+            title?: string;
+            content?: string;
+            tags?: string[];
+            type?: MemoryType;
+            relations?: Array<{ target: string; type?: string }>;
+            add_targets?: string[] | string;
+            remove_targets?: string[] | string;
+          };
+          ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
+            relations: args.relations as any,
+            addTargets: args.add_targets,
+            removeTargets: args.remove_targets
+          });
           return { content: [{ type: 'text', text: `Successfully updated memory ${args.id} in context "${targetContext}"` }] };
+        }
+
+        if (request.params.name === 'sd_relate') {
+          const args = request.params.arguments as {
+            source_id: string;
+            target: string;
+            type?: string;
+          };
+          if (!args.source_id || !args.target) {
+            throw new Error('Arguments "source_id" and "target" are required for sd_relate.');
+          }
+          const resolvedTarget = ctx.resolveTargetId(args.target);
+          const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
+          const relType = args.type || defaultType;
+          const added = ctx.addRelation(args.source_id, args.target, relType);
+          if (added) {
+            return { content: [{ type: 'text', text: `Successfully linked memory ${args.source_id} -> ${resolvedTarget} with relation "${relType}" in context "${targetContext}".` }] };
+          } else {
+            return { content: [{ type: 'text', text: `Relation ${args.source_id} -> ${resolvedTarget} (${relType}) already exists in context "${targetContext}".` }] };
+          }
         }
 
         if (request.params.name === 'sd_scan') {

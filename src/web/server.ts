@@ -108,13 +108,14 @@ export const startWebServer = (port: number = 3456) => {
   }));
 
   app.post('/api/memories', withContext(async (req, res, ctx) => {
-    const { type, title, content, tags } = req.body;
+    const { type, title, content, tags, target, targets, targetFile, relationType, relations } = req.body;
     if (!type || !title || !content) {
       res.status(400).json({ error: 'Missing required fields: type, title, and content are required' });
       return;
     }
     try {
-      const id = ctx.addMemory(type, title, content, tags || []);
+      const targetArg = targets || target || targetFile;
+      const id = ctx.addMemory(type, title, content, tags || [], 'manual', undefined, targetArg, relationType || 'affects', relations);
       res.status(201).json({ success: true, id });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -131,11 +132,27 @@ export const startWebServer = (port: number = 3456) => {
     res.json(memory);
   }));
 
+  app.get('/api/memories/:id/relations', withContext(async (req, res, ctx) => {
+    const id = req.params.id ? String(req.params.id) : '';
+    try {
+      const relations = ctx.getRelations(id);
+      res.json(relations);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
   app.put('/api/memories/:id', withContext(async (req, res, ctx) => {
     const id = req.params.id ? String(req.params.id) : '';
-    const { title, content, tags, type } = req.body;
+    const { title, content, tags, type, relations, addRelations, removeRelations, addTargets, removeTargets } = req.body;
     try {
-      ctx.updateMemory(id, content, title, tags, type);
+      ctx.updateMemory(id, content, title, tags, type, {
+        relations,
+        addRelations,
+        removeRelations,
+        addTargets,
+        removeTargets
+      });
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -147,6 +164,34 @@ export const startWebServer = (port: number = 3456) => {
     try {
       ctx.deleteMemory(id);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/relations', withContext(async (req, res, ctx) => {
+    const { source, target, type } = req.body;
+    if (!source || !target) {
+      res.status(400).json({ error: 'source and target are required' });
+      return;
+    }
+    try {
+      const added = ctx.addRelation(source, target, type || 'related_to');
+      res.json({ success: true, added });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
+  app.delete('/api/relations', withContext(async (req, res, ctx) => {
+    const { source, target, type } = req.body;
+    if (!source || !target) {
+      res.status(400).json({ error: 'source and target are required' });
+      return;
+    }
+    try {
+      const removed = ctx.removeRelation(source, target, type);
+      res.json({ success: true, removed });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }

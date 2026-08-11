@@ -359,20 +359,94 @@ program
 
 program
   .command('add')
-
-  .description('Add a new memory')
-  .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, etc.)')
+  .description('Add a new memory to the context knowledge graph')
+  .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, guide, sequence)')
   .argument('<title>', 'Title of the memory')
   .argument('<content>', 'Markdown content of the memory')
   .option('-c, --context <name>', 'Target context override')
-  .option('-t, --target <file>', 'Target file to link memory onto in the DAG')
+  .option('-t, --target <targets...>', 'Target file(s) or memory ID(s) to link memory onto')
+  .option('-r, --relation <relations...>', 'Explicit typed relation(s) in target:type format (e.g. mem_123:supports, src/b.ts:affects)')
+  .option('--relation-type <type>', 'Default relation type for targets (default: affects for files, related_to for memories)')
+  .option('--tags <tags...>', 'Tags for categorization')
   .action(async (type, title, content, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const id = ctx.addMemory(type as any, title, content, [], 'manual', undefined, options.target);
-      const linkMsg = options.target ? ` (linked to ${options.target})` : '';
+      const explicitRelations: any[] = [];
+      if (options.relation) {
+        const relList = Array.isArray(options.relation) ? options.relation : [options.relation];
+        for (const r of relList) {
+          const [target, relType] = r.split(':');
+          if (target) {
+            explicitRelations.push({ target, type: relType || 'related_to' });
+          }
+        }
+      }
+      const tags = options.tags ? (Array.isArray(options.tags) ? options.tags : options.tags.split(',')) : [];
+      const id = ctx.addMemory(
+        type as any,
+        title,
+        content,
+        tags,
+        'manual',
+        undefined,
+        options.target,
+        options.relationType || 'affects',
+        explicitRelations.length > 0 ? explicitRelations : undefined
+      );
+      const mem = ctx.getMemory(id);
+      const linkCount = mem?.metadata.relations.length || 0;
+      const linkMsg = linkCount > 0 
+        ? ` (linked to ${linkCount} target(s): ${mem?.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})` 
+        : '';
       console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('relate')
+  .description('Create a semantic relation between two memories or between a memory and a file')
+  .argument('<source>', 'Source memory ID (e.g. mem_123456)')
+  .argument('<target>', 'Target memory ID or file path (e.g. mem_789012 or src/main.ts)')
+  .argument('[type]', 'Relation type (e.g. supports, contradicts, supersedes, related_to, references, depends_on, part_of, affects, applies_to)')
+  .option('-c, --context <name>', 'Target context override')
+  .action(async (source, target, type, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const resolvedTarget = ctx.resolveTargetId(target);
+      const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
+      const relType = type || defaultType;
+      const added = ctx.addRelation(source, target, relType);
+      if (added) {
+        console.log(`Linked memory ${source} -> ${resolvedTarget} with relation "${relType}" in context "${targetCtxName}".`);
+      } else {
+        console.log(`Relation ${source} -> ${resolvedTarget} (${relType}) already exists in context "${targetCtxName}".`);
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('unrelate')
+  .description('Remove a relation between two memories or between a memory and a file')
+  .argument('<source>', 'Source memory ID (e.g. mem_123456)')
+  .argument('<target>', 'Target memory ID or file path (e.g. mem_789012 or src/main.ts)')
+  .argument('[type]', 'Optional specific relation type to remove')
+  .option('-c, --context <name>', 'Target context override')
+  .action(async (source, target, type, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const removed = ctx.removeRelation(source, target, type);
+      if (removed) {
+        console.log(`Removed relation ${source} -x- ${target} in context "${targetCtxName}".`);
+      } else {
+        console.log(`No matching relation found between ${source} and ${target} in context "${targetCtxName}".`);
+      }
     } finally {
       await ctx.close();
     }
