@@ -140,27 +140,27 @@ export class StormDrainMcpServer {
 
           {
             name: 'sd_add',
-            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions, or reusable patterns to persistent memory immediately upon discovery. Can be associated with one or multiple files and/or other memories.',
+            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions (ADRs), or reusable patterns. EDITORIAL RULE: Record only high-signal knowledge that prevents future errors or explains non-obvious constraints. Do NOT record routine implementation summaries, transient task progress, or facts obvious from reading the code.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
                   enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'],
-                  description: 'Type of memory (fact, lesson, pattern, warning, guide, sequence, concept)'
+                  description: 'Type of memory: "concept" (cross-cutting architecture/theory), "pattern" (reusable structural idiom), "lesson" (debugging/incident takeaway), "warning" (critical gotcha/anti-pattern), "guide" (procedural workflow), "fact" (system invariant)'
                 },
                 title: {
                   type: 'string',
-                  description: 'Short, descriptive title'
+                  description: 'Short, descriptive title capturing the invariant or takeaway'
                 },
                 content: {
                   type: 'string',
-                  description: 'Markdown content of the memory'
+                  description: 'Markdown content. Focus on non-obvious rationale, root causes, contracts, or reproduction steps. Avoid merely restating what the code does.'
                 },
                 tags: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'Tags for categorization'
+                  description: 'Categorization tags. Conventions: #decision (ADR), #invariant, #hypothesis (unverified with test criteria), #environment (OS/toolchain quirk), #anti-pattern, #performance'
                 },
                 target_file: targetFileProp,
                 targets: {
@@ -285,7 +285,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_consolidate',
-            description: 'CONSOLIDATION TOOL: Consolidate multiple micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield to suppress repetitive micro-memories from polluting future LLM prompts.',
+            description: 'CONSOLIDATION TOOL: Consolidate >=3 micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield to suppress repetitive micro-memories from polluting LLM context while preserving full audit history.',
             inputSchema: {
               type: 'object',
               properties: {

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { api } from '../api';
 import MemoryEditor from './MemoryEditor';
-import { Search, X, Crosshair, Layers } from 'lucide-react';
+import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal } from 'lucide-react';
 
 
 interface GraphViewProps {
@@ -39,6 +39,24 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const effectiveVersion = dataVersion + localVersion;
   const [searchQuery, setSearchQuery] = useState('');
 
+  const [isToolbarCollapsed, setIsToolbarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('stormdrain_graph_hud_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleToolbarCollapse = () => {
+    setIsToolbarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('stormdrain_graph_hud_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
@@ -74,7 +92,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === '/' && document.activeElement !== searchInputRef.current) {
         e.preventDefault();
-        searchInputRef.current?.focus();
+        if (isToolbarCollapsed) {
+          setIsToolbarCollapsed(false);
+          try {
+            localStorage.setItem('stormdrain_graph_hud_collapsed', 'false');
+          } catch {}
+        }
+        setTimeout(() => searchInputRef.current?.focus(), 50);
       } else if (e.key === 'Escape') {
         if (searchQuery || selectedType !== 'all' || focusAnchorId) {
           setSearchQuery('');
@@ -88,7 +112,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [searchQuery, selectedType, focusAnchorId]);
+  }, [searchQuery, selectedType, focusAnchorId, isToolbarCollapsed]);
 
   const getTypeColor = useCallback((type: string) => {
     const colors: Record<string, string> = {
@@ -666,58 +690,83 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       </div>
 
       {/* Floating Glassmorphic Command & Filter HUD */}
-      <div className="graph-floating-toolbar">
-        {/* Search Row */}
-        <div className="graph-search-row">
-          <div className="graph-search-input-wrapper">
-            <Search size={14} className="graph-search-icon" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder="Search graph nodes... (Press / to focus)"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            {searchQuery && (
-              <button className="graph-clear-btn" onClick={() => setSearchQuery('')} title="Clear search">
-                <X size={13} />
-              </button>
-            )}
-          </div>
-
-          {/* Dynamic Match Stats Badge */}
+      {isToolbarCollapsed ? (
+        <button
+          className="graph-floating-toggle-btn"
+          onClick={toggleToolbarCollapse}
+          title="Expand Filter Controls (/)"
+        >
+          <SlidersHorizontal size={14} style={{ color: 'var(--accent-hover)' }} />
+          <span>Filters & Controls</span>
           {matchStats.isFiltering && (
-            <div className={`graph-badge ${matchStats.hasNoMatches ? 'no-match' : ''}`}>
-              {matchStats.hasNoMatches ? (
-                'No matches'
-              ) : (
-                `${matchStats.matchCount} matched · ${matchStats.inScopeCount} in scope`
+            <span className="graph-collapsed-filter-dot" title={`${matchStats.matchCount} matched`}>
+              {matchStats.hasNoMatches ? '0' : matchStats.matchCount}
+            </span>
+          )}
+          <ChevronDown size={13} style={{ opacity: 0.7 }} />
+        </button>
+      ) : (
+        <div className="graph-floating-toolbar">
+          {/* Search Row */}
+          <div className="graph-search-row">
+            <div className="graph-search-input-wrapper">
+              <Search size={14} className="graph-search-icon" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Search graph nodes... (Press / to focus)"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button className="graph-clear-btn" onClick={() => setSearchQuery('')} title="Clear search">
+                  <X size={13} />
+                </button>
               )}
             </div>
-          )}
 
-          {/* Reset button if active */}
-          {(matchStats.isFiltering || focusAnchorId) && (
+            {/* Dynamic Match Stats Badge */}
+            {matchStats.isFiltering && (
+              <div className={`graph-badge ${matchStats.hasNoMatches ? 'no-match' : ''}`}>
+                {matchStats.hasNoMatches ? (
+                  'No matches'
+                ) : (
+                  `${matchStats.matchCount} matched · ${matchStats.inScopeCount} in scope`
+                )}
+              </div>
+            )}
+
+            {/* Reset button if active */}
+            {(matchStats.isFiltering || focusAnchorId) && (
+              <button
+                onClick={clearAllFilters}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '5px 8px',
+                  fontSize: '0.72rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4
+                }}
+                title="Reset all filters (Esc)"
+              >
+                <X size={12} /> Reset
+              </button>
+            )}
+
+            {/* Collapse Button */}
             <button
-              onClick={clearAllFilters}
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'var(--text-muted)',
-                cursor: 'pointer',
-                padding: '5px 8px',
-                fontSize: '0.72rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4
-              }}
-              title="Reset all filters (Esc)"
+              className="graph-hud-collapse-btn"
+              onClick={toggleToolbarCollapse}
+              title="Hide / Collapse Controls"
             >
-              <X size={12} /> Reset
+              <ChevronUp size={14} />
             </button>
-          )}
-        </div>
+          </div>
 
         {/* Focus Anchor Badge (When right-clicked / pinned) */}
         {focusAnchorId && (
@@ -785,6 +834,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           </div>
         </div>
       </div>
+    )}
 
       {/* Main D3 Graph SVG */}
       <svg ref={svgRef} className="graph-svg" style={{ width: '100%', height: '100%', display: 'block' }}></svg>
