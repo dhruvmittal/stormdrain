@@ -146,8 +146,8 @@ export class StormDrainMcpServer {
               properties: {
                 type: {
                   type: 'string',
-                  enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence'],
-                  description: 'Type of memory'
+                  enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'],
+                  description: 'Type of memory (fact, lesson, pattern, warning, guide, sequence, concept)'
                 },
                 title: {
                   type: 'string',
@@ -203,7 +203,7 @@ export class StormDrainMcpServer {
                 title: { type: 'string' },
                 content: { type: 'string' },
                 tags: { type: 'array', items: { type: 'string' } },
-                type: { type: 'string', enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence'] },
+                type: { type: 'string', enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'] },
                 add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
                 remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
                 relations: {

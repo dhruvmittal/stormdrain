@@ -1,4 +1,4 @@
-export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence';
+export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence' | 'concept';
 
 export type RelationType = 
   | 'affects' 

@@ -8,6 +8,7 @@
   --accent-hover: #60a5fa;
   --border-color: #334155;
   
+  --color-concept: #38bdf8;
   --color-fact: #10b981;
   --color-lesson: #f59e0b;
   --color-pattern: #8b5cf6;
@@ -352,6 +353,7 @@ tr:hover td {
   display: inline-block;
 }
 
+.badge-concept { background-color: rgba(56, 189, 248, 0.2); color: var(--color-concept); }
 .badge-fact { background-color: rgba(16, 185, 129, 0.2); color: var(--color-fact); }
 .badge-lesson { background-color: rgba(245, 158, 11, 0.2); color: var(--color-lesson); }
 .badge-pattern { background-color: rgba(139, 92, 246, 0.2); color: var(--color-pattern); }

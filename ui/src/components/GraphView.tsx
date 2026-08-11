@@ -12,7 +12,7 @@ interface GraphViewProps {
 
 type ScopeDepth = 0 | 1 | 2;
 
-const MEMORY_TYPES = ['all', 'fact', 'lesson', 'pattern', 'warning', 'guide', 'codemap'] as const;
+const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
 export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion = 0 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -85,6 +85,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
   const getTypeColor = useCallback((type: string) => {
     const colors: Record<string, string> = {
+      concept: '#38bdf8',  // Sky Blue / Electric Blue
       codemap: '#06b6d4',  // Cyan for file vertices
       fact: '#10b981',     // Green
       lesson: '#f59e0b',   // Amber

@@ -360,7 +360,7 @@ program
 program
   .command('add')
   .description('Add a new memory to the context knowledge graph')
-  .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, guide, sequence)')
+  .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, guide, sequence, concept)')
   .argument('<title>', 'Title of the memory')
   .argument('<content>', 'Markdown content of the memory')
   .option('-c, --context <name>', 'Target context override')

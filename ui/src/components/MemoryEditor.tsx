@@ -89,11 +89,12 @@ const MemoryEditor: React.FC<MemoryEditorProps> = ({ activeContext, memoryId, on
               onChange={e => setType(e.target.value)} 
               style={{ backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', color: 'var(--text-main)', padding: '10px', borderRadius: '6px', width: '100%', marginBottom: '15px' }}
             >
-              <option value="fact">Fact</option>
-              <option value="lesson">Lesson</option>
+              <option value="concept">Concept</option>
               <option value="pattern">Pattern</option>
-              <option value="warning">Warning</option>
               <option value="guide">Guide</option>
+              <option value="lesson">Lesson</option>
+              <option value="fact">Fact</option>
+              <option value="warning">Warning</option>
               <option value="codemap">Codemap</option>
               <option value="sequence">Sequence</option>
             </select>

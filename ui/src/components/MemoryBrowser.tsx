@@ -11,7 +11,7 @@ interface MemoryBrowserProps {
 type SortField = 'type' | 'title' | 'confidence' | 'updated' | 'accessed';
 type SortDirection = 'asc' | 'desc';
 
-const MEMORY_TYPES = ['all', 'fact', 'lesson', 'pattern', 'warning', 'guide', 'codemap', 'sequence'] as const;
+const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
 const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersion = 0 }) => {
   const [memories, setMemories] = useState<any[]>([]);

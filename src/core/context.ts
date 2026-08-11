@@ -640,10 +640,12 @@ export class ContextManager {
       // 6. Fact Scoring with Consolidation Shield
       const typeWeights: Record<string, number> = {
         guide: 1.25,
+        concept: 1.20,
         warning: 1.15,
         pattern: 1.0,
         lesson: 1.0,
         fact: 0.9,
+        sequence: 0.85,
         codemap: 0.1,
       };
 
