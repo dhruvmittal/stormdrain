@@ -140,29 +140,54 @@ export class StormDrainMcpServer {
 
           {
             name: 'sd_add',
-            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions, or reusable patterns to persistent memory immediately upon discovery. Always pass target_file when the memory applies to a specific file.',
+            description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions (ADRs), or reusable patterns. EDITORIAL RULE: Record only high-signal knowledge that prevents future errors or explains non-obvious constraints. Do NOT record routine implementation summaries, transient task progress, or facts obvious from reading the code.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
-                  enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence'],
-                  description: 'Type of memory'
+                  enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'],
+                  description: 'Type of memory: "concept" (cross-cutting architecture/theory), "pattern" (reusable structural idiom), "lesson" (debugging/incident takeaway), "warning" (critical gotcha/anti-pattern), "guide" (procedural workflow), "fact" (system invariant)'
                 },
                 title: {
                   type: 'string',
-                  description: 'Short, descriptive title'
+                  description: 'Short, descriptive title capturing the invariant or takeaway'
                 },
                 content: {
                   type: 'string',
-                  description: 'Markdown content of the memory'
+                  description: 'Markdown content. Focus on non-obvious rationale, root causes, contracts, or reproduction steps. Avoid merely restating what the code does.'
                 },
                 tags: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'Tags for categorization'
+                  description: 'Categorization tags. Conventions: #decision (ADR), #invariant, #hypothesis (unverified with test criteria), #environment (OS/toolchain quirk), #anti-pattern, #performance'
                 },
                 target_file: targetFileProp,
+                targets: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Multiple target file paths or memory IDs to associate with this memory'
+                },
+                relations: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'string', description: 'Target memory ID or file path' },
+                      type: { 
+                        type: 'string', 
+                        enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
+                        description: 'Semantic relation type' 
+                      }
+                    },
+                    required: ['target']
+                  },
+                  description: 'Explicit typed relation edges to other memories or files'
+                },
+                relation_type: {
+                  type: 'string',
+                  description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
+                },
                 context: contextProp
               },
               required: ['type', 'title', 'content']
@@ -170,7 +195,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_update',
-            description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, or tags by ID.',
+            description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, tags, or relation links by ID.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -178,9 +203,42 @@ export class StormDrainMcpServer {
                 title: { type: 'string' },
                 content: { type: 'string' },
                 tags: { type: 'array', items: { type: 'string' } },
+                type: { type: 'string', enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'] },
+                add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
+                remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
+                relations: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'string' },
+                      type: { type: 'string' }
+                    },
+                    required: ['target']
+                  },
+                  description: 'Replace full relations list'
+                },
                 context: contextProp
               },
               required: ['id']
+            }
+          },
+          {
+            name: 'sd_relate',
+            description: 'RELATION TOOL: Connect two memories, or link a memory to a file vertex in the knowledge graph with an explicit semantic relationship (e.g. "supports", "contradicts", "supersedes", "related_to", "references", "depends_on", "part_of", "affects", "applies_to").',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                source_id: { type: 'string', description: 'Source memory ID (e.g. "mem_123456")' },
+                target: { type: 'string', description: 'Target memory ID or file path (e.g. "mem_789012" or "src/index.ts")' },
+                type: { 
+                  type: 'string', 
+                  enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
+                  description: 'Semantic relation type (default: "related_to" between memories, "affects" for files)'
+                },
+                context: contextProp
+              },
+              required: ['source_id', 'target']
             }
           },
           {
@@ -192,6 +250,11 @@ export class StormDrainMcpServer {
                 directory: {
                   type: 'string',
                   description: 'Optional workspace directory path to scan (defaults to current working directory)'
+                },
+                submodule_policy: {
+                  type: 'string',
+                  enum: ['dive', 'sum'],
+                  description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
                 },
                 context: contextProp
               }
@@ -210,6 +273,11 @@ export class StormDrainMcpServer {
                 directory: {
                   type: 'string',
                   description: 'Optional directory path to bind and scan (defaults to current working directory)'
+                },
+                submodule_policy: {
+                  type: 'string',
+                  enum: ['dive', 'sum'],
+                  description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
                 }
               },
               required: ['name']
@@ -217,7 +285,7 @@ export class StormDrainMcpServer {
           },
           {
             name: 'sd_consolidate',
-            description: 'CONSOLIDATION TOOL: Consolidate multiple micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield to suppress repetitive micro-memories from polluting future LLM prompts.',
+            description: 'CONSOLIDATION TOOL: Consolidate >=3 micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield to suppress repetitive micro-memories from polluting LLM context while preserving full audit history.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -367,16 +435,69 @@ export class StormDrainMcpServer {
             content: string;
             tags?: string[];
             target_file?: string;
+            targets?: string[] | string;
+            relations?: Array<{ target: string; type?: string }>;
+            relation_type?: string;
           };
-          const id = ctx.addMemory(args.type, args.title, args.content, args.tags || [], 'indexer', undefined, args.target_file);
-          const linkMsg = args.target_file ? ` (linked to ${args.target_file})` : '';
+          const targets = args.targets || args.target_file;
+          const id = ctx.addMemory(
+            args.type,
+            args.title,
+            args.content,
+            args.tags || [],
+            'indexer',
+            undefined,
+            targets,
+            args.relation_type || 'affects',
+            args.relations as any
+          );
+          const mem = ctx.getMemory(id);
+          let linkMsg = '';
+          if (args.target_file && !args.targets && (!args.relations || args.relations.length === 0)) {
+            linkMsg = ` (linked to ${args.target_file})`;
+          } else if (mem && mem.metadata.relations.length > 0) {
+            linkMsg = ` (linked to ${mem.metadata.relations.length} target(s): ${mem.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})`;
+          }
           return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"` }] };
         }
 
         if (request.params.name === 'sd_update') {
-          const args = request.params.arguments as { id: string; title?: string; content?: string; tags?: string[]; type?: MemoryType };
-          ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type);
+          const args = request.params.arguments as {
+            id: string;
+            title?: string;
+            content?: string;
+            tags?: string[];
+            type?: MemoryType;
+            relations?: Array<{ target: string; type?: string }>;
+            add_targets?: string[] | string;
+            remove_targets?: string[] | string;
+          };
+          ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
+            relations: args.relations as any,
+            addTargets: args.add_targets,
+            removeTargets: args.remove_targets
+          });
           return { content: [{ type: 'text', text: `Successfully updated memory ${args.id} in context "${targetContext}"` }] };
+        }
+
+        if (request.params.name === 'sd_relate') {
+          const args = request.params.arguments as {
+            source_id: string;
+            target: string;
+            type?: string;
+          };
+          if (!args.source_id || !args.target) {
+            throw new Error('Arguments "source_id" and "target" are required for sd_relate.');
+          }
+          const resolvedTarget = ctx.resolveTargetId(args.target);
+          const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
+          const relType = args.type || defaultType;
+          const added = ctx.addRelation(args.source_id, args.target, relType);
+          if (added) {
+            return { content: [{ type: 'text', text: `Successfully linked memory ${args.source_id} -> ${resolvedTarget} with relation "${relType}" in context "${targetContext}".` }] };
+          } else {
+            return { content: [{ type: 'text', text: `Relation ${args.source_id} -> ${resolvedTarget} (${relType}) already exists in context "${targetContext}".` }] };
+          }
         }
 
         if (request.params.name === 'sd_scan') {
@@ -398,7 +519,9 @@ export class StormDrainMcpServer {
               };
             }
           }
-          const { createdCount, decayedCount } = ctx.syncFileGraph(dir);
+          const submodulePolicy = (request.params.arguments?.submodule_policy as string) || 'sum';
+          const scanOptions = { submodulePolicies: submodulePolicy as 'dive' | 'sum' };
+          const { createdCount, decayedCount } = ctx.syncFileGraph(dir, scanOptions);
           return { content: [{ type: 'text', text: `Successfully scanned workspace "${dir}" and updated ${createdCount} file vertices (${decayedCount} memories decayed) in context "${targetContext}".` }] };
         }
 
@@ -427,7 +550,9 @@ export class StormDrainMcpServer {
 
           const targetCtx = new ContextManager(name);
           try {
-            const { createdCount } = targetCtx.syncFileGraph(dir);
+            const submodulePolicy = (request.params.arguments?.submodule_policy as string) || 'sum';
+            const scanOptions = { submodulePolicies: submodulePolicy as 'dive' | 'sum' };
+            const { createdCount } = targetCtx.syncFileGraph(dir, scanOptions);
             return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", scaffolded AGENTS.md, and created ${createdCount} file vertices in DAG skeleton.` }] };
           } finally {
             await targetCtx.close();

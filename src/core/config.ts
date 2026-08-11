@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { getBasePath, ensureDirectories } from '../utils/paths';
+import { getBasePath, getContextPath, ensureDirectories } from '../utils/paths';
 import { GlobalConfig, ContextConfig, StormDrainSettings } from '../types';
 
 
@@ -215,6 +215,36 @@ export class ConfigManager {
       return true;
     }
     return false;
+  }
+
+  public deleteContext(name: string, purgeDisk: boolean = true): boolean {
+    this.loadConfig();
+
+    if (name === '_global') {
+      throw new Error('Cannot delete the _global context — it is the system fallback.');
+    }
+
+    if (!this.config.contexts[name]) {
+      throw new Error(`Context "${name}" does not exist.`);
+    }
+
+    // If deleting the active context, fall back to _global
+    if (this.config.activeContext === name) {
+      this.config.activeContext = '_global';
+    }
+
+    delete this.config.contexts[name];
+    this.saveConfig();
+
+    // Purge context directory from disk
+    if (purgeDisk) {
+      const ctxDir = getContextPath(name);
+      if (fs.existsSync(ctxDir)) {
+        fs.rmSync(ctxDir, { recursive: true, force: true });
+      }
+    }
+
+    return true;
   }
 
   public resolveContextByCwd(cwd: string): string | null {

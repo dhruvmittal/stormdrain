@@ -1,8 +1,21 @@
-export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence';
+export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence' | 'concept';
+
+export type RelationType = 
+  | 'affects' 
+  | 'applies_to' 
+  | 'supports' 
+  | 'contradicts' 
+  | 'supersedes' 
+  | 'related_to' 
+  | 'references' 
+  | 'depends_on' 
+  | 'distilled_from' 
+  | 'part_of' 
+  | 'imports';
 
 export interface MemoryRelation {
-  target: string; // id of the target memory
-  type: 'supports' | 'contradicts' | 'supersedes' | 'related_to' | 'references' | 'depends_on' | 'distilled_from' | 'part_of';
+  target: string; // id of the target memory or file vertex
+  type: RelationType | string;
 }
 
 export interface MemoryMetadata {

@@ -8,6 +8,7 @@
   --accent-hover: #60a5fa;
   --border-color: #334155;
   
+  --color-concept: #38bdf8;
   --color-fact: #10b981;
   --color-lesson: #f59e0b;
   --color-pattern: #8b5cf6;
@@ -352,6 +353,7 @@ tr:hover td {
   display: inline-block;
 }
 
+.badge-concept { background-color: rgba(56, 189, 248, 0.2); color: var(--color-concept); }
 .badge-fact { background-color: rgba(16, 185, 129, 0.2); color: var(--color-fact); }
 .badge-lesson { background-color: rgba(245, 158, 11, 0.2); color: var(--color-lesson); }
 .badge-pattern { background-color: rgba(139, 92, 246, 0.2); color: var(--color-pattern); }
@@ -365,24 +367,28 @@ tr:hover td {
 .filter-pills-bar {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 0;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .filter-pill {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   border-radius: 20px;
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
   user-select: none;
+  white-space: nowrap;
 }
 
 .filter-pill:hover {
@@ -408,6 +414,63 @@ tr:hover td {
 .filter-pill.active .filter-pill-count {
   background: var(--accent-color);
   color: #fff;
+}
+
+/* Table Toolbar Row & Search Box */
+.table-toolbar-row {
+  padding: 20px 30px 0 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.table-search-wrapper {
+  display: flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: 6px 14px;
+  width: 250px;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: all 0.2s ease;
+}
+
+.table-search-wrapper:focus-within {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.table-search-icon {
+  color: var(--text-muted);
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.table-search-wrapper input {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  width: 100%;
+  outline: none;
+  font-size: 0.85rem;
+}
+
+.table-search-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  margin-left: 4px;
+}
+
+.table-search-clear:hover {
+  color: var(--text-main);
 }
 
 /* Sortable Headers */
@@ -929,9 +992,81 @@ input:checked + .slider.round:before {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 580px;
+  max-width: 530px;
   width: calc(100% - 40px);
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: graphHudSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes graphHudSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Collapsed Floating Toggle Button */
+.graph-floating-toggle-btn {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  z-index: 15;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-main);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: graphHudSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.graph-floating-toggle-btn:hover {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: var(--accent-hover);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.25);
+  transform: translateY(-1px);
+}
+
+.graph-collapsed-filter-dot {
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  line-height: 1.2;
+}
+
+.graph-hud-collapse-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.graph-hud-collapse-btn:hover {
+  color: var(--text-main);
+  background: var(--bg-surface-hover);
+  border-color: var(--accent-color);
 }
 
 .graph-search-row {
@@ -1009,18 +1144,18 @@ input:checked + .slider.round:before {
 
 .graph-type-pills-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  overflow-x: auto;
   padding-bottom: 2px;
 }
 
 .graph-type-pill {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 0.75rem;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 16px;
   border: 1px solid var(--border-color);
   background: rgba(30, 41, 59, 0.6);
@@ -1028,6 +1163,7 @@ input:checked + .slider.round:before {
   cursor: pointer;
   white-space: nowrap;
   transition: all 0.18s ease;
+  user-select: none;
 }
 
 .graph-type-pill:hover {
