@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
-import { api } from '../api';
+import { api, applyThemeColors, type GraphColorSettings } from '../api';
 import MemoryEditor from './MemoryEditor';
 import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal } from 'lucide-react';
 
@@ -28,36 +28,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Performance & Position Preservation refs
+  const isInitializedRef = useRef<boolean>(false);
+  const previousContextRef = useRef<string>(activeContext);
   const positionsCacheRef = useRef<Map<string, { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
-  const previousContextRef = useRef<string | null>(null);
-  const isInitializedRef = useRef<boolean>(false);
 
-  // UI & Filter state
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [localVersion, setLocalVersion] = useState(0);
-  const effectiveVersion = dataVersion + localVersion;
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const [isToolbarCollapsed, setIsToolbarCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('stormdrain_graph_hud_collapsed') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const toggleToolbarCollapse = () => {
-    setIsToolbarCollapsed(prev => {
-      const next = !prev;
-      try {
-        localStorage.setItem('stormdrain_graph_hud_collapsed', String(next));
-      } catch {}
-      return next;
-    });
-  };
-
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  // Search & Filter State
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedQuery, setDebouncedQuery] = useState<string>('');
   const [selectedType, setSelectedType] = useState<string>('all');
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
@@ -78,35 +56,47 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   });
 
   const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [localVersion, setLocalVersion] = useState<number>(0);
+  const [isToolbarCollapsed, setIsToolbarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem('stormdrain_graph_hud_collapsed') === 'true';
+  });
 
-  // 300ms Search Debounce
+  const toggleToolbarCollapse = () => {
+    setIsToolbarCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('stormdrain_graph_hud_collapsed', String(next));
+      return next;
+    });
+  };
+
+  const effectiveVersion = dataVersion + localVersion;
+
+  // Debounce search query (150ms for responsive spotlight without layout jitter)
   useEffect(() => {
-    const handler = setTimeout(() => {
+    const timer = setTimeout(() => {
       setDebouncedQuery(searchQuery);
-    }, 300);
-    return () => clearTimeout(handler);
+    }, 150);
+    return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Global Keyboard Shortcuts (/ to search, Esc to clear)
+  // Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === '/' && document.activeElement !== searchInputRef.current) {
         e.preventDefault();
-        if (isToolbarCollapsed) {
-          setIsToolbarCollapsed(false);
-          try {
-            localStorage.setItem('stormdrain_graph_hud_collapsed', 'false');
-          } catch {}
-        }
-        setTimeout(() => searchInputRef.current?.focus(), 50);
+        searchInputRef.current?.focus();
       } else if (e.key === 'Escape') {
         if (searchQuery || selectedType !== 'all' || focusAnchorId) {
+          e.preventDefault();
           setSearchQuery('');
           setDebouncedQuery('');
           setSelectedType('all');
           setFocusAnchorId(null);
           setFocusAnchorTitle(null);
-          searchInputRef.current?.blur();
+        } else if (!isToolbarCollapsed) {
+          setIsToolbarCollapsed(true);
+          localStorage.setItem('stormdrain_graph_hud_collapsed', 'true');
         }
       }
     };
@@ -114,19 +104,68 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [searchQuery, selectedType, focusAnchorId, isToolbarCollapsed]);
 
-  const getTypeColor = useCallback((type: string) => {
-    const colors: Record<string, string> = {
-      concept: '#38bdf8',  // Sky Blue / Electric Blue
-      codemap: '#06b6d4',  // Cyan for file vertices
-      fact: '#10b981',     // Green
-      lesson: '#f59e0b',   // Amber
-      pattern: '#8b5cf6',  // Purple
-      warning: '#ef4444',  // Red
-      guide: '#ec4899',    // Pink
-      sequence: '#6366f1'  // Indigo
+  const [colorSettings, setColorSettings] = useState<GraphColorSettings>({
+    nodes: {
+      concept: '#38bdf8',
+      codemap: '#06b6d4',
+      fact: '#10b981',
+      lesson: '#f59e0b',
+      pattern: '#8b5cf6',
+      warning: '#ef4444',
+      guide: '#ec4899',
+      sequence: '#6366f1'
+    },
+    edges: {
+      affects: '#38bdf8',
+      applies_to: '#0ea5e9',
+      supports: '#10b981',
+      contradicts: '#ef4444',
+      supersedes: '#f59e0b',
+      related_to: '#94a3b8',
+      references: '#a855f7',
+      depends_on: '#6366f1',
+      part_of: '#ec4899',
+      distilled_from: '#8b5cf6',
+      imports: '#38bdf8',
+      defaultEdge: '#334155'
+    }
+  });
+
+  useEffect(() => {
+    const fetchConfig = async () => {
+      const cfg = await api.getConfig();
+      if (cfg?.colors) {
+        setColorSettings(prev => ({
+          nodes: { ...prev.nodes, ...(cfg.colors?.nodes || {}) },
+          edges: { ...prev.edges, ...(cfg.colors?.edges || {}) }
+        }));
+        applyThemeColors(cfg.colors);
+      }
     };
-    return colors[type] || '#94a3b8';
-  }, []);
+    fetchConfig();
+  }, [effectiveVersion]);
+
+  const getTypeColor = useCallback((type: string) => {
+    return colorSettings.nodes[type] || (type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : '#94a3b8');
+  }, [colorSettings]);
+
+  const getEdgeColor = useCallback((type: string) => {
+    return colorSettings.edges[type] || (type === 'imports' ? (colorSettings.edges.imports || '#38bdf8') : 'var(--border-color)');
+  }, [colorSettings]);
+
+  // Synchronize D3 visual nodes and edges immediately when colorSettings updates
+  useEffect(() => {
+    if (nodeSelectionRef.current) {
+      nodeSelectionRef.current.select('.node-circle')
+        .attr('fill', (d: any) => getTypeColor(d.type));
+      nodeSelectionRef.current.select('.node-label')
+        .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)');
+    }
+    if (linkSelectionRef.current) {
+      linkSelectionRef.current
+        .attr('stroke', (d: any) => getEdgeColor(d.type));
+    }
+  }, [colorSettings, getTypeColor, getEdgeColor]);
 
   // Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
   const applyActiveFilterStyling = useCallback(() => {
@@ -501,11 +540,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         })
         .join(
           enter => enter.append('line')
-            .attr('stroke', (d: any) => d.type === 'imports' ? '#38bdf8' : 'var(--border-color)')
+            .attr('stroke', (d: any) => getEdgeColor(d.type))
             .attr('stroke-dasharray', (d: any) => d.type === 'imports' ? '4 2' : 'none')
             .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2)
             .attr('stroke-opacity', 0.6),
-          update => update,
+          update => update
+            .attr('stroke', (d: any) => getEdgeColor(d.type)),
           exit => exit.remove()
         );
 
@@ -537,7 +577,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .text((d: any) => d.title)
               .attr('x', 14)
               .attr('y', 4)
-              .attr('fill', (d: any) => d.type === 'codemap' ? '#38bdf8' : 'var(--text-main)')
+              .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)')
               .style('font-size', (d: any) => d.type === 'codemap' ? '11px' : '12px')
               .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400')
               .style('pointer-events', 'none');
@@ -598,7 +638,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
             update.select('.node-label')
               .text((d: any) => d.title)
-              .attr('fill', (d: any) => d.type === 'codemap' ? '#38bdf8' : 'var(--text-main)');
+              .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)');
 
             return update;
           },
@@ -790,14 +830,23 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           {MEMORY_TYPES.map((type) => {
             const count = typeCounts[type] || 0;
             const isActive = selectedType === type;
+            const typeColor = type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
+            const label = type === 'codemap' ? 'File (codemap)' : type;
             return (
               <button
                 key={type}
                 className={`graph-type-pill ${isActive ? 'active' : ''}`}
                 onClick={() => setSelectedType(type)}
               >
-                <span style={{ textTransform: 'capitalize' }}>{type}</span>
-                <span style={{ opacity: 0.7, fontSize: '0.68rem' }}>({count})</span>
+                <span
+                  className="graph-type-pill-dot"
+                  style={{
+                    backgroundColor: typeColor,
+                    boxShadow: isActive ? `0 0 6px ${typeColor}` : 'none'
+                  }}
+                />
+                <span style={{ textTransform: 'capitalize' }}>{label}</span>
+                <span style={{ opacity: 0.7, fontSize: '0.68rem', marginLeft: 2 }}>({count})</span>
               </button>
             );
           })}

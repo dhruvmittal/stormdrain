@@ -100,16 +100,90 @@ export interface GitSettings {
   debounceMs: number;
 }
 
+export interface GraphNodeColors {
+  concept: string;
+  codemap: string;
+  fact: string;
+  lesson: string;
+  pattern: string;
+  warning: string;
+  guide: string;
+  sequence: string;
+}
+
+export interface GraphEdgeColors {
+  imports: string;
+  affects: string;
+  applies_to: string;
+  supports: string;
+  contradicts: string;
+  supersedes: string;
+  depends_on: string;
+  references: string;
+  related_to: string;
+  defaultEdge: string;
+}
+
+export interface GraphColorSettings {
+  nodes: GraphNodeColors;
+  edges: GraphEdgeColors;
+}
+
 export interface StormDrainSettings {
   readTool: ReadToolSettings;
   graph: GraphSettings;
   decay: DecaySettings;
   git: GitSettings;
+  colors?: GraphColorSettings;
 }
 
 export interface GlobalConfig {
   contexts: Record<string, ContextConfig>;
   activeContext: string; // The currently active context
   settings?: StormDrainSettings;
+}
+
+export interface FullNodeDetails {
+  id: string;
+  nodeType: 'memory' | 'codemap';
+  type: MemoryType;
+  title: string;
+  context: string;
+  filePath?: string;
+  content?: string;
+  confidence?: number;
+  tags?: string[];
+  created?: string;
+  updated?: string;
+  accessed?: string;
+  access_count?: number;
+  source?: string;
+  expires?: string | null;
+  superseded_by?: string | null;
+  astOutline?: string[];
+  outgoingRelations: Array<{ target: string; type: string; title?: string }>;
+  incomingRelations: Array<{ source: string; type: string; title?: string }>;
+  attachedMemories?: Array<{ id: string; type: MemoryType; title: string; confidence: number }>;
+}
+
+export interface ConsolidationCandidate {
+  target: string;
+  targetType: 'file' | 'tag' | 'concept';
+  targetTitle: string;
+  memoryCount: number;
+  memories: Array<{
+    id: string;
+    type: MemoryType;
+    title: string;
+    confidence: number;
+    tags: string[];
+    summarySnippet: string;
+  }>;
+}
+
+export interface ConsolidationOptions {
+  target_file: string;
+  memory_ids?: string[];
+  context?: string;
 }
 

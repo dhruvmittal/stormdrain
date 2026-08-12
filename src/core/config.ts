@@ -29,6 +29,30 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
   git: {
     enabled: true,
     debounceMs: 1500
+  },
+  colors: {
+    nodes: {
+      concept: '#38bdf8',  // Sky Blue
+      codemap: '#0284c7',  // Deep Steel Blue (distinct from #38bdf8)
+      fact: '#10b981',     // Emerald Green
+      lesson: '#f59e0b',   // Amber
+      pattern: '#8b5cf6',  // Purple
+      warning: '#ef4444',  // Red
+      guide: '#ec4899',    // Pink
+      sequence: '#6366f1'  // Indigo
+    },
+    edges: {
+      imports: '#38bdf8',
+      affects: '#a855f7',
+      applies_to: '#a855f7',
+      supports: '#10b981',
+      contradicts: '#ef4444',
+      supersedes: '#f59e0b',
+      depends_on: '#6366f1',
+      references: '#64748b',
+      related_to: '#64748b',
+      defaultEdge: '#334155'
+    }
   }
 };
 
@@ -79,7 +103,11 @@ export class ConfigManager {
       readTool: { ...DEFAULT_SETTINGS.readTool, ...(disk.readTool || {}) },
       graph: { ...DEFAULT_SETTINGS.graph, ...(disk.graph || {}) },
       decay: { ...DEFAULT_SETTINGS.decay, ...(disk.decay || {}) },
-      git: { ...DEFAULT_SETTINGS.git, ...(disk.git || {}) }
+      git: { ...DEFAULT_SETTINGS.git, ...(disk.git || {}) },
+      colors: {
+        nodes: { ...DEFAULT_SETTINGS.colors!.nodes, ...(disk.colors?.nodes || {}) },
+        edges: { ...DEFAULT_SETTINGS.colors!.edges, ...(disk.colors?.edges || {}) }
+      }
     };
 
     // Environment variable overrides
@@ -120,7 +148,11 @@ export class ConfigManager {
       readTool: { ...current.readTool, ...(partial.readTool || {}) },
       graph: { ...current.graph, ...(partial.graph || {}) },
       decay: { ...current.decay, ...(partial.decay || {}) },
-      git: { ...current.git, ...(partial.git || {}) }
+      git: { ...current.git, ...(partial.git || {}) },
+      colors: {
+        nodes: { ...current.colors!.nodes, ...(partial.colors?.nodes || {}) },
+        edges: { ...current.colors!.edges, ...(partial.colors?.edges || {}) }
+      }
     };
 
     this.config.settings = updated;
@@ -142,7 +174,8 @@ export class ConfigManager {
 
   public getContext(name: string): ContextConfig | undefined {
     this.loadConfig();
-    return this.config.contexts[name];
+    const resolvedName = name === 'global' ? '_global' : name;
+    return this.config.contexts[resolvedName];
   }
 
   public getActiveContext(): string {
@@ -151,21 +184,26 @@ export class ConfigManager {
   }
 
   public setActiveContext(name: string) {
-    if (!this.config.contexts[name]) {
+    const resolvedName = name === 'global' ? '_global' : name;
+    if (!this.config.contexts[resolvedName]) {
       throw new Error(`Context ${name} does not exist.`);
     }
-    this.config.activeContext = name;
+    this.config.activeContext = resolvedName;
     this.saveConfig();
   }
 
   public addContext(name: string, paths: string[] = [], parent: string | null = null) {
+    if (name === 'global' || name === '_global') {
+      throw new Error(`Context name "${name}" is a reserved system alias for the global context.`);
+    }
     if (this.config.contexts[name]) {
       throw new Error(`Context ${name} already exists.`);
     }
-    if (parent && !this.config.contexts[parent]) {
+    const resolvedParent = parent === 'global' ? '_global' : parent;
+    if (resolvedParent && !this.config.contexts[resolvedParent]) {
       throw new Error(`Parent context ${parent} does not exist.`);
     }
-    this.config.contexts[name] = { name, paths, parent };
+    this.config.contexts[name] = { name, paths, parent: resolvedParent };
     ensureDirectories(name);
     this.saveConfig();
   }
@@ -180,19 +218,20 @@ export class ConfigManager {
 
   public bindPathToContext(contextName: string, workspacePath: string): boolean {
     this.loadConfig();
-    if (!this.config.contexts[contextName]) {
+    const resolvedName = contextName === 'global' ? '_global' : contextName;
+    if (!this.config.contexts[resolvedName]) {
       throw new Error(`Context ${contextName} does not exist.`);
     }
 
-    if (ConfigManager.isSystemOrHomeRoot(workspacePath) && contextName !== '_global') {
+    if (ConfigManager.isSystemOrHomeRoot(workspacePath) && resolvedName !== '_global') {
       return false;
     }
 
     const normPath = path.resolve(workspacePath);
-    const existingPaths = this.config.contexts[contextName].paths || [];
+    const existingPaths = this.config.contexts[resolvedName].paths || [];
 
     if (!existingPaths.includes(normPath)) {
-      this.config.contexts[contextName].paths = [...existingPaths, normPath];
+      this.config.contexts[resolvedName].paths = [...existingPaths, normPath];
       this.saveConfig();
       return true;
     }
@@ -201,16 +240,17 @@ export class ConfigManager {
 
   public unbindPathFromContext(contextName: string, workspacePath: string): boolean {
     this.loadConfig();
-    if (!this.config.contexts[contextName]) {
+    const resolvedName = contextName === 'global' ? '_global' : contextName;
+    if (!this.config.contexts[resolvedName]) {
       throw new Error(`Context ${contextName} does not exist.`);
     }
 
     const normPath = path.resolve(workspacePath);
-    const existingPaths = this.config.contexts[contextName].paths || [];
+    const existingPaths = this.config.contexts[resolvedName].paths || [];
     const filtered = existingPaths.filter(p => path.resolve(p) !== normPath);
 
     if (filtered.length !== existingPaths.length) {
-      this.config.contexts[contextName].paths = filtered;
+      this.config.contexts[resolvedName].paths = filtered;
       this.saveConfig();
       return true;
     }
@@ -220,7 +260,7 @@ export class ConfigManager {
   public deleteContext(name: string, purgeDisk: boolean = true): boolean {
     this.loadConfig();
 
-    if (name === '_global') {
+    if (name === '_global' || name === 'global') {
       throw new Error('Cannot delete the _global context — it is the system fallback.');
     }
 
@@ -278,15 +318,21 @@ export class ConfigManager {
   public resolveContext(explicitContext?: string, cwd: string = process.cwd()): string {
     this.loadConfig();
 
-    // Tier 1: Explicitly specified context argument
-    if (explicitContext && this.config.contexts[explicitContext]) {
-      return explicitContext;
+    // Tier 1: Explicitly specified context argument (with 'global' -> '_global' normalization)
+    if (explicitContext) {
+      const resolvedExplicit = explicitContext === 'global' ? '_global' : explicitContext;
+      if (this.config.contexts[resolvedExplicit]) {
+        return resolvedExplicit;
+      }
     }
 
     // Tier 2: Environment variable override
     const envContext = process.env.STORMDRAIN_CONTEXT;
-    if (envContext && this.config.contexts[envContext]) {
-      return envContext;
+    if (envContext) {
+      const resolvedEnv = envContext === 'global' ? '_global' : envContext;
+      if (this.config.contexts[resolvedEnv]) {
+        return resolvedEnv;
+      }
     }
 
     // Tier 3: Path matching based on working directory

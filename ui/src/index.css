@@ -353,14 +353,14 @@ tr:hover td {
   display: inline-block;
 }
 
-.badge-concept { background-color: rgba(56, 189, 248, 0.2); color: var(--color-concept); }
-.badge-fact { background-color: rgba(16, 185, 129, 0.2); color: var(--color-fact); }
-.badge-lesson { background-color: rgba(245, 158, 11, 0.2); color: var(--color-lesson); }
-.badge-pattern { background-color: rgba(139, 92, 246, 0.2); color: var(--color-pattern); }
-.badge-warning { background-color: rgba(239, 68, 68, 0.2); color: var(--color-warning); }
-.badge-guide { background-color: rgba(236, 72, 153, 0.2); color: var(--color-guide); }
-.badge-codemap { background-color: rgba(6, 182, 212, 0.2); color: var(--color-codemap); }
-.badge-sequence { background-color: rgba(99, 102, 241, 0.2); color: var(--color-sequence); }
+.badge-concept { background-color: color-mix(in srgb, var(--color-concept) 20%, transparent); color: var(--color-concept); }
+.badge-fact { background-color: color-mix(in srgb, var(--color-fact) 20%, transparent); color: var(--color-fact); }
+.badge-lesson { background-color: color-mix(in srgb, var(--color-lesson) 20%, transparent); color: var(--color-lesson); }
+.badge-pattern { background-color: color-mix(in srgb, var(--color-pattern) 20%, transparent); color: var(--color-pattern); }
+.badge-warning { background-color: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning); }
+.badge-guide { background-color: color-mix(in srgb, var(--color-guide) 20%, transparent); color: var(--color-guide); }
+.badge-codemap { background-color: color-mix(in srgb, var(--color-codemap) 20%, transparent); color: var(--color-codemap); }
+.badge-sequence { background-color: color-mix(in srgb, var(--color-sequence) 20%, transparent); color: var(--color-sequence); }
 .badge-default { background-color: var(--bg-surface-hover); color: var(--text-main); }
 
 /* Filter Pills */
@@ -1180,6 +1180,18 @@ input:checked + .slider.round:before {
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
 }
 
+.graph-type-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+}
+
+.graph-type-pill:hover .graph-type-pill-dot {
+  transform: scale(1.2);
+}
+
 .graph-scope-row {
   display: flex;
   align-items: center;
@@ -1469,6 +1481,113 @@ input:checked + .slider.round:before {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Graph Appearance & Palette Settings */
+.config-card.full-width {
+  grid-column: 1 / -1;
+}
+
+.presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.preset-btn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 10px 14px;
+}
+
+.colors-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.color-swatch-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.color-swatch-item:hover {
+  background: var(--bg-surface-hover);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.color-swatch-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.color-input {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  background: none;
+  padding: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.1);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.color-input:hover {
+  transform: scale(1.1);
+  box-shadow: 0 0 0 2px var(--accent-color);
+}
+
+.color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 50%;
+}
+
+.color-input::-moz-color-swatch {
+  border: none;
+  border-radius: 50%;
+}
+
+.color-label-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.color-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.color-desc {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.color-hex {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: var(--text-muted);
 }
 
 

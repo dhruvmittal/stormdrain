@@ -17,7 +17,7 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     } catch {}
   });
 
-  it('should create AGENTS.md if file does not exist', () => {
+  it('should create AGENTS.md if file does not exist with sandboxing rules', () => {
     const res = scaffoldAgentsMd(tempDir);
     expect(res.created).toBe(true);
     expect(res.updated).toBe(false);
@@ -27,6 +27,8 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     const content = fs.readFileSync(filePath, 'utf8');
     expect(content).toContain('Agent Guidelines & Project Context');
     expect(content).toContain('StormDrain Persistent Memory');
+    expect(content).toContain('~/.stormdrain');
+    expect(content).toContain('MCP-First Execution');
     expect(content).toContain('sd_recall');
   });
 
@@ -52,7 +54,7 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     expect(matches?.length).toBe(1);
   });
 
-  it('should leave AGENTS.md completely untouched if the user has already mentioned stormdrain or sd tools in their own custom format', () => {
+  it('should leave AGENTS.md untouched if user mentioned stormdrain without force flag', () => {
     const filePath = path.join(tempDir, 'AGENTS.md');
     const userCustomRules = `# My Custom Rules\n\nAgents must always query the storm drain tool before touching core code.\n`;
     fs.writeFileSync(filePath, userCustomRules, 'utf8');
@@ -62,6 +64,24 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     expect(res.updated).toBe(false);
 
     const content = fs.readFileSync(filePath, 'utf8');
-    expect(content).toBe(userCustomRules); // 100% identical and untouched
+    expect(content).toBe(userCustomRules);
+  });
+
+  it('should force update StormDrain section while preserving custom user sections', () => {
+    const filePath = path.join(tempDir, 'AGENTS.md');
+    const initialContent = `# Project Guidelines\n\n## Custom Team Rules\n- Rule A\n\n## StormDrain Persistent Memory Protocol\nOld outdated protocol text...\n\n## Other Appendix\n- Extra info\n`;
+    fs.writeFileSync(filePath, initialContent, 'utf8');
+
+    const res = scaffoldAgentsMd(tempDir, { force: true });
+    expect(res.created).toBe(false);
+    expect(res.updated).toBe(true);
+
+    const updated = fs.readFileSync(filePath, 'utf8');
+    expect(updated).toContain('# Project Guidelines');
+    expect(updated).toContain('## Custom Team Rules');
+    expect(updated).toContain('~/.stormdrain');
+    expect(updated).toContain('MCP-First Execution');
+    expect(updated).toContain('## Other Appendix');
+    expect(updated).not.toContain('Old outdated protocol text');
   });
 });

@@ -147,7 +147,7 @@ describe('deleteContext', () => {
     expect(config.getContext('myproject')).toBeUndefined();
   });
 
-  it('should purge context directory from disk', () => {
+  it('should purge context directory from disk', async () => {
     config.addContext('purgeme', ['/tmp/purgeme']);
     
     // Create a ContextManager to populate disk
@@ -157,14 +157,14 @@ describe('deleteContext', () => {
     const ctxPath = path.join(tmpDir, 'contexts', 'purgeme');
     expect(fs.existsSync(ctxPath)).toBe(true);
     
-    ctx.close();
+    await ctx.close();
     config.deleteContext('purgeme', true);
     
     expect(fs.existsSync(ctxPath)).toBe(false);
     expect(config.getContext('purgeme')).toBeUndefined();
   });
 
-  it('should not purge disk when purgeDisk is false', () => {
+  it('should not purge disk when purgeDisk is false', async () => {
     config.addContext('keepdata', ['/tmp/keepdata']);
     const ctx = new ContextManager('keepdata');
     ctx.addMemory('fact', 'test', 'test content');
@@ -172,7 +172,7 @@ describe('deleteContext', () => {
     const ctxPath = path.join(tmpDir, 'contexts', 'keepdata');
     expect(fs.existsSync(ctxPath)).toBe(true);
     
-    ctx.close();
+    await ctx.close();
     config.deleteContext('keepdata', false);
     
     // Directory should still exist

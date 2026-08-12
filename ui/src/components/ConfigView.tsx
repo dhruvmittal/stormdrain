@@ -8,10 +8,127 @@ import {
   AlertTriangle, 
   Cpu, 
   ShieldAlert,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Palette,
+  Sparkles
 } from 'lucide-react';
-import { api, type StormDrainSettings } from '../api';
+import { api, applyThemeColors, type StormDrainSettings, type GraphColorSettings } from '../api';
 
+
+const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSettings }> = [
+  {
+    name: 'Cyberpunk Neon',
+    desc: 'Electric blues, cyans, ambers, and purples',
+    colors: {
+      nodes: {
+        concept: '#38bdf8',
+        codemap: '#06b6d4',
+        fact: '#10b981',
+        lesson: '#f59e0b',
+        pattern: '#8b5cf6',
+        warning: '#ef4444',
+        guide: '#ec4899',
+        sequence: '#6366f1'
+      },
+      edges: {
+        affects: '#38bdf8',
+        applies_to: '#0ea5e9',
+        supports: '#10b981',
+        contradicts: '#ef4444',
+        supersedes: '#f59e0b',
+        related_to: '#94a3b8',
+        references: '#a855f7',
+        depends_on: '#6366f1',
+        part_of: '#ec4899',
+        distilled_from: '#8b5cf6'
+      }
+    }
+  },
+  {
+    name: 'Oceanic Teal',
+    desc: 'Deep marine blues, teals, emeralds, and aquas',
+    colors: {
+      nodes: {
+        concept: '#0284c7',
+        codemap: '#0d9488',
+        fact: '#059669',
+        lesson: '#d97706',
+        pattern: '#0369a1',
+        warning: '#e11d48',
+        guide: '#2dd4bf',
+        sequence: '#2563eb'
+      },
+      edges: {
+        affects: '#0284c7',
+        applies_to: '#0d9488',
+        supports: '#059669',
+        contradicts: '#e11d48',
+        supersedes: '#d97706',
+        related_to: '#64748b',
+        references: '#38bdf8',
+        depends_on: '#2563eb',
+        part_of: '#2dd4bf',
+        distilled_from: '#0ea5e9'
+      }
+    }
+  },
+  {
+    name: 'Sunset Amber',
+    desc: 'Warm ambers, corals, crimsons, and golden sands',
+    colors: {
+      nodes: {
+        concept: '#f97316',
+        codemap: '#fb923c',
+        fact: '#84cc16',
+        lesson: '#eab308',
+        pattern: '#a855f7',
+        warning: '#dc2626',
+        guide: '#f43f5e',
+        sequence: '#d97706'
+      },
+      edges: {
+        affects: '#f97316',
+        applies_to: '#fb923c',
+        supports: '#84cc16',
+        contradicts: '#dc2626',
+        supersedes: '#eab308',
+        related_to: '#78716c',
+        references: '#a855f7',
+        depends_on: '#d97706',
+        part_of: '#f43f5e',
+        distilled_from: '#f59e0b'
+      }
+    }
+  },
+  {
+    name: 'Monochrome Slate',
+    desc: 'Minimal high-contrast slates and silvers',
+    colors: {
+      nodes: {
+        concept: '#94a3b8',
+        codemap: '#cbd5e1',
+        fact: '#64748b',
+        lesson: '#e2e8f0',
+        pattern: '#94a3b8',
+        warning: '#f87171',
+        guide: '#f1f5f9',
+        sequence: '#475569'
+      },
+      edges: {
+        affects: '#94a3b8',
+        applies_to: '#cbd5e1',
+        supports: '#64748b',
+        contradicts: '#f87171',
+        supersedes: '#e2e8f0',
+        related_to: '#334155',
+        references: '#94a3b8',
+        depends_on: '#475569',
+        part_of: '#f1f5f9',
+        distilled_from: '#64748b'
+      }
+    }
+  }
+];
 
 const DEFAULT_SETTINGS: StormDrainSettings = {
   readTool: {
@@ -37,14 +154,39 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
   git: {
     enabled: true,
     debounceMs: 1500
+  },
+  colors: {
+    nodes: {
+      concept: '#38bdf8',
+      codemap: '#06b6d4',
+      fact: '#10b981',
+      lesson: '#f59e0b',
+      pattern: '#8b5cf6',
+      warning: '#ef4444',
+      guide: '#ec4899',
+      sequence: '#6366f1'
+    },
+    edges: {
+      affects: '#38bdf8',
+      applies_to: '#0ea5e9',
+      supports: '#10b981',
+      contradicts: '#ef4444',
+      supersedes: '#f59e0b',
+      related_to: '#94a3b8',
+      references: '#a855f7',
+      depends_on: '#6366f1',
+      part_of: '#ec4899',
+      distilled_from: '#8b5cf6'
+    }
   }
 };
 
 interface ConfigViewProps {
   dataVersion?: number;
+  onConfigSaved?: () => void;
 }
 
-export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0 }) => {
+export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfigSaved }) => {
   const [settings, setSettings] = useState<StormDrainSettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
@@ -60,6 +202,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0 }) => {
     const data = await api.getConfig();
     if (data) {
       setSettings(data);
+      if (data.colors) {
+        applyThemeColors(data.colors);
+      }
     }
     setLoading(false);
   };
@@ -75,6 +220,10 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0 }) => {
     setSaving(false);
     if (res.success && res.settings) {
       setSettings(res.settings);
+      if (res.settings.colors) {
+        applyThemeColors(res.settings.colors);
+      }
+      onConfigSaved?.();
       showToast('Settings saved and applied successfully!');
     } else {
       showToast(res.error || 'Failed to save settings', 'error');
@@ -90,6 +239,10 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0 }) => {
     setSaving(false);
     if (res.success && res.settings) {
       setSettings(res.settings);
+      if (res.settings.colors) {
+        applyThemeColors(res.settings.colors);
+      }
+      onConfigSaved?.();
       showToast('Settings reset to default values.');
     } else {
       showToast(res.error || 'Failed to reset settings', 'error');
@@ -489,6 +642,171 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0 }) => {
               <span className="range-val-badge">
                 {settings.git.debounceMs === 0 ? '0ms (Immediate)' : `${settings.git.debounceMs} ms`}
               </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 5: Graph Appearance & Palette */}
+        <div className="config-card full-width">
+          <div className="config-card-header">
+            <div className="config-card-title">
+              <Palette size={18} style={{ color: 'var(--color-guide)' }} />
+              <h3>Graph Appearance & Color Customization</h3>
+            </div>
+            <span className="config-card-badge">Visuals</span>
+          </div>
+          <p className="config-card-desc">
+            Customize node type colors and semantic edge relationship colors rendered in the interactive D3 knowledge graph.
+          </p>
+
+          {/* Theme Presets */}
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Sparkles size={14} style={{ color: 'var(--accent-color)' }} />
+                Palette Presets
+              </label>
+              <span>Apply curated color schemes across all node types and relationship edges</span>
+            </div>
+            <div className="segmented-group presets-grid">
+              {PALETTE_PRESETS.map((preset) => (
+                <button
+                  key={preset.name}
+                  type="button"
+                  className="segmented-btn preset-btn"
+                  onClick={() => {
+                    const newColors = JSON.parse(JSON.stringify(preset.colors));
+                    setSettings(prev => ({
+                      ...prev,
+                      colors: newColors
+                    }));
+                    applyThemeColors(newColors);
+                  }}
+                  title={preset.desc}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '3px' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: preset.colors.nodes.concept }}></span>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: preset.colors.nodes.fact }}></span>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: preset.colors.nodes.pattern }}></span>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: preset.colors.nodes.warning }}></span>
+                    </div>
+                    <span className="seg-title">{preset.name}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Node Colors */}
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Node Types Palette</label>
+              <span>Custom color mapping for knowledge nodes and file vertices</span>
+            </div>
+            <div className="colors-grid">
+              {[
+                { key: 'concept', label: 'Concept', desc: 'Mental models & abstract knowledge' },
+                { key: 'codemap', label: 'Codemap (Source File)', desc: 'Source file vertices in codebase DAG' },
+                { key: 'fact', label: 'Fact', desc: 'Invariants & configuration rules' },
+                { key: 'lesson', label: 'Lesson', desc: 'Post-incident takeaways' },
+                { key: 'pattern', label: 'Pattern', desc: 'Design blueprints & architectural recipes' },
+                { key: 'warning', label: 'Warning', desc: 'Failure modes, traps & gotchas' },
+                { key: 'guide', label: 'Guide', desc: 'Consolidated super-memories' },
+                { key: 'sequence', label: 'Sequence', desc: 'Step-by-step procedures' },
+              ].map((item) => {
+                const nodeColors = settings.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes;
+                const currentColor = (nodeColors as any)[item.key] || '#38bdf8';
+                return (
+                  <div key={item.key} className="color-swatch-item">
+                    <div className="color-swatch-left">
+                      <input
+                        type="color"
+                        className="color-input"
+                        value={currentColor}
+                        onChange={(e) => {
+                          const updated = {
+                            ...DEFAULT_SETTINGS.colors!.nodes,
+                            ...(settings.colors?.nodes || {}),
+                            [item.key]: e.target.value
+                          };
+                          const newColors = {
+                            edges: settings.colors?.edges || DEFAULT_SETTINGS.colors!.edges,
+                            nodes: updated as any
+                          };
+                          setSettings(prev => ({
+                            ...prev,
+                            colors: newColors
+                          }));
+                          applyThemeColors(newColors);
+                        }}
+                      />
+                      <div className="color-label-group">
+                        <span className="color-name">{item.label}</span>
+                        <span className="color-desc">{item.desc}</span>
+                      </div>
+                    </div>
+                    <code className="color-hex">{currentColor.toUpperCase()}</code>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Edge Colors */}
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Edge Relations Palette</label>
+              <span>Custom color mapping for semantic relationship links</span>
+            </div>
+            <div className="colors-grid">
+              {[
+                { key: 'affects', label: 'affects', desc: 'Impacts target file or system' },
+                { key: 'applies_to', label: 'applies_to', desc: 'Applies to specific scope' },
+                { key: 'supports', label: 'supports', desc: 'Validates or reinforces evidence' },
+                { key: 'contradicts', label: 'contradicts', desc: 'Opposes or refutes claim' },
+                { key: 'supersedes', label: 'supersedes', desc: 'Replaces older memory' },
+                { key: 'related_to', label: 'related_to', desc: 'General associative link' },
+                { key: 'references', label: 'references', desc: 'Direct citation or mention' },
+                { key: 'depends_on', label: 'depends_on', desc: 'Hard architectural dependency' },
+                { key: 'part_of', label: 'part_of', desc: 'Hierarchical component' },
+                { key: 'distilled_from', label: 'distilled_from', desc: 'Super-memory provenance' },
+              ].map((item) => {
+                const edgeColors = settings.colors?.edges || DEFAULT_SETTINGS.colors!.edges;
+                const currentColor = (edgeColors as any)[item.key] || '#38bdf8';
+                return (
+                  <div key={item.key} className="color-swatch-item">
+                    <div className="color-swatch-left">
+                      <input
+                        type="color"
+                        className="color-input"
+                        value={currentColor}
+                        onChange={(e) => {
+                          const updated = {
+                            ...DEFAULT_SETTINGS.colors!.edges,
+                            ...(settings.colors?.edges || {}),
+                            [item.key]: e.target.value
+                          };
+                          const newColors = {
+                            nodes: settings.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes,
+                            edges: updated as any
+                          };
+                          setSettings(prev => ({
+                            ...prev,
+                            colors: newColors
+                          }));
+                          applyThemeColors(newColors);
+                        }}
+                      />
+                      <div className="color-label-group">
+                        <span className="color-name">--({item.label})--&gt;</span>
+                        <span className="color-desc">{item.desc}</span>
+                      </div>
+                    </div>
+                    <code className="color-hex">{currentColor.toUpperCase()}</code>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

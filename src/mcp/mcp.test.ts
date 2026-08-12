@@ -390,6 +390,64 @@ describe('StormDrainMcpServer Protocol', () => {
     const text = ((pruneRes as any).content[0] as { type: string; text: string }).text;
     expect(text).toContain('Successfully pruned 1 orphaned codemap vertices');
   });
+
+  it('should list available StormDrain MCP prompts including sd_curate', async () => {
+    const response = await client.listPrompts();
+    const promptNames = response.prompts.map(p => p.name);
+
+    expect(promptNames).toContain('sd_curate');
+    const curatePrompt = response.prompts.find(p => p.name === 'sd_curate');
+    expect(curatePrompt?.description).toContain('curation');
+    expect(curatePrompt?.arguments?.some(a => a.name === 'target')).toBe(true);
+    expect(curatePrompt?.arguments?.some(a => a.name === 'threshold')).toBe(true);
+  });
+
+  it('should execute getPrompt for sd_curate in graph sweep mode', async () => {
+    await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'fact',
+        title: 'Environment Clang Fact',
+        content: 'Clang requires -stdlib=libc++ on macOS.',
+        tags: ['#environment', '#compiler']
+      }
+    });
+
+    const promptRes = await client.getPrompt({
+      name: 'sd_curate',
+      arguments: {}
+    });
+
+    expect(promptRes.messages.length).toBeGreaterThan(0);
+    const text = (promptRes.messages[0].content as any).text;
+    expect(text).toContain('StormDrain Graph-Wide Curation Sweep');
+    expect(text).toContain('Environment Clang Fact');
+    expect(text).toContain('Step-by-Step Curation Workflow');
+  });
+
+  it('should execute getPrompt for sd_curate on focused target', async () => {
+    await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'warning',
+        title: 'Target Guardrail',
+        content: 'Must guard against concurrent writes.',
+        target_file: 'src/core/store.ts'
+      }
+    });
+
+    const promptRes = await client.getPrompt({
+      name: 'sd_curate',
+      arguments: {
+        target: 'src/core/store.ts'
+      }
+    });
+
+    expect(promptRes.messages.length).toBeGreaterThan(0);
+    const text = (promptRes.messages[0].content as any).text;
+    expect(text).toContain('StormDrain Knowledge Curation: Target "src/core/store.ts"');
+    expect(text).toContain('Target Guardrail');
+  });
 });
 
 

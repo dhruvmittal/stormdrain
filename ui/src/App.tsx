@@ -15,7 +15,7 @@ import Dashboard from './components/Dashboard';
 import MemoryBrowser from './components/MemoryBrowser';
 import GraphView from './components/GraphView';
 import ConfigView from './components/ConfigView';
-import { api } from './api';
+import { api, applyThemeColors } from './api';
 import './index.css';
 
 type Tab = 'dashboard' | 'browser' | 'graph' | 'settings';
@@ -83,6 +83,11 @@ function App() {
 
   useEffect(() => {
     fetchContexts();
+    api.getConfig().then(cfg => {
+      if (cfg?.colors) {
+        applyThemeColors(cfg.colors);
+      }
+    });
   }, []);
 
   // Soft-refresh dispatcher across all views
@@ -91,6 +96,10 @@ function App() {
     setDataVersion(v => v + 1);
     try {
       await fetchContexts();
+      const cfg = await api.getConfig();
+      if (cfg?.colors) {
+        applyThemeColors(cfg.colors);
+      }
     } catch {
       // Ignore network errors on refresh
     }
@@ -354,7 +363,7 @@ function App() {
         {activeTab === 'dashboard' && <Dashboard activeContext={activeContext} dataVersion={dataVersion} />}
         {activeTab === 'browser' && <MemoryBrowser activeContext={activeContext} dataVersion={dataVersion} />}
         {activeTab === 'graph' && <GraphView activeContext={activeContext} dataVersion={dataVersion} />}
-        {activeTab === 'settings' && <ConfigView dataVersion={dataVersion} />}
+        {activeTab === 'settings' && <ConfigView dataVersion={dataVersion} onConfigSaved={refreshData} />}
       </div>
     </div>
   );

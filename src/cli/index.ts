@@ -10,6 +10,7 @@ import { generateCodebaseCodemap } from '../utils/codemapGenerator';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
+import { generateCuratePrompt } from '../utils/promptTemplates';
 
 
 const program = new Command();
@@ -78,9 +79,24 @@ program
   .description('Initialize a context, bind workspace directory, and build codebase file DAG')
   .argument('[name]', 'Context name (defaults to directory name or resolved context)')
   .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
+  .option('-a, --agents-only', 'Only scaffold or update AGENTS.md instructions without re-initializing context or scanning')
+  .option('-f, --force', 'Force update/overwrite StormDrain section in AGENTS.md')
   .option('--submodules <policy>', 'Submodule handling policy: dive, sum, or ask (default: ask)')
   .action(async (name, dir, options) => {
     const targetDir = dir || process.cwd();
+
+    if (options.agentsOnly) {
+      const scaffoldRes = scaffoldAgentsMd(targetDir, { force: options.force });
+      if (scaffoldRes.created) {
+        console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+      } else if (scaffoldRes.updated) {
+        console.log(`Updated StormDrain instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+      } else {
+        console.log(`AGENTS.md already contains instructions (use --force to overwrite).`);
+      }
+      return;
+    }
+
     const folderName = path.basename(path.resolve(targetDir));
     const targetContextName = name || folderName;
 
@@ -95,7 +111,7 @@ program
 
     config.setActiveContext(targetContextName);
 
-    const scaffoldRes = scaffoldAgentsMd(targetDir);
+    const scaffoldRes = scaffoldAgentsMd(targetDir, { force: options.force });
     if (scaffoldRes.created) {
       console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
     } else if (scaffoldRes.updated) {
@@ -110,6 +126,23 @@ program
       console.log(`Successfully initialized context "${targetContextName}" with ${createdCount} file vertices in DAG skeleton.`);
     } finally {
       await ctx.close();
+    }
+  });
+
+program
+  .command('agents')
+  .description('Scaffold or refresh AGENTS.md instruction guidelines')
+  .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
+  .option('-f, --force', 'Force update/overwrite the StormDrain section in existing AGENTS.md')
+  .action((dir, options) => {
+    const targetDir = dir || process.cwd();
+    const scaffoldRes = scaffoldAgentsMd(targetDir, { force: options.force });
+    if (scaffoldRes.created) {
+      console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+    } else if (scaffoldRes.updated) {
+      console.log(`Updated StormDrain instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+    } else {
+      console.log(`AGENTS.md already contains instructions (use --force to overwrite).`);
     }
   });
 
@@ -454,22 +487,159 @@ program
 
 program
   .command('search')
-  .description('Search memories')
+  .description('Search memories across active and global contexts')
   .argument('<query>', 'Search query')
   .option('-c, --context <name>', 'Target context override')
   .action(async (query, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const results = ctx.searchMemories(query);
+      const results = ctx.searchMemories(query, true) as Array<{ type: string; title: string; id: string; confidence: number; content_snippet: string; context?: string }>;
       if (results.length === 0) {
-        console.log(`No memories found in context "${targetCtxName}".`);
+        console.log(`No memories found matching "${query}".`);
       } else {
-        for (const r of results as any[]) {
+        for (const r of results) {
           console.log(`\n[${r.type.toUpperCase()}] ${r.title} (${r.id})`);
-          console.log(`Confidence: ${r.confidence}`);
+          console.log(`Context: ${r.context || targetCtxName} | Confidence: ${r.confidence}`);
           console.log(r.content_snippet.substring(0, 200) + '...');
         }
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('get')
+  .description('Inspect full details for any memory node or codemap file vertex')
+  .argument('<id>', 'Memory ID (e.g. mem_123456) or file path / codemap ID (e.g. file_abc or src/index.ts)')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output full details as JSON')
+  .action(async (id, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const details = ctx.getNodeDetails(id);
+      if (!details) {
+        console.error(`Node "${id}" not found in context "${targetCtxName}" or global context.`);
+        process.exit(1);
+      }
+      if (options.json) {
+        console.log(JSON.stringify(details, null, 2));
+        return;
+      }
+      console.log(`\n======================================================`);
+      console.log(`[${details.nodeType === 'codemap' ? 'FILE VERTEX' : details.type.toUpperCase()}] ${details.title}`);
+      console.log(`======================================================`);
+      console.log(`- ID: ${details.id}`);
+      console.log(`- Context: ${details.context}`);
+      console.log(`- Type: ${details.type}`);
+      if (details.confidence !== undefined) console.log(`- Confidence: ${details.confidence}`);
+      if (details.tags && details.tags.length > 0) console.log(`- Tags: ${details.tags.map(t => `#${t}`).join(' ')}`);
+      if (details.filePath) console.log(`- File Path: ${details.filePath}`);
+      if (details.created) console.log(`- Created: ${details.created}`);
+      if (details.updated) console.log(`- Updated: ${details.updated}`);
+      if (details.accessed) console.log(`- Accessed: ${details.accessed} (count: ${details.access_count ?? 0})`);
+      if (details.source) console.log(`- Source: ${details.source}`);
+      if (details.expires) console.log(`- Expires: ${details.expires}`);
+      if (details.superseded_by) console.log(`- Superseded By: ${details.superseded_by}`);
+
+      if (details.outgoingRelations.length > 0) {
+        console.log(`\n🔗 Outgoing Relations (${details.outgoingRelations.length}):`);
+        for (const rel of details.outgoingRelations) {
+          console.log(`  - --(${rel.type})--> ${rel.title || rel.target} (${rel.target})`);
+        }
+      }
+
+      if (details.incomingRelations.length > 0) {
+        console.log(`\n📥 Incoming Relations (${details.incomingRelations.length}):`);
+        for (const rel of details.incomingRelations) {
+          console.log(`  - <--(${rel.type})-- ${rel.title || rel.source} (${rel.source})`);
+        }
+      }
+
+      if (details.attachedMemories && details.attachedMemories.length > 0) {
+        console.log(`\n🧠 Attached Micro-Memories (${details.attachedMemories.length}):`);
+        for (const mem of details.attachedMemories) {
+          console.log(`  - [${mem.type.toUpperCase()}] ${mem.title} (${mem.id}, confidence: ${mem.confidence})`);
+        }
+      }
+
+      if (details.astOutline && details.astOutline.length > 0) {
+        console.log(`\n🌲 AST Symbol Outline:`);
+        for (const sym of details.astOutline) {
+          console.log(`  - ${sym}`);
+        }
+      }
+
+      if (details.content) {
+        console.log(`\n📝 Content:\n${details.content}`);
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('delete')
+  .alias('del')
+  .description('Delete a memory and cascade clean its relational links and search indices')
+  .argument('<id>', 'Memory ID to delete (e.g. mem_123456)')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-f, --force', 'Skip confirmation prompt')
+  .action(async (id, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const existing = ctx.getMemory(id);
+      if (!existing) {
+        console.error(`Memory "${id}" not found in context "${targetCtxName}".`);
+        process.exit(1);
+      }
+
+      if (!options.force && process.stdin.isTTY) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(`Delete memory "${existing.metadata.title}" (${id}) from context "${targetCtxName}"? [y/N]: `, resolve);
+        });
+        rl.close();
+
+        if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+          console.log('Aborted.');
+          return;
+        }
+      }
+
+      ctx.deleteMemory(id);
+      console.log(`Successfully deleted memory "${existing.metadata.title}" (${id}) from context "${targetCtxName}".`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('candidates')
+  .description('Find target files/concepts with high micro-memory density ready for consolidation')
+  .option('-t, --threshold <number>', 'Minimum micro-memories threshold')
+  .option('-c, --context <name>', 'Target context override')
+  .action(async (options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const threshold = options.threshold ? parseInt(options.threshold, 10) : undefined;
+      const candidates = ctx.findConsolidationCandidates(threshold);
+      if (candidates.length === 0) {
+        console.log(`No consolidation candidates found in context "${targetCtxName}".`);
+        return;
+      }
+      console.log(`Found ${candidates.length} consolidation candidate(s) in context "${targetCtxName}":\n`);
+      for (const cand of candidates) {
+        console.log(`🎯 ${cand.targetTitle} (${cand.target}) - ${cand.memoryCount} attached micro-memories:`);
+        for (const m of cand.memories) {
+          const tags = m.tags.length > 0 ? ` [${m.tags.map(t => `#${t}`).join(' ')}]` : '';
+          console.log(`   - [${m.type.toUpperCase()}] ${m.title} (${m.id}, conf: ${m.confidence})${tags}`);
+        }
+        console.log('');
       }
     } finally {
       await ctx.close();
@@ -537,6 +707,53 @@ program
   .action(async () => {
     const server = new StormDrainMcpServer();
     await server.run();
+  });
+
+program
+  .command('curate')
+  .description('Run holistic memory curation prompt / graph health check')
+  .argument('[target]', 'Optional target file path or memory ID to focus curation on')
+  .option('-c, --context <name>', 'Target context override (defaults to active workspace context)')
+  .option('-t, --threshold <number>', 'Consolidation candidate threshold (default: 3)')
+  .action(async (target, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const threshold = options.threshold ? parseInt(options.threshold, 10) : 3;
+      const result = await generateCuratePrompt(ctx, {
+        target: target ? target.trim() : undefined,
+        threshold: isNaN(threshold) ? 3 : threshold,
+      });
+      console.log(result.promptText);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('prompt')
+  .description('Generate guided agent prompt instructions')
+  .argument('<action>', 'Prompt action: curate')
+  .argument('[target]', 'Optional target file path or memory ID')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-t, --threshold <number>', 'Consolidation candidate threshold')
+  .action(async (action, target, options) => {
+    if (action !== 'curate') {
+      console.error(`Unknown prompt action: "${action}". Available actions: curate`);
+      process.exit(1);
+    }
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const threshold = options.threshold ? parseInt(options.threshold, 10) : 3;
+      const result = await generateCuratePrompt(ctx, {
+        target: target ? target.trim() : undefined,
+        threshold: isNaN(threshold) ? 3 : threshold,
+      });
+      console.log(result.promptText);
+    } finally {
+      await ctx.close();
+    }
   });
 
 program

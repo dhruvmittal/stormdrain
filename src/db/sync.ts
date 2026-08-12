@@ -47,7 +47,18 @@ export const syncMemoryToDb = (db: Database.Database, memory: Memory) => {
   const tx = db.transaction(() => {
     // 1. Upsert memory metadata
     insertMemory.run(
-      m.id, m.type, m.title, m.context, m.confidence, m.created, m.updated, m.accessed, m.access_count, m.source, m.expires, m.superseded_by
+      m.id,
+      m.type,
+      m.title,
+      m.context,
+      m.confidence,
+      m.created,
+      m.updated,
+      m.accessed,
+      m.access_count,
+      m.source || 'direct',
+      m.expires ?? null,
+      m.superseded_by ?? null
     );
 
     // 2. Update tags
@@ -74,7 +85,8 @@ export const deleteMemoryFromDb = (db: Database.Database, id: string) => {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM memories WHERE id = ?').run(id);
     db.prepare('DELETE FROM memories_fts WHERE id = ?').run(id);
-    db.prepare('DELETE FROM relations WHERE target_id = ?').run(id);
+    db.prepare('DELETE FROM tags WHERE memory_id = ?').run(id);
+    db.prepare('DELETE FROM relations WHERE source_id = ? OR target_id = ?').run(id, id);
   });
   tx();
 };
