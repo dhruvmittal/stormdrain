@@ -155,6 +155,12 @@ describe('Web API Server', () => {
         },
         graph: {
           forwardWeight: 0.88
+        },
+        colors: {
+          nodes: {
+            concept: '#ffffff',
+            codemap: '#123456'
+          }
         }
       })
     });
@@ -164,6 +170,14 @@ describe('Web API Server', () => {
     expect(updateData.settings.readTool.tokenBudget).toBe(750);
     expect(updateData.settings.readTool.mode).toBe('standalone');
     expect(updateData.settings.graph.forwardWeight).toBe(0.88);
+    expect(updateData.settings.colors.nodes.concept).toBe('#ffffff');
+    expect(updateData.settings.colors.nodes.codemap).toBe('#123456');
+
+    // 2b. GET updated config from separate request
+    const getUpdatedRes = await fetch(`${baseUrl}/api/config`);
+    const getUpdatedData = await getUpdatedRes.json();
+    expect(getUpdatedData.colors.nodes.concept).toBe('#ffffff');
+    expect(getUpdatedData.colors.nodes.codemap).toBe('#123456');
 
     // 3. POST config reset
     const resetRes = await fetch(`${baseUrl}/api/config/reset`, {
@@ -174,6 +188,7 @@ describe('Web API Server', () => {
     expect(resetData.success).toBe(true);
     expect(resetData.settings.readTool.tokenBudget).toBe(500);
     expect(resetData.settings.readTool.mode).toBe('auto');
+    expect(resetData.settings.colors.nodes.concept).toBe('#38bdf8');
   });
 
   it('should handle configuration error states gracefully', async () => {

@@ -89,6 +89,40 @@ export const api = {
     }
   },
 
+  async getNodeDetails(context: string, id: string): Promise<FullNodeDetails | null> {
+    try {
+      const { ok, data } = await safeJsonFetch(`${API_BASE}/nodes/${encodeURIComponent(id)}?context=${encodeURIComponent(context)}`);
+      if (!ok) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  },
+
+  async getConsolidationCandidates(context: string, threshold?: number): Promise<ConsolidationCandidate[]> {
+    try {
+      const param = threshold ? `&threshold=${threshold}` : '';
+      const { data } = await safeJsonFetch(`${API_BASE}/consolidation-candidates?context=${encodeURIComponent(context)}${param}`);
+      return data || [];
+    } catch {
+      return [];
+    }
+  },
+
+  async consolidate(context: string, targetFile: string, memoryIds?: string[]): Promise<{ consolidatedId: string; mergedCount: number }> {
+    try {
+      const res = await safeJsonFetch(`${API_BASE}/consolidate?context=${encodeURIComponent(context)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetFile, memoryIds })
+      });
+      return res.data;
+    } catch (e: any) {
+      console.error(e);
+      return { consolidatedId: '', mergedCount: 0 };
+    }
+  },
+
   async deleteMemory(context: string, id: string) {
     try {
       const res = await safeJsonFetch(`${API_BASE}/memories/${id}?context=${context}`, {
@@ -156,6 +190,53 @@ export interface ReadToolSettings {
   highlightAsPrimary: boolean;
 }
 
+export interface GraphColorSettings {
+  nodes: {
+    concept: string;
+    pattern: string;
+    guide: string;
+    lesson: string;
+    warning: string;
+    fact: string;
+    codemap: string;
+    sequence: string;
+    [key: string]: string;
+  };
+  edges: {
+    affects: string;
+    applies_to: string;
+    supports: string;
+    contradicts: string;
+    supersedes: string;
+    related_to: string;
+    references: string;
+    depends_on: string;
+    part_of: string;
+    distilled_from: string;
+    imports?: string;
+    defaultEdge?: string;
+    [key: string]: string | undefined;
+  };
+}
+
+export function applyThemeColors(colors?: GraphColorSettings) {
+  if (!colors || typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (colors.nodes) {
+    for (const [key, val] of Object.entries(colors.nodes)) {
+      if (val) {
+        root.style.setProperty(`--color-${key}`, val);
+      }
+    }
+  }
+  if (colors.edges) {
+    for (const [key, val] of Object.entries(colors.edges)) {
+      if (val) {
+        root.style.setProperty(`--color-edge-${key}`, val);
+      }
+    }
+  }
+}
 
 export interface GraphSettings {
   forwardWeight: number;
@@ -163,6 +244,7 @@ export interface GraphSettings {
   cumulativeMassThreshold: number;
   pushThreshold: number;
   consolidationThreshold: number;
+  colors?: GraphColorSettings;
 }
 
 export interface DecaySettings {
@@ -180,5 +262,44 @@ export interface StormDrainSettings {
   graph: GraphSettings;
   decay: DecaySettings;
   git: GitSettings;
+  colors?: GraphColorSettings;
+}
+
+export interface FullNodeDetails {
+  id: string;
+  nodeType: 'memory' | 'codemap';
+  type: string;
+  title: string;
+  context: string;
+  filePath?: string;
+  content: string;
+  confidence?: number;
+  tags?: string[];
+  created?: string;
+  updated?: string;
+  accessed?: string;
+  access_count?: number;
+  source?: string;
+  expires?: string | null;
+  superseded_by?: string | null;
+  astOutline?: string[];
+  outgoingRelations: Array<{ target: string; type: string; title?: string }>;
+  incomingRelations: Array<{ source: string; type: string; title?: string }>;
+  attachedMemories?: Array<{ id: string; type: string; title: string; confidence: number }>;
+}
+
+export interface ConsolidationCandidate {
+  target: string;
+  targetType: 'file' | 'concept';
+  targetTitle: string;
+  memoryCount: number;
+  memories: Array<{
+    id: string;
+    type: string;
+    title: string;
+    confidence: number;
+    tags: string[];
+    summarySnippet: string;
+  }>;
 }
 

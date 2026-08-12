@@ -169,6 +169,49 @@ export const startWebServer = (port: number = 3456) => {
     }
   }));
 
+  app.get('/api/nodes/:id', withContext(async (req, res, ctx) => {
+    const id = req.params.id ? String(req.params.id) : '';
+    try {
+      const details = ctx.getNodeDetails(id);
+      if (!details) {
+        res.status(404).json({ error: `Node "${id}" not found` });
+        return;
+      }
+      res.json(details);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  app.get('/api/consolidation-candidates', withContext(async (req, res, ctx) => {
+    try {
+      const thresholdParam = req.query.threshold ? Number(req.query.threshold) : undefined;
+      const candidates = ctx.findConsolidationCandidates(thresholdParam);
+      res.json(candidates);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/consolidate', withContext(async (req, res, ctx) => {
+    const { targetFile, target, memoryIds } = req.body;
+    const targetPath = targetFile || target;
+    if (!targetPath) {
+      res.status(400).json({ error: 'targetFile or target is required' });
+      return;
+    }
+    try {
+      const result = ctx.consolidateNeighborhood(targetPath, { memory_ids: memoryIds });
+      if (!result.consolidatedId) {
+        res.status(400).json({ error: 'At least 2 micro-memories are required to consolidate' });
+        return;
+      }
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }));
+
   app.post('/api/relations', withContext(async (req, res, ctx) => {
     const { source, target, type } = req.body;
     if (!source || !target) {

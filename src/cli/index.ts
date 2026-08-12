@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import tab from '@bomb.sh/tab/commander';
 import * as path from 'path';
 import * as readline from 'readline';
 import { ConfigManager } from '../core/config';
@@ -10,6 +11,7 @@ import { generateCodebaseCodemap } from '../utils/codemapGenerator';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
+import { generateCuratePrompt } from '../utils/promptTemplates';
 
 
 const program = new Command();
@@ -78,9 +80,24 @@ program
   .description('Initialize a context, bind workspace directory, and build codebase file DAG')
   .argument('[name]', 'Context name (defaults to directory name or resolved context)')
   .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
+  .option('-a, --agents-only', 'Only scaffold or update AGENTS.md instructions without re-initializing context or scanning')
+  .option('-f, --force', 'Force update/overwrite StormDrain section in AGENTS.md')
   .option('--submodules <policy>', 'Submodule handling policy: dive, sum, or ask (default: ask)')
   .action(async (name, dir, options) => {
     const targetDir = dir || process.cwd();
+
+    if (options.agentsOnly) {
+      const scaffoldRes = scaffoldAgentsMd(targetDir, { force: options.force });
+      if (scaffoldRes.created) {
+        console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+      } else if (scaffoldRes.updated) {
+        console.log(`Updated StormDrain instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+      } else {
+        console.log(`AGENTS.md already contains instructions (use --force to overwrite).`);
+      }
+      return;
+    }
+
     const folderName = path.basename(path.resolve(targetDir));
     const targetContextName = name || folderName;
 
@@ -95,7 +112,7 @@ program
 
     config.setActiveContext(targetContextName);
 
-    const scaffoldRes = scaffoldAgentsMd(targetDir);
+    const scaffoldRes = scaffoldAgentsMd(targetDir, { force: options.force });
     if (scaffoldRes.created) {
       console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
     } else if (scaffoldRes.updated) {
@@ -110,6 +127,23 @@ program
       console.log(`Successfully initialized context "${targetContextName}" with ${createdCount} file vertices in DAG skeleton.`);
     } finally {
       await ctx.close();
+    }
+  });
+
+program
+  .command('agents')
+  .description('Scaffold or refresh AGENTS.md instruction guidelines')
+  .argument('[dir]', 'Workspace directory path (defaults to current working directory)')
+  .option('-f, --force', 'Force update/overwrite the StormDrain section in existing AGENTS.md')
+  .action((dir, options) => {
+    const targetDir = dir || process.cwd();
+    const scaffoldRes = scaffoldAgentsMd(targetDir, { force: options.force });
+    if (scaffoldRes.created) {
+      console.log(`Scaffolded agent instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+    } else if (scaffoldRes.updated) {
+      console.log(`Updated StormDrain instructions in "${path.relative(process.cwd(), scaffoldRes.filePath) || 'AGENTS.md'}"`);
+    } else {
+      console.log(`AGENTS.md already contains instructions (use --force to overwrite).`);
     }
   });
 
@@ -454,22 +488,159 @@ program
 
 program
   .command('search')
-  .description('Search memories')
+  .description('Search memories across active and global contexts')
   .argument('<query>', 'Search query')
   .option('-c, --context <name>', 'Target context override')
   .action(async (query, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const results = ctx.searchMemories(query);
+      const results = ctx.searchMemories(query, true) as Array<{ type: string; title: string; id: string; confidence: number; content_snippet: string; context?: string }>;
       if (results.length === 0) {
-        console.log(`No memories found in context "${targetCtxName}".`);
+        console.log(`No memories found matching "${query}".`);
       } else {
-        for (const r of results as any[]) {
+        for (const r of results) {
           console.log(`\n[${r.type.toUpperCase()}] ${r.title} (${r.id})`);
-          console.log(`Confidence: ${r.confidence}`);
+          console.log(`Context: ${r.context || targetCtxName} | Confidence: ${r.confidence}`);
           console.log(r.content_snippet.substring(0, 200) + '...');
         }
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('get')
+  .description('Inspect full details for any memory node or codemap file vertex')
+  .argument('<id>', 'Memory ID (e.g. mem_123456) or file path / codemap ID (e.g. file_abc or src/index.ts)')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output full details as JSON')
+  .action(async (id, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const details = ctx.getNodeDetails(id);
+      if (!details) {
+        console.error(`Node "${id}" not found in context "${targetCtxName}" or global context.`);
+        process.exit(1);
+      }
+      if (options.json) {
+        console.log(JSON.stringify(details, null, 2));
+        return;
+      }
+      console.log(`\n======================================================`);
+      console.log(`[${details.nodeType === 'codemap' ? 'FILE VERTEX' : details.type.toUpperCase()}] ${details.title}`);
+      console.log(`======================================================`);
+      console.log(`- ID: ${details.id}`);
+      console.log(`- Context: ${details.context}`);
+      console.log(`- Type: ${details.type}`);
+      if (details.confidence !== undefined) console.log(`- Confidence: ${details.confidence}`);
+      if (details.tags && details.tags.length > 0) console.log(`- Tags: ${details.tags.map(t => `#${t}`).join(' ')}`);
+      if (details.filePath) console.log(`- File Path: ${details.filePath}`);
+      if (details.created) console.log(`- Created: ${details.created}`);
+      if (details.updated) console.log(`- Updated: ${details.updated}`);
+      if (details.accessed) console.log(`- Accessed: ${details.accessed} (count: ${details.access_count ?? 0})`);
+      if (details.source) console.log(`- Source: ${details.source}`);
+      if (details.expires) console.log(`- Expires: ${details.expires}`);
+      if (details.superseded_by) console.log(`- Superseded By: ${details.superseded_by}`);
+
+      if (details.outgoingRelations.length > 0) {
+        console.log(`\n🔗 Outgoing Relations (${details.outgoingRelations.length}):`);
+        for (const rel of details.outgoingRelations) {
+          console.log(`  - --(${rel.type})--> ${rel.title || rel.target} (${rel.target})`);
+        }
+      }
+
+      if (details.incomingRelations.length > 0) {
+        console.log(`\n📥 Incoming Relations (${details.incomingRelations.length}):`);
+        for (const rel of details.incomingRelations) {
+          console.log(`  - <--(${rel.type})-- ${rel.title || rel.source} (${rel.source})`);
+        }
+      }
+
+      if (details.attachedMemories && details.attachedMemories.length > 0) {
+        console.log(`\n🧠 Attached Micro-Memories (${details.attachedMemories.length}):`);
+        for (const mem of details.attachedMemories) {
+          console.log(`  - [${mem.type.toUpperCase()}] ${mem.title} (${mem.id}, confidence: ${mem.confidence})`);
+        }
+      }
+
+      if (details.astOutline && details.astOutline.length > 0) {
+        console.log(`\n🌲 AST Symbol Outline:`);
+        for (const sym of details.astOutline) {
+          console.log(`  - ${sym}`);
+        }
+      }
+
+      if (details.content) {
+        console.log(`\n📝 Content:\n${details.content}`);
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('delete')
+  .alias('del')
+  .description('Delete a memory and cascade clean its relational links and search indices')
+  .argument('<id>', 'Memory ID to delete (e.g. mem_123456)')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-f, --force', 'Skip confirmation prompt')
+  .action(async (id, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const existing = ctx.getMemory(id);
+      if (!existing) {
+        console.error(`Memory "${id}" not found in context "${targetCtxName}".`);
+        process.exit(1);
+      }
+
+      if (!options.force && process.stdin.isTTY) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(`Delete memory "${existing.metadata.title}" (${id}) from context "${targetCtxName}"? [y/N]: `, resolve);
+        });
+        rl.close();
+
+        if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+          console.log('Aborted.');
+          return;
+        }
+      }
+
+      ctx.deleteMemory(id);
+      console.log(`Successfully deleted memory "${existing.metadata.title}" (${id}) from context "${targetCtxName}".`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('candidates')
+  .description('Find target files/concepts with high micro-memory density ready for consolidation')
+  .option('-t, --threshold <number>', 'Minimum micro-memories threshold')
+  .option('-c, --context <name>', 'Target context override')
+  .action(async (options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const threshold = options.threshold ? parseInt(options.threshold, 10) : undefined;
+      const candidates = ctx.findConsolidationCandidates(threshold);
+      if (candidates.length === 0) {
+        console.log(`No consolidation candidates found in context "${targetCtxName}".`);
+        return;
+      }
+      console.log(`Found ${candidates.length} consolidation candidate(s) in context "${targetCtxName}":\n`);
+      for (const cand of candidates) {
+        console.log(`🎯 ${cand.targetTitle} (${cand.target}) - ${cand.memoryCount} attached micro-memories:`);
+        for (const m of cand.memories) {
+          const tags = m.tags.length > 0 ? ` [${m.tags.map(t => `#${t}`).join(' ')}]` : '';
+          console.log(`   - [${m.type.toUpperCase()}] ${m.title} (${m.id}, conf: ${m.confidence})${tags}`);
+        }
+        console.log('');
       }
     } finally {
       await ctx.close();
@@ -540,11 +711,211 @@ program
   });
 
 program
+  .command('curate')
+  .description('Run holistic memory curation prompt / graph health check')
+  .argument('[target]', 'Optional target file path or memory ID to focus curation on')
+  .option('-c, --context <name>', 'Target context override (defaults to active workspace context)')
+  .option('-t, --threshold <number>', 'Consolidation candidate threshold (default: 3)')
+  .action(async (target, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const threshold = options.threshold ? parseInt(options.threshold, 10) : 3;
+      const result = await generateCuratePrompt(ctx, {
+        target: target ? target.trim() : undefined,
+        threshold: isNaN(threshold) ? 3 : threshold,
+      });
+      console.log(result.promptText);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('prompt')
+  .description('Generate guided agent prompt instructions')
+  .argument('<action>', 'Prompt action: curate')
+  .argument('[target]', 'Optional target file path or memory ID')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-t, --threshold <number>', 'Consolidation candidate threshold')
+  .action(async (action, target, options) => {
+    if (action !== 'curate') {
+      console.error(`Unknown prompt action: "${action}". Available actions: curate`);
+      process.exit(1);
+    }
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const threshold = options.threshold ? parseInt(options.threshold, 10) : 3;
+      const result = await generateCuratePrompt(ctx, {
+        target: target ? target.trim() : undefined,
+        threshold: isNaN(threshold) ? 3 : threshold,
+      });
+      console.log(result.promptText);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
   .command('web')
   .description('Start the StormDrain Web UI')
   .option('-p, --port <number>', 'Port to run the server on', '3456')
   .action((options) => {
     startWebServer(parseInt(options.port, 10));
   });
+
+// Setup tab autocompletion via @bomb.sh/tab
+const completeContexts = (complete: (val: string, desc?: string) => void) => {
+  try {
+    const contexts = config.getContexts();
+    for (const name of Object.keys(contexts)) {
+      complete(name, `Context: ${name}`);
+    }
+  } catch {}
+};
+
+const completeMemoryTypes = (complete: (val: string, desc?: string) => void) => {
+  complete('concept', 'Mental models & abstract cross-cutting knowledge');
+  complete('fact', 'System invariants & configuration rules');
+  complete('lesson', 'Post-incident takeaways & debugging lessons');
+  complete('pattern', 'Design blueprints & architectural recipes');
+  complete('warning', 'Critical gotchas, failure modes & anti-patterns');
+  complete('guide', 'Consolidated comprehensive knowledge guides');
+  complete('sequence', 'Step-by-step procedures');
+};
+
+const completeRelationTypes = (complete: (val: string, desc?: string) => void) => {
+  complete('affects', 'Impacts target file or system component');
+  complete('applies_to', 'Applies to specific scope or architecture');
+  complete('supports', 'Validates or reinforces evidence');
+  complete('contradicts', 'Opposes or refutes existing memory');
+  complete('supersedes', 'Replaces older memory');
+  complete('references', 'Direct citation or mention');
+  complete('depends_on', 'Hard architectural dependency');
+  complete('related_to', 'General associative relationship');
+  complete('part_of', 'Hierarchical component relationship');
+  complete('distilled_from', 'Super-memory provenance');
+};
+
+const completeSubmodulePolicies = (complete: (val: string, desc?: string) => void) => {
+  complete('dive', 'Index all files inside submodules');
+  complete('sum', 'Generate single codemap summary');
+  complete('ask', 'Prompt interactively when submodules are detected');
+};
+
+const completeMemoryIds = (complete: (val: string, desc?: string) => void) => {
+  try {
+    const targetCtx = config.resolveContext(undefined, process.cwd());
+    const ctx = new ContextManager(targetCtx);
+    try {
+      const memories = ctx.recallTopMemories(25);
+      for (const m of memories) {
+        complete(m.id, `[${m.type}] ${m.title}`);
+      }
+    } finally {
+      ctx.close();
+    }
+  } catch {}
+};
+
+const completion = tab(program, { completionCommandName: 'completion' });
+
+// Dynamic handlers for options across all commands
+for (const [, cmd] of completion.commands) {
+  const ctxOpt = cmd.options.get('context');
+  if (ctxOpt) {
+    ctxOpt.handler = (complete) => completeContexts(complete);
+  }
+  const subOpt = cmd.options.get('submodules');
+  if (subOpt) {
+    subOpt.handler = (complete) => completeSubmodulePolicies(complete);
+  }
+  const relOpt = cmd.options.get('relation-type');
+  if (relOpt) {
+    relOpt.handler = (complete) => completeRelationTypes(complete);
+  }
+}
+
+// Dynamic handlers for positional arguments
+const addCmd = completion.commands.get('add');
+const addTypeArg = addCmd?.arguments.get('type');
+if (addTypeArg) {
+  addTypeArg.handler = (complete) => completeMemoryTypes(complete);
+}
+
+const graphCmd = completion.commands.get('graph');
+const graphActionArg = graphCmd?.arguments.get('action');
+if (graphActionArg) {
+  graphActionArg.handler = (complete) => {
+    complete('scan', 'Scan workspace source files and update DAG');
+    complete('consolidate', 'Consolidate neighborhood micro-memories');
+  };
+}
+
+const contextCmd = completion.commands.get('context');
+const contextActionArg = contextCmd?.arguments.get('action');
+if (contextActionArg) {
+  contextActionArg.handler = (complete) => {
+    complete('list', 'List all configured contexts');
+    complete('create', 'Create a new context');
+    complete('use', 'Switch default active context');
+    complete('bind', 'Bind directory to context');
+    complete('unbind', 'Unbind directory from context');
+    complete('delete', 'Delete context and data');
+  };
+}
+const contextNameArg = contextCmd?.arguments.get('name');
+if (contextNameArg) {
+  contextNameArg.handler = (complete) => completeContexts(complete);
+}
+
+const relateCmd = completion.commands.get('relate');
+const relateSourceArg = relateCmd?.arguments.get('source');
+if (relateSourceArg) {
+  relateSourceArg.handler = (complete) => completeMemoryIds(complete);
+}
+const relateTargetArg = relateCmd?.arguments.get('target');
+if (relateTargetArg) {
+  relateTargetArg.handler = (complete) => completeMemoryIds(complete);
+}
+const relateTypeArg = relateCmd?.arguments.get('type');
+if (relateTypeArg) {
+  relateTypeArg.handler = (complete) => completeRelationTypes(complete);
+}
+
+const unrelateCmd = completion.commands.get('unrelate');
+const unrelateSourceArg = unrelateCmd?.arguments.get('source');
+if (unrelateSourceArg) {
+  unrelateSourceArg.handler = (complete) => completeMemoryIds(complete);
+}
+const unrelateTargetArg = unrelateCmd?.arguments.get('target');
+if (unrelateTargetArg) {
+  unrelateTargetArg.handler = (complete) => completeMemoryIds(complete);
+}
+const unrelateTypeArg = unrelateCmd?.arguments.get('type');
+if (unrelateTypeArg) {
+  unrelateTypeArg.handler = (complete) => completeRelationTypes(complete);
+}
+
+const promptCmd = completion.commands.get('prompt');
+const promptActionArg = promptCmd?.arguments.get('action');
+if (promptActionArg) {
+  promptActionArg.handler = (complete) => {
+    complete('curate', 'Generate guided memory curation instructions');
+  };
+}
+
+const getCmd = completion.commands.get('get');
+const getIdArg = getCmd?.arguments.get('id');
+if (getIdArg) {
+  getIdArg.handler = (complete) => completeMemoryIds(complete);
+}
+
+const deleteCmd = completion.commands.get('delete');
+const deleteIdArg = deleteCmd?.arguments.get('id');
+if (deleteIdArg) {
+  deleteIdArg.handler = (complete) => completeMemoryIds(complete);
+}
 
 program.parse();
