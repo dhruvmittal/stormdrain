@@ -31,6 +31,7 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         sequence: '#6366f1'
       },
       edges: {
+        imports: '#38bdf8',
         affects: '#38bdf8',
         applies_to: '#0ea5e9',
         supports: '#10b981',
@@ -40,7 +41,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         references: '#a855f7',
         depends_on: '#6366f1',
         part_of: '#ec4899',
-        distilled_from: '#8b5cf6'
+        distilled_from: '#8b5cf6',
+        defaultEdge: '#334155'
       }
     }
   },
@@ -59,6 +61,7 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         sequence: '#2563eb'
       },
       edges: {
+        imports: '#0d9488',
         affects: '#0284c7',
         applies_to: '#0d9488',
         supports: '#059669',
@@ -68,7 +71,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         references: '#38bdf8',
         depends_on: '#2563eb',
         part_of: '#2dd4bf',
-        distilled_from: '#0ea5e9'
+        distilled_from: '#0ea5e9',
+        defaultEdge: '#1e293b'
       }
     }
   },
@@ -87,6 +91,7 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         sequence: '#d97706'
       },
       edges: {
+        imports: '#fb923c',
         affects: '#f97316',
         applies_to: '#fb923c',
         supports: '#84cc16',
@@ -96,7 +101,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         references: '#a855f7',
         depends_on: '#d97706',
         part_of: '#f43f5e',
-        distilled_from: '#f59e0b'
+        distilled_from: '#f59e0b',
+        defaultEdge: '#292524'
       }
     }
   },
@@ -115,6 +121,7 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         sequence: '#475569'
       },
       edges: {
+        imports: '#cbd5e1',
         affects: '#94a3b8',
         applies_to: '#cbd5e1',
         supports: '#64748b',
@@ -124,7 +131,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         references: '#94a3b8',
         depends_on: '#475569',
         part_of: '#f1f5f9',
-        distilled_from: '#64748b'
+        distilled_from: '#64748b',
+        defaultEdge: '#1e293b'
       }
     }
   }
@@ -167,16 +175,18 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
       sequence: '#6366f1'
     },
     edges: {
-      affects: '#38bdf8',
-      applies_to: '#0ea5e9',
+      imports: '#38bdf8',
+      affects: '#a855f7',
+      applies_to: '#a855f7',
       supports: '#10b981',
       contradicts: '#ef4444',
       supersedes: '#f59e0b',
-      related_to: '#94a3b8',
-      references: '#a855f7',
       depends_on: '#6366f1',
+      references: '#64748b',
+      related_to: '#64748b',
       part_of: '#ec4899',
-      distilled_from: '#8b5cf6'
+      distilled_from: '#8b5cf6',
+      defaultEdge: '#334155'
     }
   }
 };
@@ -192,21 +202,38 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
   const [saving, setSaving] = useState<boolean>(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
+  const isInitialLoadRef = React.useRef<boolean>(true);
+  const isDirtyRef = React.useRef<boolean>(false);
+
   useEffect(() => {
     loadSettings();
   }, [dataVersion]);
 
-
-  const loadSettings = async () => {
-    setLoading(true);
-    const data = await api.getConfig();
-    if (data) {
-      setSettings(data);
-      if (data.colors) {
-        applyThemeColors(data.colors);
+  const loadSettings = async (force: boolean = false) => {
+    if (isInitialLoadRef.current) {
+      setLoading(true);
+    }
+    try {
+      const data = await api.getConfig();
+      if (data) {
+        if (force || !isDirtyRef.current || isInitialLoadRef.current) {
+          setSettings(data);
+          if (data.colors) {
+            applyThemeColors(data.colors);
+          }
+          if (force || isInitialLoadRef.current) {
+            isDirtyRef.current = false;
+          }
+        }
+      }
+    } catch {
+      // Ignore network errors
+    } finally {
+      if (isInitialLoadRef.current) {
+        isInitialLoadRef.current = false;
+        setLoading(false);
       }
     }
-    setLoading(false);
   };
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -214,19 +241,69 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
     setTimeout(() => setToast(null), 3500);
   };
 
+  const updateNodeColor = (key: string, value: string) => {
+    isDirtyRef.current = true;
+    setSettings(prev => {
+      const currentNodes = prev.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes;
+      const currentEdges = prev.colors?.edges || DEFAULT_SETTINGS.colors!.edges;
+      const newColors: GraphColorSettings = {
+        nodes: { ...DEFAULT_SETTINGS.colors!.nodes, ...currentNodes, [key]: value },
+        edges: { ...DEFAULT_SETTINGS.colors!.edges, ...currentEdges }
+      };
+      applyThemeColors(newColors);
+      return {
+        ...prev,
+        colors: newColors
+      };
+    });
+  };
+
+  const updateEdgeColor = (key: string, value: string) => {
+    isDirtyRef.current = true;
+    setSettings(prev => {
+      const currentNodes = prev.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes;
+      const currentEdges = prev.colors?.edges || DEFAULT_SETTINGS.colors!.edges;
+      const newColors: GraphColorSettings = {
+        nodes: { ...DEFAULT_SETTINGS.colors!.nodes, ...currentNodes },
+        edges: { ...DEFAULT_SETTINGS.colors!.edges, ...currentEdges, [key]: value }
+      };
+      applyThemeColors(newColors);
+      return {
+        ...prev,
+        colors: newColors
+      };
+    });
+  };
+
+  const applyPreset = (preset: typeof PALETTE_PRESETS[0]) => {
+    isDirtyRef.current = true;
+    const newColors: GraphColorSettings = JSON.parse(JSON.stringify(preset.colors));
+    setSettings(prev => ({
+      ...prev,
+      colors: newColors
+    }));
+    applyThemeColors(newColors);
+  };
+
   const handleSave = async () => {
     setSaving(true);
-    const res = await api.updateConfig(settings);
-    setSaving(false);
-    if (res.success && res.settings) {
-      setSettings(res.settings);
-      if (res.settings.colors) {
-        applyThemeColors(res.settings.colors);
+    try {
+      const res = await api.updateConfig(settings);
+      if (res.success && res.settings) {
+        isDirtyRef.current = false;
+        setSettings(res.settings);
+        if (res.settings.colors) {
+          applyThemeColors(res.settings.colors);
+        }
+        onConfigSaved?.();
+        showToast('Settings saved and applied successfully!');
+      } else {
+        showToast(res.error || 'Failed to save settings', 'error');
       }
-      onConfigSaved?.();
-      showToast('Settings saved and applied successfully!');
-    } else {
-      showToast(res.error || 'Failed to save settings', 'error');
+    } catch (e: any) {
+      showToast(e.message || 'Failed to save settings', 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -235,17 +312,23 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
       return;
     }
     setSaving(true);
-    const res = await api.resetConfig();
-    setSaving(false);
-    if (res.success && res.settings) {
-      setSettings(res.settings);
-      if (res.settings.colors) {
-        applyThemeColors(res.settings.colors);
+    try {
+      const res = await api.resetConfig();
+      if (res.success && res.settings) {
+        isDirtyRef.current = false;
+        setSettings(res.settings);
+        if (res.settings.colors) {
+          applyThemeColors(res.settings.colors);
+        }
+        onConfigSaved?.();
+        showToast('Settings reset to default values.');
+      } else {
+        showToast(res.error || 'Failed to reset settings', 'error');
       }
-      onConfigSaved?.();
-      showToast('Settings reset to default values.');
-    } else {
-      showToast(res.error || 'Failed to reset settings', 'error');
+    } catch (e: any) {
+      showToast(e.message || 'Failed to reset settings', 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -674,14 +757,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
                   key={preset.name}
                   type="button"
                   className="segmented-btn preset-btn"
-                  onClick={() => {
-                    const newColors = JSON.parse(JSON.stringify(preset.colors));
-                    setSettings(prev => ({
-                      ...prev,
-                      colors: newColors
-                    }));
-                    applyThemeColors(newColors);
-                  }}
+                  onClick={() => applyPreset(preset)}
                   title={preset.desc}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -724,22 +800,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
                         type="color"
                         className="color-input"
                         value={currentColor}
-                        onChange={(e) => {
-                          const updated = {
-                            ...DEFAULT_SETTINGS.colors!.nodes,
-                            ...(settings.colors?.nodes || {}),
-                            [item.key]: e.target.value
-                          };
-                          const newColors = {
-                            edges: settings.colors?.edges || DEFAULT_SETTINGS.colors!.edges,
-                            nodes: updated as any
-                          };
-                          setSettings(prev => ({
-                            ...prev,
-                            colors: newColors
-                          }));
-                          applyThemeColors(newColors);
-                        }}
+                        onChange={(e) => updateNodeColor(item.key, e.target.value)}
                       />
                       <div className="color-label-group">
                         <span className="color-name">{item.label}</span>
@@ -761,16 +822,18 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
             </div>
             <div className="colors-grid">
               {[
+                { key: 'imports', label: 'imports', desc: 'File-to-file code dependency' },
                 { key: 'affects', label: 'affects', desc: 'Impacts target file or system' },
                 { key: 'applies_to', label: 'applies_to', desc: 'Applies to specific scope' },
                 { key: 'supports', label: 'supports', desc: 'Validates or reinforces evidence' },
                 { key: 'contradicts', label: 'contradicts', desc: 'Opposes or refutes claim' },
                 { key: 'supersedes', label: 'supersedes', desc: 'Replaces older memory' },
-                { key: 'related_to', label: 'related_to', desc: 'General associative link' },
-                { key: 'references', label: 'references', desc: 'Direct citation or mention' },
                 { key: 'depends_on', label: 'depends_on', desc: 'Hard architectural dependency' },
+                { key: 'references', label: 'references', desc: 'Direct citation or mention' },
+                { key: 'related_to', label: 'related_to', desc: 'General associative link' },
                 { key: 'part_of', label: 'part_of', desc: 'Hierarchical component' },
                 { key: 'distilled_from', label: 'distilled_from', desc: 'Super-memory provenance' },
+                { key: 'defaultEdge', label: 'default', desc: 'Fallback unclassified link' },
               ].map((item) => {
                 const edgeColors = settings.colors?.edges || DEFAULT_SETTINGS.colors!.edges;
                 const currentColor = (edgeColors as any)[item.key] || '#38bdf8';
@@ -781,22 +844,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
                         type="color"
                         className="color-input"
                         value={currentColor}
-                        onChange={(e) => {
-                          const updated = {
-                            ...DEFAULT_SETTINGS.colors!.edges,
-                            ...(settings.colors?.edges || {}),
-                            [item.key]: e.target.value
-                          };
-                          const newColors = {
-                            nodes: settings.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes,
-                            edges: updated as any
-                          };
-                          setSettings(prev => ({
-                            ...prev,
-                            colors: newColors
-                          }));
-                          applyThemeColors(newColors);
-                        }}
+                        onChange={(e) => updateEdgeColor(item.key, e.target.value)}
                       />
                       <div className="color-label-group">
                         <span className="color-name">--({item.label})--&gt;</span>

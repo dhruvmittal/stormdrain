@@ -109,6 +109,7 @@ export interface GraphNodeColors {
   warning: string;
   guide: string;
   sequence: string;
+  [key: string]: string;
 }
 
 export interface GraphEdgeColors {
@@ -121,7 +122,10 @@ export interface GraphEdgeColors {
   depends_on: string;
   references: string;
   related_to: string;
+  part_of: string;
+  distilled_from: string;
   defaultEdge: string;
+  [key: string]: string;
 }
 
 export interface GraphColorSettings {

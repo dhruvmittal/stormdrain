@@ -33,7 +33,7 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
   colors: {
     nodes: {
       concept: '#38bdf8',  // Sky Blue
-      codemap: '#0284c7',  // Deep Steel Blue (distinct from #38bdf8)
+      codemap: '#06b6d4',  // Cyan (Source File DAG)
       fact: '#10b981',     // Emerald Green
       lesson: '#f59e0b',   // Amber
       pattern: '#8b5cf6',  // Purple
@@ -51,6 +51,8 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
       depends_on: '#6366f1',
       references: '#64748b',
       related_to: '#64748b',
+      part_of: '#ec4899',
+      distilled_from: '#8b5cf6',
       defaultEdge: '#334155'
     }
   }
