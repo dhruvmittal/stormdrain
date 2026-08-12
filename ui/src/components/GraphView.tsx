@@ -69,6 +69,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const previousContextRef = useRef<string>(activeContext);
   const positionsCacheRef = useRef<Map<string, { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const activeTier1SetRef = useRef<Set<string>>(new Set());
+  const activeInScopeSetRef = useRef<Set<string>>(new Set());
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -305,6 +307,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     // In-scope union for stats
     const inScopeSet = new Set<string>([...tier1Set, ...tier2Set, ...tier3Set]);
 
+    activeTier1SetRef.current = tier1Set;
+    activeInScopeSetRef.current = inScopeSet;
+
     setMatchStats({
       matchCount: tier1Set.size,
       inScopeCount: inScopeSet.size,
@@ -319,10 +324,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     // If not filtering OR if 0 matches, show full baseline graph
     if (!isFiltering || hasNoMatches) {
+      activeTier1SetRef.current.clear();
+      activeInScopeSetRef.current.clear();
+
       nodeSelectionRef.current
         .transition('style')
         .duration(200)
         .style('opacity', 1.0)
+        .style('pointer-events', 'auto')
         .style('filter', 'none');
 
       nodeSelectionRef.current.select('.node-circle')
@@ -347,7 +356,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       return;
     }
 
-    // Apply 4-Tier Visual Hierarchy
     nodeSelectionRef.current
       .transition('style')
       .duration(220)
@@ -356,6 +364,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (tier2Set.has(d.id)) return 0.75;
         if (tier3Set.has(d.id)) return 0.50;
         return 0.25; // Tier 4: Ambient
+      })
+      .style('pointer-events', (d: any) => {
+        if (inScopeSet.has(d.id)) return 'auto';
+        return 'none'; // Disable pointer events on ambient nodes to prevent accidental hover resets
       })
       .style('filter', (d: any) => {
         if (tier1Set.has(d.id) || tier2Set.has(d.id) || tier3Set.has(d.id)) return 'none';
@@ -694,6 +706,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .attr('class', 'node-item')
               .style('cursor', 'pointer')
               .call(d3.drag()
+                .filter((event: any) => {
+                  if (layoutModeRef.current === 'orbit') return false;
+                  return !event.ctrlKey && !event.button;
+                })
                 .on('start', dragstarted)
                 .on('drag', dragged)
                 .on('end', dragended) as any);
@@ -713,7 +729,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)')
               .style('font-size', (d: any) => d.type === 'codemap' ? '11px' : '12px')
               .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400')
-              .style('pointer-events', 'none');
+              .style('user-select', 'none');
 
             // Click: Center in Orbit mode, or Open Memory Editor in Force mode
             g.on('click', (_event: any, d: any) => {
@@ -732,7 +748,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               setFocusAnchorTitle(prev => (prev === d.title ? null : d.title));
             });
 
-            // Hover: Light up incident edges and direct neighbors
             g.on('mouseenter', (_event: any, d: any) => {
               const neighbors = adjacencyRef.current.get(d.id) || new Set();
               
@@ -743,12 +758,26 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                   .attr('stroke-opacity', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    return (srcId === d.id || tgtId === d.id) ? 1.0 : 0.08;
+                    
+                    if (srcId === d.id || tgtId === d.id) return 1.0;
+
+                    // Preserve active filter styling for other links
+                    const srcTier1 = activeTier1SetRef.current.has(srcId);
+                    const tgtTier1 = activeTier1SetRef.current.has(tgtId);
+                    const srcInScope = activeInScopeSetRef.current.has(srcId);
+                    const tgtInScope = activeInScopeSetRef.current.has(tgtId);
+
+                    if (srcTier1 && tgtTier1) return 0.95;
+                    if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
+                    if (srcInScope && tgtInScope) return 0.50;
+                    return 0.08;
                   })
                   .attr('stroke-width', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    return (srcId === d.id || tgtId === d.id) ? 2.5 : 0.8;
+                    
+                    if (srcId === d.id || tgtId === d.id) return 2.5;
+                    return l.type === 'imports' ? 1.5 : 2;
                   });
               }
 
@@ -762,7 +791,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             });
 
             g.on('mouseleave', () => {
-              applyActiveFilterStyling();
+              applyActiveFilterStylingRef.current();
             });
 
             return g;
@@ -998,8 +1027,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .text(d => d.label);
       }
 
-      // Animate nodes and links into orbit positions
+      // Disable pointer events on node items during transition to avoid stuck hovers
+      const nodesGroup = container.select('g.graph-nodes');
+      nodesGroup.style('pointer-events', 'none');
+      setTimeout(() => {
+        nodesGroup.style('pointer-events', '');
+      }, 700);
 
+      // Animate nodes and links into orbit positions
       nodeSelectionRef.current
         .transition('layout')
         .duration(650)
@@ -1015,7 +1050,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         .attr('x2', (d: any) => d.target.x ?? (typeof d.target === 'object' ? d.target.x : centerX))
         .attr('y2', (d: any) => d.target.y ?? (typeof d.target === 'object' ? d.target.y : centerY));
 
-      applyActiveFilterStyling();
+      applyActiveFilterStylingRef.current();
 
     } else if (layoutMode === 'force') {
       // Clear orbit guide rings
