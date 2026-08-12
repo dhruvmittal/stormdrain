@@ -25,6 +25,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@bomb.sh/tab": "^0.0.22",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^13.0.2",
     "commander": "^15.0.0",

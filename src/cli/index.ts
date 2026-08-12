@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import tab from '@bomb.sh/tab/commander';
 import * as path from 'path';
 import * as readline from 'readline';
 import { ConfigManager } from '../core/config';
@@ -763,5 +764,158 @@ program
   .action((options) => {
     startWebServer(parseInt(options.port, 10));
   });
+
+// Setup tab autocompletion via @bomb.sh/tab
+const completeContexts = (complete: (val: string, desc?: string) => void) => {
+  try {
+    const contexts = config.getContexts();
+    for (const name of Object.keys(contexts)) {
+      complete(name, `Context: ${name}`);
+    }
+  } catch {}
+};
+
+const completeMemoryTypes = (complete: (val: string, desc?: string) => void) => {
+  complete('concept', 'Mental models & abstract cross-cutting knowledge');
+  complete('fact', 'System invariants & configuration rules');
+  complete('lesson', 'Post-incident takeaways & debugging lessons');
+  complete('pattern', 'Design blueprints & architectural recipes');
+  complete('warning', 'Critical gotchas, failure modes & anti-patterns');
+  complete('guide', 'Consolidated comprehensive knowledge guides');
+  complete('sequence', 'Step-by-step procedures');
+};
+
+const completeRelationTypes = (complete: (val: string, desc?: string) => void) => {
+  complete('affects', 'Impacts target file or system component');
+  complete('applies_to', 'Applies to specific scope or architecture');
+  complete('supports', 'Validates or reinforces evidence');
+  complete('contradicts', 'Opposes or refutes existing memory');
+  complete('supersedes', 'Replaces older memory');
+  complete('references', 'Direct citation or mention');
+  complete('depends_on', 'Hard architectural dependency');
+  complete('related_to', 'General associative relationship');
+  complete('part_of', 'Hierarchical component relationship');
+  complete('distilled_from', 'Super-memory provenance');
+};
+
+const completeSubmodulePolicies = (complete: (val: string, desc?: string) => void) => {
+  complete('dive', 'Index all files inside submodules');
+  complete('sum', 'Generate single codemap summary');
+  complete('ask', 'Prompt interactively when submodules are detected');
+};
+
+const completeMemoryIds = (complete: (val: string, desc?: string) => void) => {
+  try {
+    const targetCtx = config.resolveContext(undefined, process.cwd());
+    const ctx = new ContextManager(targetCtx);
+    try {
+      const memories = ctx.recallTopMemories(25);
+      for (const m of memories) {
+        complete(m.id, `[${m.type}] ${m.title}`);
+      }
+    } finally {
+      ctx.close();
+    }
+  } catch {}
+};
+
+const completion = tab(program, { completionCommandName: 'completion' });
+
+// Dynamic handlers for options across all commands
+for (const [, cmd] of completion.commands) {
+  const ctxOpt = cmd.options.get('context');
+  if (ctxOpt) {
+    ctxOpt.handler = (complete) => completeContexts(complete);
+  }
+  const subOpt = cmd.options.get('submodules');
+  if (subOpt) {
+    subOpt.handler = (complete) => completeSubmodulePolicies(complete);
+  }
+  const relOpt = cmd.options.get('relation-type');
+  if (relOpt) {
+    relOpt.handler = (complete) => completeRelationTypes(complete);
+  }
+}
+
+// Dynamic handlers for positional arguments
+const addCmd = completion.commands.get('add');
+const addTypeArg = addCmd?.arguments.get('type');
+if (addTypeArg) {
+  addTypeArg.handler = (complete) => completeMemoryTypes(complete);
+}
+
+const graphCmd = completion.commands.get('graph');
+const graphActionArg = graphCmd?.arguments.get('action');
+if (graphActionArg) {
+  graphActionArg.handler = (complete) => {
+    complete('scan', 'Scan workspace source files and update DAG');
+    complete('consolidate', 'Consolidate neighborhood micro-memories');
+  };
+}
+
+const contextCmd = completion.commands.get('context');
+const contextActionArg = contextCmd?.arguments.get('action');
+if (contextActionArg) {
+  contextActionArg.handler = (complete) => {
+    complete('list', 'List all configured contexts');
+    complete('create', 'Create a new context');
+    complete('use', 'Switch default active context');
+    complete('bind', 'Bind directory to context');
+    complete('unbind', 'Unbind directory from context');
+    complete('delete', 'Delete context and data');
+  };
+}
+const contextNameArg = contextCmd?.arguments.get('name');
+if (contextNameArg) {
+  contextNameArg.handler = (complete) => completeContexts(complete);
+}
+
+const relateCmd = completion.commands.get('relate');
+const relateSourceArg = relateCmd?.arguments.get('source');
+if (relateSourceArg) {
+  relateSourceArg.handler = (complete) => completeMemoryIds(complete);
+}
+const relateTargetArg = relateCmd?.arguments.get('target');
+if (relateTargetArg) {
+  relateTargetArg.handler = (complete) => completeMemoryIds(complete);
+}
+const relateTypeArg = relateCmd?.arguments.get('type');
+if (relateTypeArg) {
+  relateTypeArg.handler = (complete) => completeRelationTypes(complete);
+}
+
+const unrelateCmd = completion.commands.get('unrelate');
+const unrelateSourceArg = unrelateCmd?.arguments.get('source');
+if (unrelateSourceArg) {
+  unrelateSourceArg.handler = (complete) => completeMemoryIds(complete);
+}
+const unrelateTargetArg = unrelateCmd?.arguments.get('target');
+if (unrelateTargetArg) {
+  unrelateTargetArg.handler = (complete) => completeMemoryIds(complete);
+}
+const unrelateTypeArg = unrelateCmd?.arguments.get('type');
+if (unrelateTypeArg) {
+  unrelateTypeArg.handler = (complete) => completeRelationTypes(complete);
+}
+
+const promptCmd = completion.commands.get('prompt');
+const promptActionArg = promptCmd?.arguments.get('action');
+if (promptActionArg) {
+  promptActionArg.handler = (complete) => {
+    complete('curate', 'Generate guided memory curation instructions');
+  };
+}
+
+const getCmd = completion.commands.get('get');
+const getIdArg = getCmd?.arguments.get('id');
+if (getIdArg) {
+  getIdArg.handler = (complete) => completeMemoryIds(complete);
+}
+
+const deleteCmd = completion.commands.get('delete');
+const deleteIdArg = deleteCmd?.arguments.get('id');
+if (deleteIdArg) {
+  deleteIdArg.handler = (complete) => completeMemoryIds(complete);
+}
 
 program.parse();

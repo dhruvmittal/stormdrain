@@ -99,6 +99,24 @@ stormdrain serve   # Starts the MCP stdio server (for agents)
 stormdrain web     # Starts the Web UI on http://localhost:3456 (for humans)
 ```
 
+### Shell Autocompletion
+
+StormDrain supports full shell autocompletion for Bash, Zsh, Fish, and PowerShell with dynamic context-aware suggestions (subcommands, memory types, relation types, and registered context names):
+
+```bash
+# Bash (add to ~/.bashrc for persistence)
+source <(stormdrain completion bash)
+
+# Zsh (add to ~/.zshrc for persistence)
+source <(stormdrain completion zsh)
+
+# Fish
+stormdrain completion fish | source
+
+# PowerShell
+stormdrain completion powershell | Out-String | Invoke-Expression
+```
+
 ### The Web UI
 
 To visualize the knowledge graph or manage memories visually, start the Web UI:
