@@ -251,22 +251,27 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!nodes || nodes.length === 0) return;
 
     const query = debouncedQuery.trim().toLowerCase();
+    const hasFilter = Boolean(query || selectedType !== 'all');
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
 
     // Compute Tier 1 (Match Set)
     const tier1Set = new Set<string>();
     
+    // Helper to check if a node matches the active type/query filter
+    const matchesFilter = (n: any) => {
+      const matchesType = selectedType === 'all' || n.type === selectedType;
+      const matchesQuery = !query || 
+        n.title?.toLowerCase().includes(query) || 
+        n.content?.toLowerCase().includes(query) ||
+        n.id?.toLowerCase().includes(query);
+      return matchesType && matchesQuery;
+    };
+
     if (focusAnchorId) {
       tier1Set.add(focusAnchorId);
     } else if (isFiltering) {
       for (const n of nodes) {
-        const matchesType = selectedType === 'all' || n.type === selectedType;
-        const matchesQuery = !query || 
-          n.title?.toLowerCase().includes(query) || 
-          n.content?.toLowerCase().includes(query) ||
-          n.id?.toLowerCase().includes(query);
-
-        if (matchesType && matchesQuery) {
+        if (matchesFilter(n)) {
           tier1Set.add(n.id);
         }
       }
@@ -282,7 +287,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (neighbors) {
           for (const nb of neighbors) {
             if (!tier1Set.has(nb)) {
-              tier2Set.add(nb);
+              if (focusAnchorId && hasFilter) {
+                // If focus anchor is active, filter direct neighbors by type/query
+                const nbNode = nodes.find((n: any) => n.id === nb);
+                if (nbNode && matchesFilter(nbNode)) {
+                  tier2Set.add(nb);
+                }
+              } else {
+                tier2Set.add(nb);
+              }
             }
           }
         }
@@ -297,12 +310,29 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (extended) {
           for (const ext of extended) {
             if (!tier1Set.has(ext) && !tier2Set.has(ext)) {
-              tier3Set.add(ext);
+              if (focusAnchorId && hasFilter) {
+                // If focus anchor is active, filter extended neighbors by type/query
+                const extNode = nodes.find((n: any) => n.id === ext);
+                if (extNode && matchesFilter(extNode)) {
+                  tier3Set.add(ext);
+                }
+              } else {
+                tier3Set.add(ext);
+              }
             }
           }
         }
       }
     }
+
+    console.log('[DEBUG FILTER]', {
+      selectedType,
+      focusAnchorId,
+      hasFilter,
+      tier1Size: tier1Set.size,
+      tier2Size: tier2Set.size,
+      tier3Size: tier3Set.size,
+    });
 
     // In-scope union for stats
     const inScopeSet = new Set<string>([...tier1Set, ...tier2Set, ...tier3Set]);
@@ -1143,7 +1173,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             <div className="graph-layout-mode-group">
               <button
                 className={`graph-layout-mode-btn ${layoutMode === 'force' ? 'active' : ''}`}
-                onClick={() => setLayoutMode('force')}
+                onClick={() => {
+                  setLayoutMode('force');
+                  setFocusAnchorId(null);
+                  setFocusAnchorTitle(null);
+                }}
                 title="Force-Directed Simulation Layout"
               >
                 <Compass size={13} />
