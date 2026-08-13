@@ -20,7 +20,14 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
     reverseWeight: 0.25,
     cumulativeMassThreshold: 0.85,
     pushThreshold: 0.0001,
-    consolidationThreshold: 3
+    consolidationThreshold: 3,
+    performanceThreshold: 500,
+    repulsionDistanceMax: 200,
+    repulsionTheta: 0.95,
+    labelMode: 'dynamic',
+    labelFilter: 'all',
+    labelTextBacking: true,
+    labelFocusMode: false
   },
   decay: {
     decayRate: 0.85,

@@ -153,7 +153,13 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
     reverseWeight: 0.25,
     cumulativeMassThreshold: 0.85,
     pushThreshold: 0.0001,
-    consolidationThreshold: 3
+    consolidationThreshold: 3,
+    performanceThreshold: 500,
+    repulsionDistanceMax: 200,
+    repulsionTheta: 0.95,
+    labelMode: 'dynamic',
+    labelFilter: 'all',
+    labelTextBacking: true
   },
   decay: {
     decayRate: 0.85,
@@ -729,7 +735,175 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
           </div>
         </div>
 
-        {/* Card 5: Graph Appearance & Palette */}
+        {/* Card 5: Graph Performance & Scalability */}
+        <div className="config-card">
+          <div className="config-card-header">
+            <div className="config-card-title">
+              <Cpu size={18} style={{ color: 'var(--color-warning)' }} />
+              <h3>Graph Performance & Scalability</h3>
+            </div>
+            <span className="config-card-badge">Performance</span>
+          </div>
+          <p className="config-card-desc">
+            Optimize D3 rendering thresholds and force simulation parameters to handle large-scale codebases.
+          </p>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Transition Bypass Threshold</label>
+              <span>Bypass SVG opacity animations above this node count to prevent main-thread lag</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="100" 
+                max="2000" 
+                step="50"
+                value={settings.graph.performanceThreshold ?? 500}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, performanceThreshold: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{settings.graph.performanceThreshold ?? 500} nodes</span>
+            </div>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Repulsion Max Distance</label>
+              <span>Cap electrostatic repulsion calculations to a local bounding radius</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="50" 
+                max="500" 
+                step="10"
+                value={settings.graph.repulsionDistanceMax ?? 200}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, repulsionDistanceMax: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{settings.graph.repulsionDistanceMax ?? 200} px</span>
+            </div>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Barnes-Hut Theta (&theta;)</label>
+              <span>Higher values group distant force computations coarser and faster</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="0.50" 
+                max="1.00" 
+                step="0.05"
+                value={settings.graph.repulsionTheta ?? 0.95}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, repulsionTheta: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{(settings.graph.repulsionTheta ?? 0.95).toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Default Label Mode</label>
+              <span>Choose between displaying all labels or dynamic (landmarks + hover) mode</span>
+            </div>
+            <select
+              value={settings.graph.labelMode ?? 'dynamic'}
+              onChange={(e) => setSettings({
+                ...settings,
+                graph: { ...settings.graph, labelMode: e.target.value as any }
+              })}
+              style={{
+                background: 'rgba(30, 41, 59, 0.5)',
+                border: '1px solid rgba(148, 163, 184, 0.2)',
+                borderRadius: '4px',
+                color: 'var(--text-main)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                outline: 'none',
+                width: '100%'
+              }}
+            >
+              <option value="all">Show All Text</option>
+              <option value="dynamic">Dynamic (Landmarks + Hover)</option>
+              <option value="hover-only">Hover-Only Lens (No Landmarks)</option>
+            </select>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Default Visibility Filter</label>
+              <span>Choose whether to apply dynamic layout culling to all nodes, or keep memories always visible and only filter file nodes</span>
+            </div>
+            <select
+              value={settings.graph.labelFilter ?? 'all'}
+              onChange={(e) => setSettings({
+                ...settings,
+                graph: { ...settings.graph, labelFilter: e.target.value as any }
+              })}
+              style={{
+                background: 'rgba(30, 41, 59, 0.5)',
+                border: '1px solid rgba(148, 163, 184, 0.2)',
+                borderRadius: '4px',
+                color: 'var(--text-main)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                outline: 'none',
+                width: '100%'
+              }}
+            >
+              <option value="all">Apply Mode to All Nodes</option>
+              <option value="always-show-memories">Always Show Memories (Dynamic Files)</option>
+            </select>
+          </div>
+
+          <div className="config-field" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 0 0' }}>
+            <div className="config-field-info" style={{ flex: '1', paddingRight: '12px' }}>
+              <label style={{ margin: '0' }}>Default Dark Text Backing (Halo)</label>
+              <span>Render outlines behind labels to prevent overlaps with links</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.labelTextBacking !== false}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, labelTextBacking: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
+          <div className="config-field" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 0 0' }}>
+            <div className="config-field-info" style={{ flex: '1', paddingRight: '12px' }}>
+              <label style={{ margin: '0' }}>Default Focus Mode (Sub-graph Neighborhood)</label>
+              <span>Physically prune non-focused nodes and layout only the matching neighborhood during active queries</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.labelFocusMode === true}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, labelFocusMode: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+        </div>
+
+        {/* Card 6: Graph Appearance & Palette */}
         <div className="config-card full-width">
           <div className="config-card-header">
             <div className="config-card-title">

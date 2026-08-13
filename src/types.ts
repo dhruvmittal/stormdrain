@@ -88,6 +88,13 @@ export interface GraphSettings {
   cumulativeMassThreshold: number;
   pushThreshold: number;
   consolidationThreshold: number;
+  performanceThreshold: number;
+  repulsionDistanceMax: number;
+  repulsionTheta: number;
+  labelMode?: 'all' | 'dynamic' | 'hover-only';
+  labelFilter?: 'all' | 'always-show-memories';
+  labelTextBacking?: boolean;
+  labelFocusMode?: boolean;
 }
 
 export interface DecaySettings {

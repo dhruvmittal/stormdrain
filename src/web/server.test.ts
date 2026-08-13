@@ -143,6 +143,13 @@ describe('Web API Server', () => {
     expect(initialConfig.readTool).toBeDefined();
     expect(initialConfig.readTool.mode).toBe('auto');
     expect(initialConfig.readTool.tokenBudget).toBe(500);
+    expect(initialConfig.graph.performanceThreshold).toBe(500);
+    expect(initialConfig.graph.repulsionDistanceMax).toBe(200);
+    expect(initialConfig.graph.repulsionTheta).toBe(0.95);
+    expect(initialConfig.graph.labelMode).toBe('dynamic');
+    expect(initialConfig.graph.labelFilter).toBe('all');
+    expect(initialConfig.graph.labelTextBacking).toBe(true);
+    expect(initialConfig.graph.labelFocusMode).toBe(false);
 
     // 2. POST config update
     const updateRes = await fetch(`${baseUrl}/api/config`, {
@@ -154,7 +161,14 @@ describe('Web API Server', () => {
           mode: 'standalone'
         },
         graph: {
-          forwardWeight: 0.88
+          forwardWeight: 0.88,
+          performanceThreshold: 800,
+          repulsionDistanceMax: 150,
+          repulsionTheta: 0.80,
+          labelMode: 'hover-only',
+          labelFilter: 'always-show-memories',
+          labelTextBacking: false,
+          labelFocusMode: true
         },
         colors: {
           nodes: {
@@ -170,6 +184,13 @@ describe('Web API Server', () => {
     expect(updateData.settings.readTool.tokenBudget).toBe(750);
     expect(updateData.settings.readTool.mode).toBe('standalone');
     expect(updateData.settings.graph.forwardWeight).toBe(0.88);
+    expect(updateData.settings.graph.performanceThreshold).toBe(800);
+    expect(updateData.settings.graph.repulsionDistanceMax).toBe(150);
+    expect(updateData.settings.graph.repulsionTheta).toBe(0.80);
+    expect(updateData.settings.graph.labelMode).toBe('hover-only');
+    expect(updateData.settings.graph.labelFilter).toBe('always-show-memories');
+    expect(updateData.settings.graph.labelTextBacking).toBe(false);
+    expect(updateData.settings.graph.labelFocusMode).toBe(true);
     expect(updateData.settings.colors.nodes.concept).toBe('#ffffff');
     expect(updateData.settings.colors.nodes.codemap).toBe('#123456');
 
@@ -178,6 +199,9 @@ describe('Web API Server', () => {
     const getUpdatedData = await getUpdatedRes.json();
     expect(getUpdatedData.colors.nodes.concept).toBe('#ffffff');
     expect(getUpdatedData.colors.nodes.codemap).toBe('#123456');
+    expect(getUpdatedData.graph.performanceThreshold).toBe(800);
+    expect(getUpdatedData.graph.labelMode).toBe('hover-only');
+    expect(getUpdatedData.graph.labelFocusMode).toBe(true);
 
     // 3. POST config reset
     const resetRes = await fetch(`${baseUrl}/api/config/reset`, {
@@ -188,11 +212,17 @@ describe('Web API Server', () => {
     expect(resetData.success).toBe(true);
     expect(resetData.settings.readTool.tokenBudget).toBe(500);
     expect(resetData.settings.readTool.mode).toBe('auto');
+    expect(resetData.settings.graph.performanceThreshold).toBe(500);
+    expect(resetData.settings.graph.repulsionDistanceMax).toBe(200);
+    expect(resetData.settings.graph.repulsionTheta).toBe(0.95);
+    expect(resetData.settings.graph.labelMode).toBe('dynamic');
+    expect(resetData.settings.graph.labelFilter).toBe('all');
+    expect(resetData.settings.graph.labelTextBacking).toBe(true);
+    expect(resetData.settings.graph.labelFocusMode).toBe(false);
     expect(resetData.settings.colors.nodes.concept).toBe('#38bdf8');
   });
 
   it('should handle configuration error states gracefully', async () => {
-    // Test config error when sending non-object / invalid body that triggers error
     const errRes = await fetch(`${baseUrl}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -200,6 +230,47 @@ describe('Web API Server', () => {
     });
     expect(errRes.status).toBeGreaterThanOrEqual(400);
   });
+
+  it('should return a graph version hash and update on changes', async () => {
+    const res = await fetch(`${baseUrl}/api/graph/version`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.version).toBeDefined();
+    expect(typeof data.version).toBe('string');
+    expect(data.version.length).toBe(64);
+
+    const initialVersion = data.version;
+
+    const createRes = await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'concept',
+        title: 'Test Concept for Versioning',
+        content: 'Test content'
+      })
+    });
+    expect(createRes.status).toBe(201);
+    const createData = await createRes.json();
+    const createdId = createData.id;
+
+    const resAfterCreate = await fetch(`${baseUrl}/api/graph/version`);
+    const dataAfterCreate = await resAfterCreate.json();
+    expect(dataAfterCreate.version).not.toBe(initialVersion);
+
+    const version2 = dataAfterCreate.version;
+
+    const delRes = await fetch(`${baseUrl}/api/memories/${createdId}`, {
+      method: 'DELETE'
+    });
+    expect(delRes.status).toBe(200);
+
+    const resAfterDelete = await fetch(`${baseUrl}/api/graph/version`);
+    const dataAfterDelete = await resAfterDelete.json();
+    expect(dataAfterDelete.version).not.toBe(version2);
+  });
 });
+
+
 
 
