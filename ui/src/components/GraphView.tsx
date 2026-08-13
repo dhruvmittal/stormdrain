@@ -20,23 +20,22 @@ interface PhysicsSettings {
   linkDistance: number;
   collisionRadius: number;
   moduleGravity: number;
-  activePreset: 'auto' | 'compact' | 'standard' | 'dense' | 'massive' | 'custom';
+  activePreset: 'auto' | 'strongly_clustered' | 'clustered' | 'standard' | 'massive' | 'custom';
 }
 
 const PHYSICS_PRESETS: Record<string, Omit<PhysicsSettings, 'activePreset'>> = {
-  compact:  { chargeStrength: -220, linkDistance: 90,  collisionRadius: 28, moduleGravity: 0.10 },
-  standard: { chargeStrength: -350, linkDistance: 130, collisionRadius: 36, moduleGravity: 0.15 },
-  dense:    { chargeStrength: -600, linkDistance: 170, collisionRadius: 42, moduleGravity: 0.22 },
-  massive:  { chargeStrength: -900, linkDistance: 220, collisionRadius: 48, moduleGravity: 0.28 },
+  strongly_clustered: { chargeStrength: -300, linkDistance: 50,  collisionRadius: 22, moduleGravity: 0.65 },
+  clustered:          { chargeStrength: -250, linkDistance: 70,  collisionRadius: 27, moduleGravity: 0.44 },
+  standard:           { chargeStrength: -350, linkDistance: 130, collisionRadius: 36, moduleGravity: 0.15 },
+  massive:            { chargeStrength: -900, linkDistance: 220, collisionRadius: 48, moduleGravity: 0.08 },
 };
 
-const DEFAULT_PHYSICS: PhysicsSettings = { ...PHYSICS_PRESETS.standard, activePreset: 'auto' };
+const DEFAULT_PHYSICS: PhysicsSettings = { ...PHYSICS_PRESETS.clustered, activePreset: 'auto' };
 const PHYSICS_STORAGE_KEY = 'stormdrain_graph_physics_settings';
 
 function getAutoPreset(nodeCount: number): Omit<PhysicsSettings, 'activePreset'> {
-  if (nodeCount < 100) return PHYSICS_PRESETS.compact;
-  if (nodeCount < 500) return PHYSICS_PRESETS.standard;
-  if (nodeCount < 1000) return PHYSICS_PRESETS.dense;
+  if (nodeCount < 150) return PHYSICS_PRESETS.clustered;
+  if (nodeCount < 750) return PHYSICS_PRESETS.standard;
   return PHYSICS_PRESETS.massive;
 }
 
@@ -1101,15 +1100,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         <h2>Graph View ({activeContext})</h2>
       </div>
 
-      {/* Floating Glassmorphic Command & Filter HUD */}
+      {/* Floating Glassmorphic Query & Filter HUD (Top-Right) */}
       {isToolbarCollapsed ? (
         <button
           className="graph-floating-toggle-btn"
           onClick={toggleToolbarCollapse}
           title="Expand Filter Controls (/)"
         >
-          <SlidersHorizontal size={14} style={{ color: 'var(--accent-hover)' }} />
-          <span>Filters & Controls</span>
+          <Search size={14} style={{ color: 'var(--accent-hover)' }} />
+          <span>Search & Filters</span>
           {matchStats.isFiltering && (
             <span className="graph-collapsed-filter-dot" title={`${matchStats.matchCount} matched`}>
               {matchStats.hasNoMatches ? '0' : matchStats.matchCount}
@@ -1119,7 +1118,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         </button>
       ) : (
         <div className="graph-floating-toolbar">
-          {/* Top Row: Search + Layout Mode + Physics Drawer Toggle + Collapse */}
+          {/* Top Row: Search + Match Stats + Reset + Collapse */}
           <div className="graph-search-row">
             <div className="graph-search-input-wrapper">
               <Search size={14} className="graph-search-icon" />
@@ -1143,45 +1142,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                 {matchStats.hasNoMatches ? (
                   'No matches'
                 ) : (
-                  `${matchStats.matchCount} matched · ${matchStats.inScopeCount} in scope`
+                  `${matchStats.matchCount} matched`
                 )}
               </div>
             )}
-
-            {/* Layout Mode Segmented Switcher */}
-            <div className="graph-layout-mode-group">
-              <button
-                className={`graph-layout-mode-btn ${layoutMode === 'force' ? 'active' : ''}`}
-                onClick={() => {
-                  setLayoutMode('force');
-                  setFocusAnchorId(null);
-                  setFocusAnchorTitle(null);
-                }}
-                title="Force-Directed Simulation Layout"
-              >
-                <Compass size={13} />
-                <span>Force</span>
-              </button>
-              <button
-                className={`graph-layout-mode-btn ${layoutMode === 'orbit' ? 'active' : ''}`}
-                onClick={() => setLayoutMode('orbit')}
-                title="Ego Radial Orbit View (concentric neighborhood rings)"
-              >
-                <Orbit size={13} />
-                <span>Ego Orbit</span>
-              </button>
-            </div>
-
-            {/* Physics Settings Toggle */}
-            <button
-              className={`graph-hud-icon-btn ${isPhysicsOpen ? 'active' : ''}`}
-              onClick={() => setIsPhysicsOpen(prev => !prev)}
-              title="Physics & Clustering Controls"
-            >
-              <SlidersHorizontal size={13} />
-              <span>Physics</span>
-              <span className="graph-preset-indicator">{physics.activePreset}</span>
-            </button>
 
             {/* Reset button if active */}
             {(matchStats.isFiltering || focusAnchorId) && (
@@ -1204,98 +1168,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             </button>
           </div>
 
-          {/* Physics Tuning Panel Drawer */}
-          {isPhysicsOpen && (
-            <div className="graph-physics-panel">
-              <div className="graph-physics-header">
-                <div className="graph-physics-title">
-                  <Sparkles size={13} style={{ color: 'var(--accent-color, #38bdf8)' }} />
-                  <span>Physics & Clustering Forces</span>
-                </div>
-                <div className="graph-physics-presets">
-                  {(['auto', 'compact', 'standard', 'dense', 'massive'] as const).map(preset => (
-                    <button
-                      key={preset}
-                      className={`graph-preset-chip ${physics.activePreset === preset ? 'active' : ''}`}
-                      onClick={() => applyPreset(preset)}
-                    >
-                      {preset}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="graph-physics-sliders-grid">
-                {/* Repulsion / Charge */}
-                <div className="graph-slider-item">
-                  <div className="graph-slider-label-row">
-                    <span>Repulsion (Charge)</span>
-                    <span className="graph-slider-val">{physics.chargeStrength}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="-1200"
-                    max="-100"
-                    step="25"
-                    value={physics.chargeStrength}
-                    onChange={(e) => updatePhysics({ chargeStrength: Number(e.target.value), activePreset: 'custom' })}
-                  />
-                </div>
-
-                {/* Link Distance */}
-                <div className="graph-slider-item">
-                  <div className="graph-slider-label-row">
-                    <span>Link Distance</span>
-                    <span className="graph-slider-val">{physics.linkDistance}px</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="40"
-                    max="300"
-                    step="10"
-                    value={physics.linkDistance}
-                    onChange={(e) => updatePhysics({ linkDistance: Number(e.target.value), activePreset: 'custom' })}
-                  />
-                </div>
-
-                {/* Collision Radius */}
-                <div className="graph-slider-item">
-                  <div className="graph-slider-label-row">
-                    <span>Collision Radius</span>
-                    <span className="graph-slider-val">{physics.collisionRadius}px</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="15"
-                    max="65"
-                    step="1"
-                    value={physics.collisionRadius}
-                    onChange={(e) => updatePhysics({ collisionRadius: Number(e.target.value), activePreset: 'custom' })}
-                  />
-                </div>
-
-                {/* Module Clustering Gravity */}
-                <div className="graph-slider-item">
-                  <div className="graph-slider-label-row">
-                    <span>Module Clustering</span>
-                    <span className="graph-slider-val">{physics.moduleGravity.toFixed(2)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0.0"
-                    max="0.50"
-                    step="0.02"
-                    value={physics.moduleGravity}
-                    onChange={(e) => updatePhysics({ moduleGravity: Number(e.target.value), activePreset: 'custom' })}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Focus Anchor Badge (When right-clicked / pinned or in orbit mode) */}
           {focusAnchorId && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                 {layoutMode === 'orbit' ? 'Orbit Center:' : 'Focal Anchor:'}
               </span>
@@ -1311,7 +1186,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               </div>
               {layoutMode === 'orbit' && (
                 <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                  (Click any node to re-center orbit)
+                  (Click node to re-center orbit)
                 </span>
               )}
             </div>
@@ -1375,7 +1250,136 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             </div>
           </div>
         </div>
-    )}
+      )}
+
+      {/* Bottom-Right Layout & Physics Controls HUD */}
+      <div className="graph-layout-hud">
+        {/* Physics Tuning Panel Drawer (stacked above control row) */}
+        {isPhysicsOpen && (
+          <div className="graph-physics-panel" style={{ width: '420px', maxWidth: 'calc(100vw - 40px)' }}>
+            <div className="graph-physics-header">
+              <div className="graph-physics-title">
+                <Sparkles size={13} style={{ color: 'var(--accent-color, #38bdf8)' }} />
+                <span>Physics & Clustering Forces</span>
+              </div>
+              <div className="graph-physics-presets">
+                {(['auto', 'strongly_clustered', 'clustered', 'standard', 'massive'] as const).map(preset => (
+                  <button
+                    key={preset}
+                    className={`graph-preset-chip ${physics.activePreset === preset ? 'active' : ''}`}
+                    onClick={() => applyPreset(preset)}
+                  >
+                    {preset.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="graph-physics-sliders-grid">
+              {/* Repulsion / Charge */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Repulsion (Charge)</span>
+                  <span className="graph-slider-val">{physics.chargeStrength}</span>
+                </div>
+                <input
+                  type="range"
+                  min="-1200"
+                  max="-100"
+                  step="25"
+                  value={physics.chargeStrength}
+                  onChange={(e) => updatePhysics({ chargeStrength: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Link Distance */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Link Distance</span>
+                  <span className="graph-slider-val">{physics.linkDistance}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="40"
+                  max="300"
+                  step="10"
+                  value={physics.linkDistance}
+                  onChange={(e) => updatePhysics({ linkDistance: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Collision Radius */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Collision Radius</span>
+                  <span className="graph-slider-val">{physics.collisionRadius}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="15"
+                  max="65"
+                  step="1"
+                  value={physics.collisionRadius}
+                  onChange={(e) => updatePhysics({ collisionRadius: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Module Clustering Gravity */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Module Clustering</span>
+                  <span className="graph-slider-val">{physics.moduleGravity.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="0.50"
+                  step="0.02"
+                  value={physics.moduleGravity}
+                  onChange={(e) => updatePhysics({ moduleGravity: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="graph-layout-control-row">
+          {/* Layout Mode Segmented Switcher */}
+          <div className="graph-layout-mode-group">
+            <button
+              className={`graph-layout-mode-btn ${layoutMode === 'force' ? 'active' : ''}`}
+              onClick={() => {
+                setLayoutMode('force');
+                setFocusAnchorId(null);
+                setFocusAnchorTitle(null);
+              }}
+              title="Force-Directed Simulation Layout"
+            >
+              <Compass size={13} />
+              <span>Force</span>
+            </button>
+            <button
+              className={`graph-layout-mode-btn ${layoutMode === 'orbit' ? 'active' : ''}`}
+              onClick={() => setLayoutMode('orbit')}
+              title="Ego Radial Orbit View (concentric neighborhood rings)"
+            >
+              <Orbit size={13} />
+              <span>Ego Orbit</span>
+            </button>
+          </div>
+
+          {/* Physics Settings Toggle */}
+          <button
+            className={`graph-hud-icon-btn ${isPhysicsOpen ? 'active' : ''}`}
+            onClick={() => setIsPhysicsOpen(prev => !prev)}
+            title="Physics & Clustering Controls"
+          >
+            <SlidersHorizontal size={13} />
+            <span>Physics</span>
+            <span className="graph-preset-indicator">{physics.activePreset}</span>
+          </button>
+        </div>
+      </div>
 
       {/* Main D3 Graph SVG */}
       <svg ref={svgRef} className="graph-svg" style={{ width: '100%', height: '100%', display: 'block' }}></svg>

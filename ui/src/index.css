@@ -992,10 +992,48 @@ input:checked + .slider.round:before {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 530px;
-  width: calc(100% - 40px);
+  width: 480px;
+  max-width: calc(100% - 40px);
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   animation: graphHudSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Bottom-Right Layout & Physics Controls HUD */
+.graph-layout-hud {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: auto;
+  animation: graphLayoutHudSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.graph-layout-control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+@keyframes graphLayoutHudSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes graphHudSlideIn {
@@ -1300,6 +1338,35 @@ input:checked + .slider.round:before {
   padding: 2px 6px;
   border-radius: 10px;
   margin-left: 2px;
+}
+
+/* Premium Red Glass Reset Button */
+.graph-hud-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.graph-hud-reset-btn:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fca5a5;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+  transform: translateY(-0.5px);
+}
+
+.graph-hud-reset-btn:active {
+  transform: scale(0.97);
 }
 
 /* Physics Panel Drawer */
