@@ -146,6 +146,9 @@ describe('Web API Server', () => {
     expect(initialConfig.graph.performanceThreshold).toBe(500);
     expect(initialConfig.graph.repulsionDistanceMax).toBe(200);
     expect(initialConfig.graph.repulsionTheta).toBe(0.95);
+    expect(initialConfig.graph.labelMode).toBe('dynamic');
+    expect(initialConfig.graph.labelFilter).toBe('all');
+    expect(initialConfig.graph.labelTextBacking).toBe(true);
 
     // 2. POST config update
     const updateRes = await fetch(`${baseUrl}/api/config`, {
@@ -160,7 +163,10 @@ describe('Web API Server', () => {
           forwardWeight: 0.88,
           performanceThreshold: 800,
           repulsionDistanceMax: 150,
-          repulsionTheta: 0.80
+          repulsionTheta: 0.80,
+          labelMode: 'hover-only',
+          labelFilter: 'always-show-memories',
+          labelTextBacking: false
         },
         colors: {
           nodes: {
@@ -179,6 +185,9 @@ describe('Web API Server', () => {
     expect(updateData.settings.graph.performanceThreshold).toBe(800);
     expect(updateData.settings.graph.repulsionDistanceMax).toBe(150);
     expect(updateData.settings.graph.repulsionTheta).toBe(0.80);
+    expect(updateData.settings.graph.labelMode).toBe('hover-only');
+    expect(updateData.settings.graph.labelFilter).toBe('always-show-memories');
+    expect(updateData.settings.graph.labelTextBacking).toBe(false);
     expect(updateData.settings.colors.nodes.concept).toBe('#ffffff');
     expect(updateData.settings.colors.nodes.codemap).toBe('#123456');
 
@@ -188,6 +197,7 @@ describe('Web API Server', () => {
     expect(getUpdatedData.colors.nodes.concept).toBe('#ffffff');
     expect(getUpdatedData.colors.nodes.codemap).toBe('#123456');
     expect(getUpdatedData.graph.performanceThreshold).toBe(800);
+    expect(getUpdatedData.graph.labelMode).toBe('hover-only');
 
     // 3. POST config reset
     const resetRes = await fetch(`${baseUrl}/api/config/reset`, {
@@ -201,6 +211,9 @@ describe('Web API Server', () => {
     expect(resetData.settings.graph.performanceThreshold).toBe(500);
     expect(resetData.settings.graph.repulsionDistanceMax).toBe(200);
     expect(resetData.settings.graph.repulsionTheta).toBe(0.95);
+    expect(resetData.settings.graph.labelMode).toBe('dynamic');
+    expect(resetData.settings.graph.labelFilter).toBe('all');
+    expect(resetData.settings.graph.labelTextBacking).toBe(true);
     expect(resetData.settings.colors.nodes.concept).toBe('#38bdf8');
   });
 

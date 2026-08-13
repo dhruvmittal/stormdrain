@@ -156,7 +156,10 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
     consolidationThreshold: 3,
     performanceThreshold: 500,
     repulsionDistanceMax: 200,
-    repulsionTheta: 0.95
+    repulsionTheta: 0.95,
+    labelMode: 'dynamic',
+    labelFilter: 'all',
+    labelTextBacking: true
   },
   decay: {
     decayRate: 0.85,
@@ -806,6 +809,79 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
               />
               <span className="range-val-badge">{(settings.graph.repulsionTheta ?? 0.95).toFixed(2)}</span>
             </div>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Default Label Mode</label>
+              <span>Choose between displaying all labels or dynamic (landmarks + hover) mode</span>
+            </div>
+            <select
+              value={settings.graph.labelMode ?? 'dynamic'}
+              onChange={(e) => setSettings({
+                ...settings,
+                graph: { ...settings.graph, labelMode: e.target.value as any }
+              })}
+              style={{
+                background: 'rgba(30, 41, 59, 0.5)',
+                border: '1px solid rgba(148, 163, 184, 0.2)',
+                borderRadius: '4px',
+                color: 'var(--text-main)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                outline: 'none',
+                width: '100%'
+              }}
+            >
+              <option value="all">Show All Text</option>
+              <option value="dynamic">Dynamic (Landmarks + Hover)</option>
+              <option value="hover-only">Hover-Only Lens (No Landmarks)</option>
+            </select>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Default Visibility Filter</label>
+              <span>Choose whether to apply dynamic layout culling to all nodes, or keep memories always visible and only filter file nodes</span>
+            </div>
+            <select
+              value={settings.graph.labelFilter ?? 'all'}
+              onChange={(e) => setSettings({
+                ...settings,
+                graph: { ...settings.graph, labelFilter: e.target.value as any }
+              })}
+              style={{
+                background: 'rgba(30, 41, 59, 0.5)',
+                border: '1px solid rgba(148, 163, 184, 0.2)',
+                borderRadius: '4px',
+                color: 'var(--text-main)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                outline: 'none',
+                width: '100%'
+              }}
+            >
+              <option value="all">Apply Mode to All Nodes</option>
+              <option value="always-show-memories">Always Show Memories (Dynamic Files)</option>
+            </select>
+          </div>
+
+          <div className="config-field" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 0 0' }}>
+            <div className="config-field-info" style={{ flex: '1', paddingRight: '12px' }}>
+              <label style={{ margin: '0' }}>Default Dark Text Backing (Halo)</label>
+              <span>Render outlines behind labels to prevent overlaps with links</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.labelTextBacking !== false}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, labelTextBacking: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
           </div>
         </div>
 

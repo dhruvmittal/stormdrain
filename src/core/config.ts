@@ -23,7 +23,10 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
     consolidationThreshold: 3,
     performanceThreshold: 500,
     repulsionDistanceMax: 200,
-    repulsionTheta: 0.95
+    repulsionTheta: 0.95,
+    labelMode: 'dynamic',
+    labelFilter: 'all',
+    labelTextBacking: true
   },
   decay: {
     decayRate: 0.85,

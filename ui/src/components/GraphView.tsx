@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { api, applyThemeColors, type GraphColorSettings, type StormDrainSettings } from '../api';
 import MemoryEditor from './MemoryEditor';
-import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles } from 'lucide-react';
+import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles, Type } from 'lucide-react';
 
 
 interface GraphViewProps {
@@ -32,6 +32,19 @@ const PHYSICS_PRESETS: Record<string, Omit<PhysicsSettings, 'activePreset'>> = {
 
 const DEFAULT_PHYSICS: PhysicsSettings = { ...PHYSICS_PRESETS.clustered, activePreset: 'auto' };
 const PHYSICS_STORAGE_KEY = 'stormdrain_graph_physics_settings';
+
+interface LabelSettings {
+  mode: 'all' | 'dynamic' | 'hover-only';
+  filter: 'all' | 'always-show-memories';
+  textBacking: boolean;
+}
+
+const LABELS_STORAGE_KEY = 'stormdrain_graph_label_settings';
+const DEFAULT_LABELS: LabelSettings = {
+  mode: 'dynamic',
+  filter: 'all',
+  textBacking: true
+};
 
 function getAutoPreset(nodeCount: number): Omit<PhysicsSettings, 'activePreset'> {
   if (nodeCount < 150) return PHYSICS_PRESETS.clustered;
@@ -101,6 +114,39 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [isToolbarCollapsed, setIsToolbarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('stormdrain_graph_hud_collapsed') === 'true';
   });
+
+  // Label Settings & Readability States
+  const [isLabelsOpen, setIsLabelsOpen] = useState<boolean>(false);
+  const [labelSettings, setLabelSettings] = useState<LabelSettings>(() => {
+    try {
+      const saved = localStorage.getItem(LABELS_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+    // Load from backend config settings if available
+    const gc = configSettingsRef.current?.graph;
+    return {
+      mode: (gc?.labelMode as any) || DEFAULT_LABELS.mode,
+      filter: (gc?.labelFilter as any) || DEFAULT_LABELS.filter,
+      textBacking: gc?.labelTextBacking !== undefined ? gc.labelTextBacking : DEFAULT_LABELS.textBacking
+    };
+  });
+
+  const labelSettingsRef = useRef<LabelSettings>(labelSettings);
+  useEffect(() => {
+    labelSettingsRef.current = labelSettings;
+  }, [labelSettings]);
+
+  const updateLabelSettings = (updates: Partial<LabelSettings>) => {
+    setLabelSettings(prev => {
+      const next = { ...prev, ...updates };
+      try {
+        localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
 
   // Layout Mode & Physics Customization State
   const [layoutMode, setLayoutMode] = useState<'force' | 'orbit'>('force');
@@ -244,6 +290,168 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     }
   }, [colorSettings, getTypeColor, getEdgeColor]);
 
+  // References for hovering and landmarks culling
+  const hoveredNodeIdRef = useRef<string | null>(null);
+  const landmarkSetRef = useRef<Set<string>>(new Set());
+
+  // Helper to extract file basenames and truncate long memory descriptions
+  const getLabelText = useCallback((d: any) => {
+    if (d.type === 'codemap') {
+      const parts = d.title.split('/');
+      return parts[parts.length - 1];
+    }
+    const title = d.title || '';
+    if (title.length > 32) {
+      return title.substring(0, 29) + '...';
+    }
+    return title;
+  }, []);
+
+  // Spatial grid partitioning algorithm to elect visible hub landmarks
+  const computeSpatialLandmarks = useCallback((nodes: any[], degreeMap: Map<string, number>) => {
+    if (!nodes || nodes.length === 0) return new Set<string>();
+
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+
+    for (const n of nodes) {
+      if (n.x !== undefined && n.y !== undefined) {
+        if (n.x < minX) minX = n.x;
+        if (n.x > maxX) maxX = n.x;
+        if (n.y < minY) minY = n.y;
+        if (n.y > maxY) maxY = n.y;
+      }
+    }
+
+    // Topological fallback if simulation hasn't run/placed nodes yet
+    if (minX === Infinity || minY === Infinity) {
+      const sorted = [...nodes].sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0));
+      return new Set<string>(sorted.slice(0, Math.min(25, Math.ceil(nodes.length * 0.05))).map(n => n.id));
+    }
+
+    const width = (maxX - minX) || 1;
+    const height = (maxY - minY) || 1;
+
+    // Divide viewport into a 6x6 grid to enforce visual separation of landmarks
+    const cols = 6;
+    const rows = 6;
+    const grid: any[][] = Array.from({ length: cols * rows }, () => []);
+
+    for (const n of nodes) {
+      if (n.x !== undefined && n.y !== undefined) {
+        const col = Math.min(cols - 1, Math.max(0, Math.floor(((n.x - minX) / width) * cols)));
+        const row = Math.min(rows - 1, Math.max(0, Math.floor(((n.y - minY) / height) * rows)));
+        grid[row * cols + col].push(n);
+      }
+    }
+
+    const landmarkSet = new Set<string>();
+    for (const cellNodes of grid) {
+      if (cellNodes.length === 0) continue;
+      let bestNode = cellNodes[0];
+      let maxDegree = degreeMap.get(bestNode.id) || 0;
+
+      for (const cn of cellNodes) {
+        const deg = degreeMap.get(cn.id) || 0;
+        if (deg > maxDegree) {
+          maxDegree = deg;
+          bestNode = cn;
+        }
+      }
+      landmarkSet.add(bestNode.id);
+    }
+
+    return landmarkSet;
+  }, []);
+
+  const recomputeLandmarks = useCallback(() => {
+    const { nodes, links } = rawGraphDataRef.current;
+    if (!nodes) return;
+
+    const degreeMap = new Map<string, number>();
+    for (const n of nodes) degreeMap.set(n.id, 0);
+    for (const l of links) {
+      const src = typeof l.source === 'object' ? l.source.id : l.source;
+      const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+      degreeMap.set(src, (degreeMap.get(src) || 0) + 1);
+      degreeMap.set(tgt, (degreeMap.get(tgt) || 0) + 1);
+    }
+
+    landmarkSetRef.current = computeSpatialLandmarks(nodes, degreeMap);
+  }, [computeSpatialLandmarks]);
+
+  // Direct SVG-level visibility updates for high frame rates
+  const applyLabelVisibility = useCallback(() => {
+    if (!nodeSelectionRef.current) return;
+
+    const hoveredId = hoveredNodeIdRef.current;
+    const neighbors = hoveredId ? (adjacencyRef.current.get(hoveredId) || new Set<string>()) : new Set<string>();
+
+    const query = debouncedQuery.trim().toLowerCase();
+    const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
+    const mode = labelSettingsRef.current.mode;
+    const filter = labelSettingsRef.current.filter;
+    const textBacking = labelSettingsRef.current.textBacking;
+
+    // Apply backing styles (halo) and show/hide text
+    nodeSelectionRef.current.select('.node-label')
+      .style('paint-order', textBacking ? 'stroke fill' : 'normal')
+      .style('stroke', textBacking ? 'var(--bg-color)' : 'none')
+      .style('stroke-width', textBacking ? '3px' : '0px')
+      .style('stroke-linecap', 'round')
+      .style('stroke-linejoin', 'round')
+      .style('display', (d: any) => {
+        const isFile = d.type === 'codemap';
+
+        // 1. Hover lens (always visible if node or its direct neighbor is hovered)
+        if (hoveredId && (d.id === hoveredId || neighbors.has(d.id))) {
+          return 'block';
+        }
+
+        // 2. Actively filtering (show only search matches)
+        if (isFiltering) {
+          const isMatch = activeTier1SetRef.current.has(d.id) || activeInScopeSetRef.current.has(d.id);
+          return isMatch ? 'block' : 'none';
+        }
+
+        // 3. Filter restriction: always-show-memories
+        if (filter === 'always-show-memories') {
+          if (!isFile) return 'block'; // Always show memories
+          if (mode === 'all') return 'block';
+          if (mode === 'hover-only') return 'none';
+          return landmarkSetRef.current.has(d.id) ? 'block' : 'none';
+        }
+
+        // 4. Default: mode === 'all'
+        if (mode === 'all') {
+          return 'block';
+        }
+
+        // 5. Default: mode === 'hover-only'
+        if (mode === 'hover-only') {
+          return 'none';
+        }
+
+        // 6. Default: mode === 'dynamic' (Landmarks grid)
+        return landmarkSetRef.current.has(d.id) ? 'block' : 'none';
+      })
+      .style('opacity', (d: any) => {
+        if (hoveredId && (d.id === hoveredId || neighbors.has(d.id))) {
+          return 1.0;
+        }
+        if (isFiltering) {
+          if (activeTier1SetRef.current.has(d.id)) return 1.0;
+          if (activeInScopeSetRef.current.has(d.id)) return 0.75;
+          return 0.0;
+        }
+        if (mode === 'dynamic' && landmarkSetRef.current.has(d.id)) {
+          return 0.9;
+        }
+        return 1.0;
+      });
+  }, [debouncedQuery, selectedType, focusAnchorId]);
+
   // Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
   const applyActiveFilterStyling = useCallback(() => {
     if (!nodeSelectionRef.current || !linkSelectionRef.current) return;
@@ -355,8 +563,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         .attr('stroke-width', 2);
 
       tOrSel(nodeSelectionRef.current.select('.node-label'), 200)
-        .style('opacity', 1.0)
         .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400');
+
+      applyLabelVisibility();
 
       tOrSel(linkSelectionRef.current, 200)
         .attr('stroke-opacity', 0.6)
@@ -399,17 +608,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
 
     tOrSel(nodeSelectionRef.current.select('.node-label'), 220)
-      .style('opacity', (d: any) => {
-        if (tier1Set.has(d.id)) return 1.0;
-        if (tier2Set.has(d.id)) return 0.85;
-        if (tier3Set.has(d.id)) return 0.50;
-        return 0.0; // Ambient labels hidden until hovered
-      })
       .style('font-weight', (d: any) => {
         if (tier1Set.has(d.id)) return '700';
         if (tier2Set.has(d.id)) return '600';
         return '400';
       });
+
+    applyLabelVisibility();
 
     // Link Styling Across Tiers
     tOrSel(linkSelectionRef.current, 220)
@@ -442,6 +647,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   useEffect(() => {
     applyActiveFilterStylingRef.current = applyActiveFilterStyling;
   }, [applyActiveFilterStyling]);
+
+  useEffect(() => {
+    applyLabelVisibility();
+  }, [labelSettings, applyLabelVisibility]);
 
   // 1. D3 Graph Simulation & Geometry Lifecycle with Incremental Position Preservation
   useEffect(() => {
@@ -773,7 +982,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
             g.append('text')
               .attr('class', 'node-label')
-              .text((d: any) => d.title)
+              .text((d: any) => getLabelText(d))
               .attr('x', 14)
               .attr('y', 4)
               .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)')
@@ -799,7 +1008,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             });
 
             g.on('mouseenter', (_event: any, d: any) => {
-              const neighbors = adjacencyRef.current.get(d.id) || new Set();
+              hoveredNodeIdRef.current = d.id;
               
               if (linkSelectionRef.current) {
                 linkSelectionRef.current
@@ -832,15 +1041,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               }
 
               if (nodeSelectionRef.current) {
-                nodeSelectionRef.current.select('.node-label')
-                  .filter((n: any) => n.id === d.id || neighbors.has(n.id))
-                  .transition()
-                  .duration(120)
-                  .style('opacity', 1.0);
+                applyLabelVisibility();
               }
             });
 
             g.on('mouseleave', () => {
+              hoveredNodeIdRef.current = null;
               applyActiveFilterStylingRef.current();
             });
 
@@ -852,7 +1058,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .attr('fill', (d: any) => getTypeColor(d.type));
 
             update.select('.node-label')
-              .text((d: any) => d.title)
+              .text((d: any) => getLabelText(d))
               .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)');
 
             return update;
@@ -886,6 +1092,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             });
           }
         }
+        recomputeLandmarks();
+        applyActiveFilterStyling();
       });
 
       // Synchronously position elements once immediately after pre-warming
@@ -896,6 +1104,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         .attr('y2', (d: any) => d.target.y);
 
       node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+
+      recomputeLandmarks();
+      applyActiveFilterStyling();
 
       function dragstarted(event: any, d: any) {
         if (layoutModeRef.current === 'orbit') return;
@@ -1403,6 +1614,80 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           </div>
         )}
 
+        {/* Labels Display Settings Drawer (stacked above control row) */}
+        {isLabelsOpen && (
+          <div className="graph-physics-panel" style={{ width: '320px', maxWidth: 'calc(100vw - 40px)' }}>
+            <div className="graph-physics-header" style={{ marginBottom: '12px' }}>
+              <div className="graph-physics-title">
+                <Type size={13} style={{ color: 'var(--accent-color, #38bdf8)' }} />
+                <span>Label Configuration</span>
+              </div>
+            </div>
+
+            <div className="graph-physics-sliders-grid" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Label Mode */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Display Mode</span>
+                <select
+                  value={labelSettings.mode}
+                  onChange={(e) => updateLabelSettings({ mode: e.target.value as any })}
+                  style={{
+                    background: 'rgba(15, 23, 42, 0.6)',
+                    border: '1px solid rgba(148, 163, 184, 0.15)',
+                    borderRadius: '6px',
+                    color: 'var(--text-main)',
+                    padding: '6px 8px',
+                    fontSize: '0.78rem',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    width: '100%'
+                  }}
+                >
+                  <option value="all">Show All Labels</option>
+                  <option value="dynamic">Dynamic (Landmarks + Hover)</option>
+                  <option value="hover-only">Hover-Only Lens (No Landmarks)</option>
+                </select>
+              </div>
+
+              {/* Label Filter */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Filter Scope</span>
+                <select
+                  value={labelSettings.filter}
+                  onChange={(e) => updateLabelSettings({ filter: e.target.value as any })}
+                  style={{
+                    background: 'rgba(15, 23, 42, 0.6)',
+                    border: '1px solid rgba(148, 163, 184, 0.15)',
+                    borderRadius: '6px',
+                    color: 'var(--text-main)',
+                    padding: '6px 8px',
+                    fontSize: '0.78rem',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    width: '100%'
+                  }}
+                >
+                   <option value="all">Apply Mode to All Nodes</option>
+                   <option value="always-show-memories">Always Show Memories (Dynamic Files)</option>
+                </select>
+              </div>
+
+              {/* Text Backing Toggle */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Dark Text Backing (Halo)</span>
+                <label className="switch" style={{ width: '44px', height: '24px' }}>
+                  <input
+                    type="checkbox"
+                    checked={labelSettings.textBacking}
+                    onChange={(e) => updateLabelSettings({ textBacking: e.target.checked })}
+                  />
+                  <span className="slider round"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="graph-layout-control-row">
           {/* Layout Mode Segmented Switcher */}
           <div className="graph-layout-mode-group">
@@ -1431,12 +1716,29 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           {/* Physics Settings Toggle */}
           <button
             className={`graph-hud-icon-btn ${isPhysicsOpen ? 'active' : ''}`}
-            onClick={() => setIsPhysicsOpen(prev => !prev)}
+            onClick={() => {
+              setIsPhysicsOpen(prev => !prev);
+              setIsLabelsOpen(false);
+            }}
             title="Physics & Clustering Controls"
           >
             <SlidersHorizontal size={13} />
             <span>Physics</span>
             <span className="graph-preset-indicator">{physics.activePreset}</span>
+          </button>
+
+          {/* Labels Settings Toggle */}
+          <button
+            className={`graph-hud-icon-btn ${isLabelsOpen ? 'active' : ''}`}
+            onClick={() => {
+              setIsLabelsOpen(prev => !prev);
+              setIsPhysicsOpen(false);
+            }}
+            title="Label Display & Readability Settings"
+          >
+            <Type size={13} />
+            <span>Labels</span>
+            <span className="graph-preset-indicator">{labelSettings.mode}</span>
           </button>
         </div>
       </div>

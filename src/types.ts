@@ -91,6 +91,9 @@ export interface GraphSettings {
   performanceThreshold: number;
   repulsionDistanceMax: number;
   repulsionTheta: number;
+  labelMode?: 'all' | 'dynamic' | 'hover-only';
+  labelFilter?: 'all' | 'always-show-memories';
+  labelTextBacking?: boolean;
 }
 
 export interface DecaySettings {
