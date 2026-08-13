@@ -143,6 +143,9 @@ describe('Web API Server', () => {
     expect(initialConfig.readTool).toBeDefined();
     expect(initialConfig.readTool.mode).toBe('auto');
     expect(initialConfig.readTool.tokenBudget).toBe(500);
+    expect(initialConfig.graph.performanceThreshold).toBe(500);
+    expect(initialConfig.graph.repulsionDistanceMax).toBe(200);
+    expect(initialConfig.graph.repulsionTheta).toBe(0.95);
 
     // 2. POST config update
     const updateRes = await fetch(`${baseUrl}/api/config`, {
@@ -154,7 +157,10 @@ describe('Web API Server', () => {
           mode: 'standalone'
         },
         graph: {
-          forwardWeight: 0.88
+          forwardWeight: 0.88,
+          performanceThreshold: 800,
+          repulsionDistanceMax: 150,
+          repulsionTheta: 0.80
         },
         colors: {
           nodes: {
@@ -170,6 +176,9 @@ describe('Web API Server', () => {
     expect(updateData.settings.readTool.tokenBudget).toBe(750);
     expect(updateData.settings.readTool.mode).toBe('standalone');
     expect(updateData.settings.graph.forwardWeight).toBe(0.88);
+    expect(updateData.settings.graph.performanceThreshold).toBe(800);
+    expect(updateData.settings.graph.repulsionDistanceMax).toBe(150);
+    expect(updateData.settings.graph.repulsionTheta).toBe(0.80);
     expect(updateData.settings.colors.nodes.concept).toBe('#ffffff');
     expect(updateData.settings.colors.nodes.codemap).toBe('#123456');
 
@@ -178,6 +187,7 @@ describe('Web API Server', () => {
     const getUpdatedData = await getUpdatedRes.json();
     expect(getUpdatedData.colors.nodes.concept).toBe('#ffffff');
     expect(getUpdatedData.colors.nodes.codemap).toBe('#123456');
+    expect(getUpdatedData.graph.performanceThreshold).toBe(800);
 
     // 3. POST config reset
     const resetRes = await fetch(`${baseUrl}/api/config/reset`, {
@@ -188,6 +198,9 @@ describe('Web API Server', () => {
     expect(resetData.success).toBe(true);
     expect(resetData.settings.readTool.tokenBudget).toBe(500);
     expect(resetData.settings.readTool.mode).toBe('auto');
+    expect(resetData.settings.graph.performanceThreshold).toBe(500);
+    expect(resetData.settings.graph.repulsionDistanceMax).toBe(200);
+    expect(resetData.settings.graph.repulsionTheta).toBe(0.95);
     expect(resetData.settings.colors.nodes.concept).toBe('#38bdf8');
   });
 

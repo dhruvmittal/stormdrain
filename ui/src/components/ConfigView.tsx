@@ -153,7 +153,10 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
     reverseWeight: 0.25,
     cumulativeMassThreshold: 0.85,
     pushThreshold: 0.0001,
-    consolidationThreshold: 3
+    consolidationThreshold: 3,
+    performanceThreshold: 500,
+    repulsionDistanceMax: 200,
+    repulsionTheta: 0.95
   },
   decay: {
     decayRate: 0.85,
@@ -729,7 +732,84 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
           </div>
         </div>
 
-        {/* Card 5: Graph Appearance & Palette */}
+        {/* Card 5: Graph Performance & Scalability */}
+        <div className="config-card">
+          <div className="config-card-header">
+            <div className="config-card-title">
+              <Cpu size={18} style={{ color: 'var(--color-warning)' }} />
+              <h3>Graph Performance & Scalability</h3>
+            </div>
+            <span className="config-card-badge">Performance</span>
+          </div>
+          <p className="config-card-desc">
+            Optimize D3 rendering thresholds and force simulation parameters to handle large-scale codebases.
+          </p>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Transition Bypass Threshold</label>
+              <span>Bypass SVG opacity animations above this node count to prevent main-thread lag</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="100" 
+                max="2000" 
+                step="50"
+                value={settings.graph.performanceThreshold ?? 500}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, performanceThreshold: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{settings.graph.performanceThreshold ?? 500} nodes</span>
+            </div>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Repulsion Max Distance</label>
+              <span>Cap electrostatic repulsion calculations to a local bounding radius</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="50" 
+                max="500" 
+                step="10"
+                value={settings.graph.repulsionDistanceMax ?? 200}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, repulsionDistanceMax: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{settings.graph.repulsionDistanceMax ?? 200} px</span>
+            </div>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Barnes-Hut Theta (&theta;)</label>
+              <span>Higher values group distant force computations coarser and faster</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="0.50" 
+                max="1.00" 
+                step="0.05"
+                value={settings.graph.repulsionTheta ?? 0.95}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, repulsionTheta: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{(settings.graph.repulsionTheta ?? 0.95).toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 6: Graph Appearance & Palette */}
         <div className="config-card full-width">
           <div className="config-card-header">
             <div className="config-card-title">

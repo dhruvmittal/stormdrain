@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
-import { api, applyThemeColors, type GraphColorSettings } from '../api';
+import { api, applyThemeColors, type GraphColorSettings, type StormDrainSettings } from '../api';
 import MemoryEditor from './MemoryEditor';
 import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles } from 'lucide-react';
 
@@ -71,6 +71,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const activeTier1SetRef = useRef<Set<string>>(new Set());
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
   const lastLoadedVersionRef = useRef<string>('');
+  const configSettingsRef = useRef<StormDrainSettings | null>(null);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -331,43 +332,40 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     nodeSelectionRef.current.interrupt('style');
     linkSelectionRef.current.interrupt('style');
 
+    const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+    const useTransition = nodes.length < performanceThreshold;
+
+    const tOrSel = (selection: any, duration: number) => {
+      return useTransition ? selection.transition('style').duration(duration) : selection;
+    };
+
     // If not filtering OR if 0 matches, show full baseline graph
     if (!isFiltering || hasNoMatches) {
       activeTier1SetRef.current.clear();
       activeInScopeSetRef.current.clear();
 
-      nodeSelectionRef.current
-        .transition('style')
-        .duration(200)
+      tOrSel(nodeSelectionRef.current, 200)
         .style('opacity', 1.0)
         .style('pointer-events', 'auto')
         .style('filter', 'none');
 
-      nodeSelectionRef.current.select('.node-circle')
-        .transition('style')
-        .duration(200)
+      tOrSel(nodeSelectionRef.current.select('.node-circle'), 200)
         .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
         .attr('stroke', 'var(--bg-color)')
         .attr('stroke-width', 2);
 
-      nodeSelectionRef.current.select('.node-label')
-        .transition('style')
-        .duration(200)
+      tOrSel(nodeSelectionRef.current.select('.node-label'), 200)
         .style('opacity', 1.0)
         .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400');
 
-      linkSelectionRef.current
-        .transition('style')
-        .duration(200)
+      tOrSel(linkSelectionRef.current, 200)
         .attr('stroke-opacity', 0.6)
         .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2);
 
       return;
     }
 
-    nodeSelectionRef.current
-      .transition('style')
-      .duration(220)
+    tOrSel(nodeSelectionRef.current, 220)
       .style('opacity', (d: any) => {
         if (tier1Set.has(d.id)) return 1.0;
         if (tier2Set.has(d.id)) return 0.75;
@@ -383,9 +381,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return 'grayscale(0.6)';
       });
 
-    nodeSelectionRef.current.select('.node-circle')
-      .transition('style')
-      .duration(220)
+    tOrSel(nodeSelectionRef.current.select('.node-circle'), 220)
       .attr('r', (d: any) => {
         const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
         if (tier1Set.has(d.id)) return base + 3;
@@ -402,9 +398,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return 1;
       });
 
-    nodeSelectionRef.current.select('.node-label')
-      .transition('style')
-      .duration(220)
+    tOrSel(nodeSelectionRef.current.select('.node-label'), 220)
       .style('opacity', (d: any) => {
         if (tier1Set.has(d.id)) return 1.0;
         if (tier2Set.has(d.id)) return 0.85;
@@ -418,9 +412,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
 
     // Link Styling Across Tiers
-    linkSelectionRef.current
-      .transition('style')
-      .duration(220)
+    tOrSel(linkSelectionRef.current, 220)
       .attr('stroke-opacity', (l: any) => {
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
         const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
@@ -460,6 +452,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const initGraph = async () => {
       const version = await api.getGraphVersion(activeContext);
       const isContextSwitch = previousContextRef.current !== activeContext;
+
+      const cfg = await api.getConfig();
+      configSettingsRef.current = cfg;
+
       if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current) {
         return;
       }
@@ -698,7 +694,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       if (!simulation) {
         simulation = d3.forceSimulation()
           .force('link', d3.forceLink().id((d: any) => d.id).distance(effectivePhysics.linkDistance))
-          .force('charge', d3.forceManyBody().strength(effectivePhysics.chargeStrength).theta(0.85).distanceMax(450))
+          .force('charge', d3.forceManyBody()
+            .strength(effectivePhysics.chargeStrength)
+            .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
+            .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
+          )
           .force('center', d3.forceCenter(width / 2, height / 2))
           .force('collide', d3.forceCollide(effectivePhysics.collisionRadius))
           .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effectivePhysics.moduleGravity))
@@ -863,8 +863,18 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodeSelectionRef.current = node as any;
 
       simulation.on('tick', () => {
-        // Update persistent position cache
-        for (const d of nodes) {
+        link
+          .attr('x1', (d: any) => d.source.x)
+          .attr('y1', (d: any) => d.source.y)
+          .attr('x2', (d: any) => d.target.x)
+          .attr('y2', (d: any) => d.target.y);
+
+        node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+      });
+
+      simulation.on('end', () => {
+        const currentNodes = rawGraphDataRef.current.nodes;
+        for (const d of currentNodes) {
           if (d.x !== undefined && d.y !== undefined) {
             positionsCacheRef.current.set(d.id, {
               x: d.x,
@@ -876,14 +886,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             });
           }
         }
-
-        link
-          .attr('x1', (d: any) => d.source.x)
-          .attr('y1', (d: any) => d.source.y)
-          .attr('x2', (d: any) => d.target.x)
-          .attr('y2', (d: any) => d.target.y);
-
-        node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
       });
 
       // Synchronously position elements once immediately after pre-warming
@@ -913,6 +915,16 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (!event.active) simulation!.alphaTarget(0);
         d.fx = null;
         d.fy = null;
+        if (d.x !== undefined && d.y !== undefined) {
+          positionsCacheRef.current.set(d.id, {
+            x: d.x,
+            y: d.y,
+            vx: d.vx,
+            vy: d.vy,
+            fx: d.fx,
+            fy: d.fy,
+          });
+        }
       }
 
       // Initial filter styling pass
@@ -939,7 +951,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       : physics;
 
     simulation
-      .force('charge', d3.forceManyBody().strength(effective.chargeStrength).theta(0.85).distanceMax(450))
+      .force('charge', d3.forceManyBody()
+        .strength(effective.chargeStrength)
+        .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
+        .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
+      )
       .force('collide', d3.forceCollide(effective.collisionRadius))
       .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effective.moduleGravity))
       .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effective.moduleGravity));
@@ -1084,17 +1100,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         nodesGroup.style('pointer-events', '');
       }, 700);
 
-      // Animate nodes and links into orbit positions
-      nodeSelectionRef.current
-        .transition('layout')
-        .duration(650)
-        .ease(d3.easeCubicOut)
-        .attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+      const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+      const useTransition = nodes.length < performanceThreshold;
 
-      linkSelectionRef.current
-        .transition('layout')
-        .duration(650)
-        .ease(d3.easeCubicOut)
+      // Animate nodes and links into orbit positions
+      const tNode: any = useTransition
+        ? (nodeSelectionRef.current as any).transition('layout').duration(650).ease(d3.easeCubicOut)
+        : nodeSelectionRef.current;
+      tNode.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+
+      const tLink: any = useTransition
+        ? (linkSelectionRef.current as any).transition('layout').duration(650).ease(d3.easeCubicOut)
+        : linkSelectionRef.current;
+      tLink
         .attr('x1', (d: any) => d.source.x ?? (typeof d.source === 'object' ? d.source.x : centerX))
         .attr('y1', (d: any) => d.source.y ?? (typeof d.source === 'object' ? d.source.y : centerY))
         .attr('x2', (d: any) => d.target.x ?? (typeof d.target === 'object' ? d.target.x : centerX))

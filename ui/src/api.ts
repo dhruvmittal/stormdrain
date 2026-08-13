@@ -253,6 +253,9 @@ export interface GraphSettings {
   cumulativeMassThreshold: number;
   pushThreshold: number;
   consolidationThreshold: number;
+  performanceThreshold: number;
+  repulsionDistanceMax: number;
+  repulsionTheta: number;
   colors?: GraphColorSettings;
 }
 
