@@ -192,7 +192,6 @@ describe('Web API Server', () => {
   });
 
   it('should handle configuration error states gracefully', async () => {
-    // Test config error when sending non-object / invalid body that triggers error
     const errRes = await fetch(`${baseUrl}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -200,6 +199,47 @@ describe('Web API Server', () => {
     });
     expect(errRes.status).toBeGreaterThanOrEqual(400);
   });
+
+  it('should return a graph version hash and update on changes', async () => {
+    const res = await fetch(`${baseUrl}/api/graph/version`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.version).toBeDefined();
+    expect(typeof data.version).toBe('string');
+    expect(data.version.length).toBe(64);
+
+    const initialVersion = data.version;
+
+    const createRes = await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'concept',
+        title: 'Test Concept for Versioning',
+        content: 'Test content'
+      })
+    });
+    expect(createRes.status).toBe(201);
+    const createData = await createRes.json();
+    const createdId = createData.id;
+
+    const resAfterCreate = await fetch(`${baseUrl}/api/graph/version`);
+    const dataAfterCreate = await resAfterCreate.json();
+    expect(dataAfterCreate.version).not.toBe(initialVersion);
+
+    const version2 = dataAfterCreate.version;
+
+    const delRes = await fetch(`${baseUrl}/api/memories/${createdId}`, {
+      method: 'DELETE'
+    });
+    expect(delRes.status).toBe(200);
+
+    const resAfterDelete = await fetch(`${baseUrl}/api/graph/version`);
+    const dataAfterDelete = await resAfterDelete.json();
+    expect(dataAfterDelete.version).not.toBe(version2);
+  });
 });
+
+
 
 

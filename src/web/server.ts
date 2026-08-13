@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 
@@ -238,6 +239,27 @@ export const startWebServer = (port: number = 3456) => {
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
+  }));
+
+  app.get('/api/graph/version', withContext(async (req, res, ctx) => {
+    const memoriesRow = ctx.getDb().prepare(`
+      SELECT group_concat(id || '@' || updated) as sig 
+      FROM (SELECT id, updated FROM memories ORDER BY id)
+    `).get() as { sig: string | null };
+
+    const relationsRow = ctx.getDb().prepare(`
+      SELECT group_concat(source_id || '->' || target_id || '->' || type) as sig 
+      FROM (SELECT source_id, target_id, type FROM relations ORDER BY source_id, target_id)
+    `).get() as { sig: string | null };
+
+    const memoriesSig = memoriesRow?.sig || '';
+    const relationsSig = relationsRow?.sig || '';
+
+    const hash = crypto.createHash('sha256')
+      .update(`${memoriesSig}||${relationsSig}`)
+      .digest('hex');
+
+    res.json({ version: hash });
   }));
 
   app.get('/api/graph', withContext(async (req, res, ctx) => {

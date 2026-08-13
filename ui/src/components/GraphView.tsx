@@ -70,6 +70,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const activeTier1SetRef = useRef<Set<string>>(new Set());
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
+  const lastLoadedVersionRef = useRef<string>('');
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -457,16 +458,24 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     let isMounted = true;
 
     const initGraph = async () => {
+      const version = await api.getGraphVersion(activeContext);
+      const isContextSwitch = previousContextRef.current !== activeContext;
+      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current) {
+        return;
+      }
+
       const rawData = await api.getGraph(activeContext);
       if (!isMounted || !rawData || !rawData.nodes) return;
+
+      lastLoadedVersionRef.current = version;
 
       const width = svgRef.current?.parentElement?.clientWidth || 900;
       const height = svgRef.current?.parentElement?.clientHeight || 700;
 
       // Check if switching context
-      const isContextSwitch = previousContextRef.current !== activeContext;
       if (isContextSwitch) {
         previousContextRef.current = activeContext;
+        lastLoadedVersionRef.current = '';
         positionsCacheRef.current.clear();
         currentZoomTransformRef.current = null;
         isInitializedRef.current = false;
@@ -538,6 +547,39 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         target: typeof l.target === 'object' ? l.target.id : l.target,
         type: l.type,
       }));
+
+      // Check if layout properties changed
+      const currentNodes = rawGraphDataRef.current?.nodes || [];
+      const currentLinks = rawGraphDataRef.current?.links || [];
+      let layoutChanged = false;
+
+      if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
+        layoutChanged = true;
+      } else {
+        const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
+        for (const n of nodes) {
+          const oldNode = oldNodeMap.get(n.id);
+          if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
+            layoutChanged = true;
+            break;
+          }
+        }
+        if (!layoutChanged) {
+          const oldLinkSet = new Set(currentLinks.map((l: any) => {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            return `${s}->${t}->${l.type}`;
+          }));
+          for (const l of links) {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
+              layoutChanged = true;
+              break;
+            }
+          }
+        }
+      }
 
       rawGraphDataRef.current = { nodes, links };
 
@@ -678,7 +720,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           simulation.tick();
         }
         isInitializedRef.current = true;
-      } else {
+      } else if (layoutChanged) {
         // Warm restart with low alpha so existing nodes gently nudge without scattering
         simulation.alpha(0.12).restart();
       }

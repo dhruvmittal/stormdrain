@@ -42,6 +42,15 @@ export const api = {
     }
   },
 
+  async getGraphVersion(context: string) {
+    try {
+      const { data } = await safeJsonFetch(`${API_BASE}/graph/version?context=${context}`);
+      return data?.version || '';
+    } catch {
+      return '';
+    }
+  },
+
   async getGraph(context: string) {
     try {
       const { data } = await safeJsonFetch(`${API_BASE}/graph?context=${context}`);
