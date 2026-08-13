@@ -251,7 +251,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!nodes || nodes.length === 0) return;
 
     const query = debouncedQuery.trim().toLowerCase();
-    const hasFilter = Boolean(query || selectedType !== 'all');
+    const hasActiveFilter = Boolean(query || selectedType !== 'all');
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
 
     // Compute Tier 1 (Match Set)
@@ -267,14 +267,18 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       return matchesType && matchesQuery;
     };
 
-    if (focusAnchorId) {
-      tier1Set.add(focusAnchorId);
-    } else if (isFiltering) {
+    if (hasActiveFilter) {
       for (const n of nodes) {
         if (matchesFilter(n)) {
           tier1Set.add(n.id);
         }
       }
+      if (focusAnchorId) {
+        // Keep the orbit center highlighted as Tier 1
+        tier1Set.add(focusAnchorId);
+      }
+    } else if (focusAnchorId) {
+      tier1Set.add(focusAnchorId);
     }
 
     const hasNoMatches = isFiltering && tier1Set.size === 0;
@@ -287,15 +291,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (neighbors) {
           for (const nb of neighbors) {
             if (!tier1Set.has(nb)) {
-              if (focusAnchorId && hasFilter) {
-                // If focus anchor is active, filter direct neighbors by type/query
-                const nbNode = nodes.find((n: any) => n.id === nb);
-                if (nbNode && matchesFilter(nbNode)) {
-                  tier2Set.add(nb);
-                }
-              } else {
-                tier2Set.add(nb);
-              }
+              tier2Set.add(nb);
             }
           }
         }
@@ -310,29 +306,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (extended) {
           for (const ext of extended) {
             if (!tier1Set.has(ext) && !tier2Set.has(ext)) {
-              if (focusAnchorId && hasFilter) {
-                // If focus anchor is active, filter extended neighbors by type/query
-                const extNode = nodes.find((n: any) => n.id === ext);
-                if (extNode && matchesFilter(extNode)) {
-                  tier3Set.add(ext);
-                }
-              } else {
-                tier3Set.add(ext);
-              }
+              tier3Set.add(ext);
             }
           }
         }
       }
     }
-
-    console.log('[DEBUG FILTER]', {
-      selectedType,
-      focusAnchorId,
-      hasFilter,
-      tier1Size: tier1Set.size,
-      tier2Size: tier2Set.size,
-      tier3Size: tier3Set.size,
-    });
 
     // In-scope union for stats
     const inScopeSet = new Set<string>([...tier1Set, ...tier2Set, ...tier3Set]);
