@@ -883,6 +883,24 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
               <span className="slider round"></span>
             </label>
           </div>
+
+          <div className="config-field" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 0 0' }}>
+            <div className="config-field-info" style={{ flex: '1', paddingRight: '12px' }}>
+              <label style={{ margin: '0' }}>Default Focus Mode (Sub-graph Neighborhood)</label>
+              <span>Physically prune non-focused nodes and layout only the matching neighborhood during active queries</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.labelFocusMode === true}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, labelFocusMode: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
         </div>
 
         {/* Card 6: Graph Appearance & Palette */}

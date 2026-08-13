@@ -26,7 +26,8 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
     repulsionTheta: 0.95,
     labelMode: 'dynamic',
     labelFilter: 'all',
-    labelTextBacking: true
+    labelTextBacking: true,
+    labelFocusMode: false
   },
   decay: {
     decayRate: 0.85,

@@ -37,13 +37,15 @@ interface LabelSettings {
   mode: 'all' | 'dynamic' | 'hover-only';
   filter: 'all' | 'always-show-memories';
   textBacking: boolean;
+  focusMode: boolean;
 }
 
 const LABELS_STORAGE_KEY = 'stormdrain_graph_label_settings';
 const DEFAULT_LABELS: LabelSettings = {
   mode: 'dynamic',
   filter: 'all',
-  textBacking: true
+  textBacking: true,
+  focusMode: false
 };
 
 function getAutoPreset(nodeCount: number): Omit<PhysicsSettings, 'activePreset'> {
@@ -129,7 +131,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return {
       mode: (gc?.labelMode as any) || DEFAULT_LABELS.mode,
       filter: (gc?.labelFilter as any) || DEFAULT_LABELS.filter,
-      textBacking: gc?.labelTextBacking !== undefined ? gc.labelTextBacking : DEFAULT_LABELS.textBacking
+      textBacking: gc?.labelTextBacking !== undefined ? gc.labelTextBacking : DEFAULT_LABELS.textBacking,
+      focusMode: gc?.labelFocusMode !== undefined ? gc.labelFocusMode : DEFAULT_LABELS.focusMode
     };
   });
 
@@ -665,128 +668,136 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       const cfg = await api.getConfig();
       configSettingsRef.current = cfg;
 
-      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current) {
-        return;
-      }
-
-      const rawData = await api.getGraph(activeContext);
-      if (!isMounted || !rawData || !rawData.nodes) return;
-
-      lastLoadedVersionRef.current = version;
-
       const width = svgRef.current?.parentElement?.clientWidth || 900;
       const height = svgRef.current?.parentElement?.clientHeight || 700;
 
-      // Check if switching context
-      if (isContextSwitch) {
-        previousContextRef.current = activeContext;
-        lastLoadedVersionRef.current = '';
-        positionsCacheRef.current.clear();
-        currentZoomTransformRef.current = null;
-        isInitializedRef.current = false;
-        if (simulationRef.current) {
-          simulationRef.current.stop();
-          simulationRef.current = null;
-        }
-        d3.select(svgRef.current).selectAll('*').remove();
-        containerRef.current = null;
+      let rawData;
+      let needMapping = true;
+
+      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current && rawGraphDataRef.current?.nodes?.length > 0) {
+        rawData = rawGraphDataRef.current;
+        needMapping = false;
+      } else {
+        rawData = await api.getGraph(activeContext);
+        if (!isMounted || !rawData || !rawData.nodes) return;
+        lastLoadedVersionRef.current = version;
       }
 
-      // Filter valid links where both source & target exist in nodes
-      const nodeIds = new Set((rawData.nodes || []).map((n: any) => n.id));
-      const validLinks = (rawData.links || []).filter(
-        (l: any) => nodeIds.has(typeof l.source === 'object' ? l.source.id : l.source) &&
-                    nodeIds.has(typeof l.target === 'object' ? l.target.id : l.target)
-      );
-
-      const positionsCache = positionsCacheRef.current;
-
-      // Map nodes with persistent positions or proximity-based placement for new nodes
-      const nodes = (rawData.nodes || []).map((n: any) => {
-        const cached = positionsCache.get(n.id);
-        if (cached) {
-          return {
-            ...n,
-            x: cached.x,
-            y: cached.y,
-            vx: cached.vx ?? 0,
-            vy: cached.vy ?? 0,
-            fx: cached.fx ?? null,
-            fy: cached.fy ?? null,
-          };
-        }
-
-        // New node: Proximity-based spawning near a connected neighbor
-        let spawnX = width / 2 + (Math.random() - 0.5) * 80;
-        let spawnY = height / 2 + (Math.random() - 0.5) * 80;
-
-        const connectedLink = validLinks.find((l: any) => {
-          const s = typeof l.source === 'object' ? l.source.id : l.source;
-          const t = typeof l.target === 'object' ? l.target.id : l.target;
-          return (s === n.id && positionsCache.has(t)) || (t === n.id && positionsCache.has(s));
-        });
-
-        if (connectedLink) {
-          const s = typeof connectedLink.source === 'object' ? connectedLink.source.id : connectedLink.source;
-          const t = typeof connectedLink.target === 'object' ? connectedLink.target.id : connectedLink.target;
-          const neighborId = s === n.id ? t : s;
-          const neighborPos = positionsCache.get(neighborId);
-          if (neighborPos) {
-            spawnX = neighborPos.x + (Math.random() - 0.5) * 50;
-            spawnY = neighborPos.y + (Math.random() - 0.5) * 50;
-          }
-        }
-
-        return {
-          ...n,
-          x: spawnX,
-          y: spawnY,
-          vx: 0,
-          vy: 0,
-        };
-      });
-
-      // Normalize links
-      const links = validLinks.map((l: any) => ({
-        source: typeof l.source === 'object' ? l.source.id : l.source,
-        target: typeof l.target === 'object' ? l.target.id : l.target,
-        type: l.type,
-      }));
-
-      // Check if layout properties changed
-      const currentNodes = rawGraphDataRef.current?.nodes || [];
-      const currentLinks = rawGraphDataRef.current?.links || [];
+      let nodes = rawData.nodes;
+      let links = rawData.links;
       let layoutChanged = false;
 
-      if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
-        layoutChanged = true;
-      } else {
-        const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
-        for (const n of nodes) {
-          const oldNode = oldNodeMap.get(n.id);
-          if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
-            layoutChanged = true;
-            break;
+      if (needMapping) {
+        // Check if switching context
+        if (isContextSwitch) {
+          previousContextRef.current = activeContext;
+          lastLoadedVersionRef.current = '';
+          positionsCacheRef.current.clear();
+          currentZoomTransformRef.current = null;
+          isInitializedRef.current = false;
+          if (simulationRef.current) {
+            simulationRef.current.stop();
+            simulationRef.current = null;
           }
+          d3.select(svgRef.current).selectAll('*').remove();
+          containerRef.current = null;
         }
-        if (!layoutChanged) {
-          const oldLinkSet = new Set(currentLinks.map((l: any) => {
+
+        // Filter valid links where both source & target exist in nodes
+        const nodeIds = new Set((rawData.nodes || []).map((n: any) => n.id));
+        const validLinks = (rawData.links || []).filter(
+          (l: any) => nodeIds.has(typeof l.source === 'object' ? l.source.id : l.source) &&
+                      nodeIds.has(typeof l.target === 'object' ? l.target.id : l.target)
+        );
+
+        const positionsCache = positionsCacheRef.current;
+
+        // Map nodes with persistent positions or proximity-based placement for new nodes
+        nodes = (rawData.nodes || []).map((n: any) => {
+          const cached = positionsCache.get(n.id);
+          if (cached) {
+            return {
+              ...n,
+              x: cached.x,
+              y: cached.y,
+              vx: cached.vx ?? 0,
+              vy: cached.vy ?? 0,
+              fx: cached.fx ?? null,
+              fy: cached.fy ?? null,
+            };
+          }
+
+          // New node: Proximity-based spawning near a connected neighbor
+          let spawnX = width / 2 + (Math.random() - 0.5) * 80;
+          let spawnY = height / 2 + (Math.random() - 0.5) * 80;
+
+          const connectedLink = validLinks.find((l: any) => {
             const s = typeof l.source === 'object' ? l.source.id : l.source;
             const t = typeof l.target === 'object' ? l.target.id : l.target;
-            return `${s}->${t}->${l.type}`;
-          }));
-          for (const l of links) {
-            const s = typeof l.source === 'object' ? l.source.id : l.source;
-            const t = typeof l.target === 'object' ? l.target.id : l.target;
-            if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
+            return (s === n.id && positionsCache.has(t)) || (t === n.id && positionsCache.has(s));
+          });
+
+          if (connectedLink) {
+            const s = typeof connectedLink.source === 'object' ? connectedLink.source.id : connectedLink.source;
+            const t = typeof connectedLink.target === 'object' ? connectedLink.target.id : connectedLink.target;
+            const neighborId = s === n.id ? t : s;
+            const neighborPos = positionsCache.get(neighborId);
+            if (neighborPos) {
+              spawnX = neighborPos.x + (Math.random() - 0.5) * 50;
+              spawnY = neighborPos.y + (Math.random() - 0.5) * 50;
+            }
+          }
+
+          return {
+            ...n,
+            x: spawnX,
+            y: spawnY,
+            vx: 0,
+            vy: 0,
+          };
+        });
+
+        // Normalize links
+        links = validLinks.map((l: any) => ({
+          source: typeof l.source === 'object' ? l.source.id : l.source,
+          target: typeof l.target === 'object' ? l.target.id : l.target,
+          type: l.type,
+        }));
+
+        // Check if layout properties changed
+        const currentNodes = rawGraphDataRef.current?.nodes || [];
+        const currentLinks = rawGraphDataRef.current?.links || [];
+
+        if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
+          layoutChanged = true;
+        } else {
+          const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
+          for (const n of nodes) {
+            const oldNode = oldNodeMap.get(n.id);
+            if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
               layoutChanged = true;
               break;
             }
           }
+          if (!layoutChanged) {
+            const oldLinkSet = new Set(currentLinks.map((l: any) => {
+              const s = typeof l.source === 'object' ? l.source.id : l.source;
+              const t = typeof l.target === 'object' ? l.target.id : l.target;
+              return `${s}->${t}->${l.type}`;
+            }));
+            for (const l of links) {
+              const s = typeof l.source === 'object' ? l.source.id : l.source;
+              const t = typeof l.target === 'object' ? l.target.id : l.target;
+              if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
+                layoutChanged = true;
+                break;
+              }
+            }
+          }
         }
-      }
 
-      rawGraphDataRef.current = { nodes, links };
+        rawGraphDataRef.current = { nodes, links };
+      }
 
       // Compute type distributions
       const counts: Record<string, number> = { all: nodes.length };
@@ -892,9 +903,79 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         nodeGroup = container.append('g').attr('class', 'graph-nodes');
       }
 
+      // Compute matching subsets for Focus Mode if active
+      const query = debouncedQuery.trim().toLowerCase();
+      const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
+      const tier1Set = new Set<string>();
+      const matchesFilter = (n: any) => {
+        const matchesType = selectedType === 'all' || n.type === selectedType;
+        const matchesQuery = !query || 
+          n.title?.toLowerCase().includes(query) || 
+          n.content?.toLowerCase().includes(query) ||
+          n.id?.toLowerCase().includes(query);
+        return matchesType && matchesQuery;
+      };
+
+      const hasActiveFilter = Boolean(query || selectedType !== 'all');
+      if (hasActiveFilter) {
+        for (const n of nodes) {
+          if (matchesFilter(n)) {
+            tier1Set.add(n.id);
+          }
+        }
+        if (focusAnchorId) tier1Set.add(focusAnchorId);
+      } else if (focusAnchorId) {
+        tier1Set.add(focusAnchorId);
+      }
+
+      const hasNoMatches = isFiltering && tier1Set.size === 0;
+
+      let nodesToBind = nodes;
+      let linksToBind = links;
+
+      if (labelSettings.focusMode && isFiltering && !hasNoMatches) {
+        const tier2Set = new Set<string>();
+        if (tier1Set.size > 0 && scopeDepth >= 1) {
+          for (const matchId of tier1Set) {
+            const neighbors = adj.get(matchId);
+            if (neighbors) {
+              for (const nb of neighbors) {
+                if (!tier1Set.has(nb)) {
+                  tier2Set.add(nb);
+                }
+              }
+            }
+          }
+        }
+
+        const tier3Set = new Set<string>();
+        if (tier2Set.size > 0 && scopeDepth >= 2) {
+          for (const hop1Id of tier2Set) {
+            const extended = adj.get(hop1Id);
+            if (extended) {
+              for (const ext of extended) {
+                if (!tier1Set.has(ext) && !tier2Set.has(ext)) {
+                  tier3Set.add(ext);
+                }
+              }
+            }
+          }
+        }
+
+        const inScopeSet = new Set<string>([...tier1Set, ...tier2Set, ...tier3Set]);
+
+        nodesToBind = nodes.filter((n: any) => inScopeSet.has(n.id));
+        linksToBind = links.filter((l: any) => {
+          const s = typeof l.source === 'object' ? l.source.id : l.source;
+          const t = typeof l.target === 'object' ? l.target.id : l.target;
+          return inScopeSet.has(s) && inScopeSet.has(t);
+        });
+      }
+
       // Initialize or update D3 Force Simulation with Barnes-Hut, modular clustering, and physics preset
       const effectivePhysics = physics.activePreset === 'auto'
-        ? { ...getAutoPreset(nodes.length), activePreset: 'auto' as const }
+        ? { ...getAutoPreset(nodesToBind.length), activePreset: 'auto' as const }
         : physics;
 
       let simulation = simulationRef.current;
@@ -918,8 +999,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         simulationRef.current = simulation;
       }
 
-      simulation.nodes(nodes as any);
-      (simulation.force('link') as d3.ForceLink<any, any>).links(links as any);
+      // Check if simulation nodes list has changed
+      const currentSimNodeIds = new Set(simulation.nodes().map((n: any) => n.id));
+      const activeIdsChanged = currentSimNodeIds.size !== nodesToBind.length ||
+        !nodesToBind.every((n: any) => currentSimNodeIds.has(n.id));
+
+      simulation.nodes(nodesToBind as any);
+      (simulation.force('link') as d3.ForceLink<any, any>).links(linksToBind as any);
 
       // Pre-warming on First Load vs Gentle Re-heat on Refresh
       if (isFirstLoad) {
@@ -929,15 +1015,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           simulation.tick();
         }
         isInitializedRef.current = true;
-      } else if (layoutChanged) {
+      } else if (layoutChanged || activeIdsChanged) {
         // Warm restart with low alpha so existing nodes gently nudge without scattering
-        simulation.alpha(0.12).restart();
+        simulation.alpha(0.2).restart();
       }
 
       // Data Join for Links (keyed by source->target)
       const link = linkGroup
         .selectAll<SVGLineElement, any>('line')
-        .data(links, (d: any) => {
+        .data(linksToBind, (d: any) => {
           const s = typeof d.source === 'object' ? d.source.id : d.source;
           const t = typeof d.target === 'object' ? d.target.id : d.target;
           return `${s}->${t}`;
@@ -958,7 +1044,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       // Data Join for Nodes (keyed by d.id)
       const node = nodeGroup
         .selectAll<SVGGElement, any>('g.node-item')
-        .data(nodes as any, (d: any) => d.id)
+        .data(nodesToBind as any, (d: any) => d.id)
         .join(
           enter => {
             const g = enter.append('g')
@@ -1147,7 +1233,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return () => {
       isMounted = false;
     };
-  }, [activeContext, effectiveVersion, getTypeColor]);
+  }, [activeContext, effectiveVersion, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth]);
 
   // Live Physics Updates (when sliders move or preset changes)
   useEffect(() => {
@@ -1680,6 +1766,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                     type="checkbox"
                     checked={labelSettings.textBacking}
                     onChange={(e) => updateLabelSettings({ textBacking: e.target.checked })}
+                  />
+                  <span className="slider round"></span>
+                </label>
+              </div>
+
+              {/* Focus Mode Toggle */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Focus Mode (Sub-graph Neighborhood)</span>
+                <label className="switch" style={{ width: '44px', height: '24px' }}>
+                  <input
+                    type="checkbox"
+                    checked={labelSettings.focusMode}
+                    onChange={(e) => updateLabelSettings({ focusMode: e.target.checked })}
                   />
                   <span className="slider round"></span>
                 </label>

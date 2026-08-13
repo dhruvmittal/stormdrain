@@ -94,6 +94,7 @@ export interface GraphSettings {
   labelMode?: 'all' | 'dynamic' | 'hover-only';
   labelFilter?: 'all' | 'always-show-memories';
   labelTextBacking?: boolean;
+  labelFocusMode?: boolean;
 }
 
 export interface DecaySettings {
