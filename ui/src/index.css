@@ -992,10 +992,48 @@ input:checked + .slider.round:before {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 530px;
-  width: calc(100% - 40px);
+  width: 480px;
+  max-width: calc(100% - 40px);
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   animation: graphHudSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Bottom-Right Layout & Physics Controls HUD */
+.graph-layout-hud {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: auto;
+  animation: graphLayoutHudSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.graph-layout-control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+@keyframes graphLayoutHudSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes graphHudSlideIn {
@@ -1232,6 +1270,212 @@ input:checked + .slider.round:before {
   background: var(--bg-surface-hover);
   color: var(--text-main);
   font-weight: 600;
+}
+
+/* Layout Mode Segmented Switcher */
+.graph-layout-mode-group {
+  display: flex;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.graph-layout-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.graph-layout-mode-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.graph-layout-mode-btn.active {
+  background: var(--bg-surface-hover);
+  color: var(--accent-hover);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* Physics Settings Toggle Button */
+.graph-hud-icon-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-muted);
+  padding: 5px 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.graph-hud-icon-btn:hover, .graph-hud-icon-btn.active {
+  background: var(--bg-surface-hover);
+  color: var(--text-main);
+  border-color: var(--accent-color);
+}
+
+.graph-preset-indicator {
+  font-size: 0.65rem;
+  text-transform: capitalize;
+  background: var(--accent-color);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 2px;
+}
+
+/* Premium Red Glass Reset Button */
+.graph-hud-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.graph-hud-reset-btn:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fca5a5;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+  transform: translateY(-0.5px);
+}
+
+.graph-hud-reset-btn:active {
+  transform: scale(0.97);
+}
+
+/* Physics Panel Drawer */
+.graph-physics-panel {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 10px;
+  padding: 12px 16px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  margin-bottom: 6px;
+  animation: graphHudSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.graph-physics-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.graph-physics-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.graph-physics-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.graph-preset-chip {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  padding: 3px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+  text-transform: capitalize;
+  transition: all 0.15s ease;
+}
+
+.graph-preset-chip:hover {
+  border-color: var(--text-main);
+  color: var(--text-main);
+}
+
+.graph-preset-chip.active {
+  background: var(--accent-color);
+  color: #fff;
+  border-color: var(--accent-hover);
+}
+
+.graph-physics-sliders-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 24px;
+}
+
+.graph-slider-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.graph-slider-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.graph-slider-val {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--accent-hover);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+}
+
+.graph-slider-item input[type=range] {
+  -webkit-appearance: none;
+  width: 100%;
+  background: transparent;
+}
+
+.graph-slider-item input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  background: var(--accent-color);
+  cursor: pointer;
+  margin-top: -5px;
+  box-shadow: 0 0 4px rgba(0,0,0,0.3);
+}
+
+.graph-slider-item input[type=range]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+  background: var(--border-color);
+  border-radius: 2px;
 }
 
 .graph-focus-anchor-badge {

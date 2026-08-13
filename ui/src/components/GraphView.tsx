@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { api, applyThemeColors, type GraphColorSettings } from '../api';
 import MemoryEditor from './MemoryEditor';
-import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles } from 'lucide-react';
 
 
 interface GraphViewProps {
@@ -13,6 +13,42 @@ interface GraphViewProps {
 type ScopeDepth = 0 | 1 | 2;
 
 const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
+
+// Physics Engine Types & Presets
+interface PhysicsSettings {
+  chargeStrength: number;
+  linkDistance: number;
+  collisionRadius: number;
+  moduleGravity: number;
+  activePreset: 'auto' | 'strongly_clustered' | 'clustered' | 'standard' | 'massive' | 'custom';
+}
+
+const PHYSICS_PRESETS: Record<string, Omit<PhysicsSettings, 'activePreset'>> = {
+  strongly_clustered: { chargeStrength: -300, linkDistance: 50,  collisionRadius: 22, moduleGravity: 0.65 },
+  clustered:          { chargeStrength: -250, linkDistance: 70,  collisionRadius: 27, moduleGravity: 0.44 },
+  standard:           { chargeStrength: -350, linkDistance: 130, collisionRadius: 36, moduleGravity: 0.15 },
+  massive:            { chargeStrength: -900, linkDistance: 220, collisionRadius: 48, moduleGravity: 0.08 },
+};
+
+const DEFAULT_PHYSICS: PhysicsSettings = { ...PHYSICS_PRESETS.clustered, activePreset: 'auto' };
+const PHYSICS_STORAGE_KEY = 'stormdrain_graph_physics_settings';
+
+function getAutoPreset(nodeCount: number): Omit<PhysicsSettings, 'activePreset'> {
+  if (nodeCount < 150) return PHYSICS_PRESETS.clustered;
+  if (nodeCount < 750) return PHYSICS_PRESETS.standard;
+  return PHYSICS_PRESETS.massive;
+}
+
+function getModuleName(node: any): string {
+  if (node.type === 'codemap' || node.id?.startsWith('file_')) {
+    const path = node.title || '';
+    const segments = path.split('/');
+    if (segments.length >= 3) return segments.slice(0, 2).join('/');
+    if (segments.length >= 2) return segments[0];
+    return '_root';
+  }
+  return '_memories';
+}
 
 export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion = 0 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -32,6 +68,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const previousContextRef = useRef<string>(activeContext);
   const positionsCacheRef = useRef<Map<string, { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const activeTier1SetRef = useRef<Set<string>>(new Set());
+  const activeInScopeSetRef = useRef<Set<string>>(new Set());
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -61,6 +99,43 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [isToolbarCollapsed, setIsToolbarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('stormdrain_graph_hud_collapsed') === 'true';
   });
+
+  // Layout Mode & Physics Customization State
+  const [layoutMode, setLayoutMode] = useState<'force' | 'orbit'>('force');
+  const layoutModeRef = useRef<'force' | 'orbit'>(layoutMode);
+  useEffect(() => {
+    layoutModeRef.current = layoutMode;
+  }, [layoutMode]);
+  const [isPhysicsOpen, setIsPhysicsOpen] = useState<boolean>(false);
+  const [physics, setPhysics] = useState<PhysicsSettings>(() => {
+    try {
+      const saved = localStorage.getItem(PHYSICS_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+    return DEFAULT_PHYSICS;
+  });
+
+  const updatePhysics = (updates: Partial<PhysicsSettings>) => {
+    setPhysics(prev => {
+      const next = { ...prev, ...updates };
+      try {
+        localStorage.setItem(PHYSICS_STORAGE_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const applyPreset = (presetKey: PhysicsSettings['activePreset']) => {
+    if (presetKey === 'auto') {
+      const nodeCount = rawGraphDataRef.current.nodes?.length || 0;
+      const autoValues = getAutoPreset(nodeCount);
+      updatePhysics({ ...autoValues, activePreset: 'auto' });
+    } else if (presetKey in PHYSICS_PRESETS) {
+      updatePhysics({ ...PHYSICS_PRESETS[presetKey], activePreset: presetKey });
+    }
+  };
 
   const toggleToolbarCollapse = () => {
     setIsToolbarCollapsed(prev => {
@@ -175,25 +250,34 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!nodes || nodes.length === 0) return;
 
     const query = debouncedQuery.trim().toLowerCase();
+    const hasActiveFilter = Boolean(query || selectedType !== 'all');
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
 
     // Compute Tier 1 (Match Set)
     const tier1Set = new Set<string>();
     
-    if (focusAnchorId) {
-      tier1Set.add(focusAnchorId);
-    } else if (isFiltering) {
-      for (const n of nodes) {
-        const matchesType = selectedType === 'all' || n.type === selectedType;
-        const matchesQuery = !query || 
-          n.title?.toLowerCase().includes(query) || 
-          n.content?.toLowerCase().includes(query) ||
-          n.id?.toLowerCase().includes(query);
+    // Helper to check if a node matches the active type/query filter
+    const matchesFilter = (n: any) => {
+      const matchesType = selectedType === 'all' || n.type === selectedType;
+      const matchesQuery = !query || 
+        n.title?.toLowerCase().includes(query) || 
+        n.content?.toLowerCase().includes(query) ||
+        n.id?.toLowerCase().includes(query);
+      return matchesType && matchesQuery;
+    };
 
-        if (matchesType && matchesQuery) {
+    if (hasActiveFilter) {
+      for (const n of nodes) {
+        if (matchesFilter(n)) {
           tier1Set.add(n.id);
         }
       }
+      if (focusAnchorId) {
+        // Keep the orbit center highlighted as Tier 1
+        tier1Set.add(focusAnchorId);
+      }
+    } else if (focusAnchorId) {
+      tier1Set.add(focusAnchorId);
     }
 
     const hasNoMatches = isFiltering && tier1Set.size === 0;
@@ -231,6 +315,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     // In-scope union for stats
     const inScopeSet = new Set<string>([...tier1Set, ...tier2Set, ...tier3Set]);
 
+    activeTier1SetRef.current = tier1Set;
+    activeInScopeSetRef.current = inScopeSet;
+
     setMatchStats({
       matchCount: tier1Set.size,
       inScopeCount: inScopeSet.size,
@@ -239,33 +326,37 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       hasNoMatches,
     });
 
-    // Interrupt any ongoing transitions
-    nodeSelectionRef.current.interrupt();
-    linkSelectionRef.current.interrupt();
+    // Interrupt any ongoing style transitions
+    nodeSelectionRef.current.interrupt('style');
+    linkSelectionRef.current.interrupt('style');
 
     // If not filtering OR if 0 matches, show full baseline graph
     if (!isFiltering || hasNoMatches) {
+      activeTier1SetRef.current.clear();
+      activeInScopeSetRef.current.clear();
+
       nodeSelectionRef.current
-        .transition()
+        .transition('style')
         .duration(200)
         .style('opacity', 1.0)
+        .style('pointer-events', 'auto')
         .style('filter', 'none');
 
       nodeSelectionRef.current.select('.node-circle')
-        .transition()
+        .transition('style')
         .duration(200)
         .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
         .attr('stroke', 'var(--bg-color)')
         .attr('stroke-width', 2);
 
       nodeSelectionRef.current.select('.node-label')
-        .transition()
+        .transition('style')
         .duration(200)
         .style('opacity', 1.0)
         .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400');
 
       linkSelectionRef.current
-        .transition()
+        .transition('style')
         .duration(200)
         .attr('stroke-opacity', 0.6)
         .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2);
@@ -273,9 +364,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       return;
     }
 
-    // Apply 4-Tier Visual Hierarchy
     nodeSelectionRef.current
-      .transition()
+      .transition('style')
       .duration(220)
       .style('opacity', (d: any) => {
         if (tier1Set.has(d.id)) return 1.0;
@@ -283,13 +373,17 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (tier3Set.has(d.id)) return 0.50;
         return 0.25; // Tier 4: Ambient
       })
+      .style('pointer-events', (d: any) => {
+        if (inScopeSet.has(d.id)) return 'auto';
+        return 'none'; // Disable pointer events on ambient nodes to prevent accidental hover resets
+      })
       .style('filter', (d: any) => {
         if (tier1Set.has(d.id) || tier2Set.has(d.id) || tier3Set.has(d.id)) return 'none';
         return 'grayscale(0.6)';
       });
 
     nodeSelectionRef.current.select('.node-circle')
-      .transition()
+      .transition('style')
       .duration(220)
       .attr('r', (d: any) => {
         const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
@@ -308,7 +402,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
 
     nodeSelectionRef.current.select('.node-label')
-      .transition()
+      .transition('style')
       .duration(220)
       .style('opacity', (d: any) => {
         if (tier1Set.has(d.id)) return 1.0;
@@ -324,7 +418,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     // Link Styling Across Tiers
     linkSelectionRef.current
-      .transition()
+      .transition('style')
       .duration(220)
       .attr('stroke-opacity', (l: any) => {
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
@@ -350,6 +444,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
 
   }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId]);
+
+  const applyActiveFilterStylingRef = useRef(applyActiveFilterStyling);
+  useEffect(() => {
+    applyActiveFilterStylingRef.current = applyActiveFilterStyling;
+  }, [applyActiveFilterStyling]);
 
   // 1. D3 Graph Simulation & Geometry Lifecycle with Incremental Position Preservation
   useEffect(() => {
@@ -464,6 +563,49 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       }
       adjacencyRef.current = adj;
 
+      // Extract modules and compute centroids for modular clustering
+      const fileToModuleMap = new Map<string, string>();
+      for (const n of nodes) {
+        if (n.type === 'codemap' || n.id.startsWith('file_')) {
+          fileToModuleMap.set(n.id, getModuleName(n));
+        }
+      }
+
+      const moduleSet = new Set<string>();
+      for (const n of nodes) {
+        if (n.type === 'codemap' || n.id.startsWith('file_')) {
+          n.module = getModuleName(n);
+        } else {
+          // Attached memories inherit target file module
+          const connectedLink = links.find((l: any) =>
+            (l.source === n.id && fileToModuleMap.has(l.target)) ||
+            (l.target === n.id && fileToModuleMap.has(l.source))
+          );
+          if (connectedLink) {
+            const fileId = fileToModuleMap.has(connectedLink.source) ? connectedLink.source : connectedLink.target;
+            n.module = fileToModuleMap.get(fileId) || '_memories';
+          } else {
+            n.module = n.context === '_global' ? '_global' : '_memories';
+          }
+        }
+        moduleSet.add(n.module);
+      }
+
+      const moduleList = Array.from(moduleSet).sort();
+      const moduleCentroids: Record<string, { x: number; y: number }> = {};
+      const clusterRadius = Math.min(width, height) * 0.32;
+      moduleList.forEach((mod, idx) => {
+        const angle = (2 * Math.PI * idx) / Math.max(1, moduleList.length);
+        moduleCentroids[mod] = {
+          x: width / 2 + clusterRadius * Math.cos(angle),
+          y: height / 2 + clusterRadius * Math.sin(angle),
+        };
+      });
+
+      for (const n of nodes) {
+        n.moduleCentroid = moduleCentroids[n.module] || { x: width / 2, y: height / 2 };
+      }
+
       const svg = d3.select(svgRef.current).attr('viewBox', [0, 0, width, height]);
 
       // Initialize zoom container if not present
@@ -487,7 +629,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }
       }
 
-      // Ensure persistent g groups for links and nodes
+      // Ensure persistent g groups for orbit guides, links, and nodes
+      let guideGroup = container.select<SVGGElement>('g.graph-orbit-guides');
+      if (guideGroup.empty()) {
+        guideGroup = container.append('g').attr('class', 'graph-orbit-guides');
+      }
+
       let linkGroup = container.select<SVGGElement>('g.graph-links');
       if (linkGroup.empty()) {
         linkGroup = container.append('g').attr('class', 'graph-links');
@@ -498,16 +645,22 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         nodeGroup = container.append('g').attr('class', 'graph-nodes');
       }
 
-      // Initialize or update D3 Force Simulation with Barnes-Hut & fast equilibrium tuning
+      // Initialize or update D3 Force Simulation with Barnes-Hut, modular clustering, and physics preset
+      const effectivePhysics = physics.activePreset === 'auto'
+        ? { ...getAutoPreset(nodes.length), activePreset: 'auto' as const }
+        : physics;
+
       let simulation = simulationRef.current;
       const isFirstLoad = !isInitializedRef.current || !simulation;
 
       if (!simulation) {
         simulation = d3.forceSimulation()
-          .force('link', d3.forceLink().id((d: any) => d.id).distance(120))
-          .force('charge', d3.forceManyBody().strength(-320).theta(0.85).distanceMax(350))
+          .force('link', d3.forceLink().id((d: any) => d.id).distance(effectivePhysics.linkDistance))
+          .force('charge', d3.forceManyBody().strength(effectivePhysics.chargeStrength).theta(0.85).distanceMax(450))
           .force('center', d3.forceCenter(width / 2, height / 2))
-          .force('collide', d3.forceCollide(38))
+          .force('collide', d3.forceCollide(effectivePhysics.collisionRadius))
+          .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effectivePhysics.moduleGravity))
+          .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effectivePhysics.moduleGravity))
           .alphaDecay(0.045)
           .velocityDecay(0.45);
 
@@ -561,6 +714,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .attr('class', 'node-item')
               .style('cursor', 'pointer')
               .call(d3.drag()
+                .filter((event: any) => {
+                  if (layoutModeRef.current === 'orbit') return false;
+                  return !event.ctrlKey && !event.button;
+                })
                 .on('start', dragstarted)
                 .on('drag', dragged)
                 .on('end', dragended) as any);
@@ -580,11 +737,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)')
               .style('font-size', (d: any) => d.type === 'codemap' ? '11px' : '12px')
               .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400')
-              .style('pointer-events', 'none');
+              .style('user-select', 'none');
 
-            // Click: Open Memory Editor (for non-codemaps)
+            // Click: Center in Orbit mode, or Open Memory Editor in Force mode
             g.on('click', (_event: any, d: any) => {
-              if (!d.id.startsWith('file_')) {
+              if (layoutModeRef.current === 'orbit') {
+                setFocusAnchorId(d.id);
+                setFocusAnchorTitle(d.title);
+              } else if (!d.id.startsWith('file_')) {
                 setEditingId(d.id);
               }
             });
@@ -596,7 +756,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               setFocusAnchorTitle(prev => (prev === d.title ? null : d.title));
             });
 
-            // Hover: Light up incident edges and direct neighbors
             g.on('mouseenter', (_event: any, d: any) => {
               const neighbors = adjacencyRef.current.get(d.id) || new Set();
               
@@ -607,12 +766,26 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                   .attr('stroke-opacity', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    return (srcId === d.id || tgtId === d.id) ? 1.0 : 0.08;
+                    
+                    if (srcId === d.id || tgtId === d.id) return 1.0;
+
+                    // Preserve active filter styling for other links
+                    const srcTier1 = activeTier1SetRef.current.has(srcId);
+                    const tgtTier1 = activeTier1SetRef.current.has(tgtId);
+                    const srcInScope = activeInScopeSetRef.current.has(srcId);
+                    const tgtInScope = activeInScopeSetRef.current.has(tgtId);
+
+                    if (srcTier1 && tgtTier1) return 0.95;
+                    if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
+                    if (srcInScope && tgtInScope) return 0.50;
+                    return 0.08;
                   })
                   .attr('stroke-width', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    return (srcId === d.id || tgtId === d.id) ? 2.5 : 0.8;
+                    
+                    if (srcId === d.id || tgtId === d.id) return 2.5;
+                    return l.type === 'imports' ? 1.5 : 2;
                   });
               }
 
@@ -626,7 +799,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             });
 
             g.on('mouseleave', () => {
-              applyActiveFilterStyling();
+              applyActiveFilterStylingRef.current();
             });
 
             return g;
@@ -681,24 +854,27 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
       function dragstarted(event: any, d: any) {
+        if (layoutModeRef.current === 'orbit') return;
         if (!event.active) simulation!.alphaTarget(0.2).restart();
         d.fx = d.x;
         d.fy = d.y;
       }
       
       function dragged(event: any, d: any) {
+        if (layoutModeRef.current === 'orbit') return;
         d.fx = event.x;
         d.fy = event.y;
       }
       
       function dragended(event: any, d: any) {
+        if (layoutModeRef.current === 'orbit') return;
         if (!event.active) simulation!.alphaTarget(0);
         d.fx = null;
         d.fy = null;
       }
 
       // Initial filter styling pass
-      applyActiveFilterStyling();
+      applyActiveFilterStylingRef.current();
     };
 
     initGraph();
@@ -706,8 +882,203 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return () => {
       isMounted = false;
     };
-  }, [activeContext, effectiveVersion, getTypeColor, applyActiveFilterStyling]);
+  }, [activeContext, effectiveVersion, getTypeColor]);
 
+  // Live Physics Updates (when sliders move or preset changes)
+  useEffect(() => {
+    const simulation = simulationRef.current;
+    if (!simulation || layoutMode !== 'force') return;
+
+    const width = svgRef.current?.parentElement?.clientWidth || 900;
+    const height = svgRef.current?.parentElement?.clientHeight || 700;
+
+    const effective = physics.activePreset === 'auto' && rawGraphDataRef.current.nodes.length > 0
+      ? { ...getAutoPreset(rawGraphDataRef.current.nodes.length), activePreset: 'auto' as const }
+      : physics;
+
+    simulation
+      .force('charge', d3.forceManyBody().strength(effective.chargeStrength).theta(0.85).distanceMax(450))
+      .force('collide', d3.forceCollide(effective.collisionRadius))
+      .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effective.moduleGravity))
+      .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effective.moduleGravity));
+
+    const linkForce = simulation.force('link') as d3.ForceLink<any, any>;
+    if (linkForce) {
+      linkForce.distance(effective.linkDistance);
+    }
+
+    simulation.alpha(0.25).restart();
+  }, [physics, layoutMode]);
+
+  // Ego Radial Orbit Calculation & Transition
+  useEffect(() => {
+    const simulation = simulationRef.current;
+    const container = containerRef.current;
+    if (!container || !nodeSelectionRef.current || !linkSelectionRef.current) return;
+
+    const width = svgRef.current?.parentElement?.clientWidth || 900;
+    const height = svgRef.current?.parentElement?.clientHeight || 700;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const guideGroup = container.select<SVGGElement>('g.graph-orbit-guides');
+
+    if (layoutMode === 'orbit' && rawGraphDataRef.current.nodes.length > 0) {
+      // Pause force simulation during radial orbit mode
+      if (simulation) simulation.stop();
+
+      const nodes = rawGraphDataRef.current.nodes;
+      const anchorId = focusAnchorId || (nodes[0]?.id ?? null);
+      if (!focusAnchorId && anchorId) {
+        setFocusAnchorId(anchorId);
+        setFocusAnchorTitle(nodes[0]?.title ?? anchorId);
+      }
+
+      // Calculate hop distances from focal anchor
+      const distMap = new Map<string, number>();
+      if (anchorId) {
+        distMap.set(anchorId, 0);
+        const queue: Array<{ id: string; dist: number }> = [{ id: anchorId, dist: 0 }];
+        const visited = new Set<string>([anchorId]);
+
+        while (queue.length > 0) {
+          const { id, dist } = queue.shift()!;
+          const neighbors = adjacencyRef.current.get(id);
+          if (neighbors) {
+            for (const nb of neighbors) {
+              if (!visited.has(nb)) {
+                visited.add(nb);
+                distMap.set(nb, dist + 1);
+                if (dist + 1 < 3) {
+                  queue.push({ id: nb, dist: dist + 1 });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Group nodes by orbit tier
+      const tier0 = nodes.filter(n => n.id === anchorId);
+      const tier1 = nodes.filter(n => n.id !== anchorId && distMap.get(n.id) === 1);
+      const tier2 = nodes.filter(n => n.id !== anchorId && distMap.get(n.id) === 2);
+      const ambient = nodes.filter(n => n.id !== anchorId && (distMap.get(n.id) === undefined || distMap.get(n.id)! > 2));
+
+      const r1 = 180;
+      const r2 = 330;
+      const r3 = 480;
+
+      // Assign target coordinates
+      if (tier0.length > 0) {
+        tier0[0].x = centerX;
+        tier0[0].y = centerY;
+        tier0[0].fx = centerX;
+        tier0[0].fy = centerY;
+      }
+
+      tier1.forEach((n, idx) => {
+        const angle = (2 * Math.PI * idx) / Math.max(1, tier1.length) - Math.PI / 2;
+        n.x = centerX + r1 * Math.cos(angle);
+        n.y = centerY + r1 * Math.sin(angle);
+        n.fx = n.x;
+        n.fy = n.y;
+      });
+
+      tier2.forEach((n, idx) => {
+        const angle = (2 * Math.PI * idx) / Math.max(1, tier2.length) - Math.PI / 2 + (Math.PI / Math.max(1, tier2.length));
+        n.x = centerX + r2 * Math.cos(angle);
+        n.y = centerY + r2 * Math.sin(angle);
+        n.fx = n.x;
+        n.fy = n.y;
+      });
+
+      ambient.forEach((n, idx) => {
+        const angle = (2 * Math.PI * idx) / Math.max(1, ambient.length);
+        n.x = centerX + r3 * Math.cos(angle);
+        n.y = centerY + r3 * Math.sin(angle);
+        n.fx = n.x;
+        n.fy = n.y;
+      });
+
+      // Render concentric guide circles
+      if (!guideGroup.empty()) {
+        const rings = [
+          { r: r1, label: '1-Hop Direct' },
+          { r: r2, label: '2-Hop Extended' },
+          { r: r3, label: 'Ambient Outer' },
+        ];
+
+        guideGroup.selectAll('*').remove();
+
+        const ringItems = guideGroup.selectAll('g.orbit-ring')
+          .data(rings)
+          .enter()
+          .append('g')
+          .attr('class', 'orbit-ring');
+
+        ringItems.append('circle')
+          .attr('cx', centerX)
+          .attr('cy', centerY)
+          .attr('r', d => d.r)
+          .attr('fill', 'none')
+          .attr('stroke', 'rgba(148, 163, 184, 0.22)')
+          .attr('stroke-width', 1)
+          .attr('stroke-dasharray', '5 5');
+
+        ringItems.append('text')
+          .attr('x', centerX + 8)
+          .attr('y', d => centerY - d.r + 14)
+          .attr('fill', 'rgba(148, 163, 184, 0.5)')
+          .attr('font-size', '10px')
+          .attr('font-weight', '500')
+          .attr('letter-spacing', '0.5px')
+          .text(d => d.label);
+      }
+
+      // Disable pointer events on node items during transition to avoid stuck hovers
+      const nodesGroup = container.select('g.graph-nodes');
+      nodesGroup.style('pointer-events', 'none');
+      setTimeout(() => {
+        nodesGroup.style('pointer-events', '');
+      }, 700);
+
+      // Animate nodes and links into orbit positions
+      nodeSelectionRef.current
+        .transition('layout')
+        .duration(650)
+        .ease(d3.easeCubicOut)
+        .attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+
+      linkSelectionRef.current
+        .transition('layout')
+        .duration(650)
+        .ease(d3.easeCubicOut)
+        .attr('x1', (d: any) => d.source.x ?? (typeof d.source === 'object' ? d.source.x : centerX))
+        .attr('y1', (d: any) => d.source.y ?? (typeof d.source === 'object' ? d.source.y : centerY))
+        .attr('x2', (d: any) => d.target.x ?? (typeof d.target === 'object' ? d.target.x : centerX))
+        .attr('y2', (d: any) => d.target.y ?? (typeof d.target === 'object' ? d.target.y : centerY));
+
+      applyActiveFilterStylingRef.current();
+
+    } else if (layoutMode === 'force') {
+      // Clear orbit guide rings
+      if (!guideGroup.empty()) {
+        guideGroup.selectAll('*').remove();
+      }
+
+      // Unfix positions so force simulation takes back over
+      const nodes = rawGraphDataRef.current.nodes;
+      for (const n of nodes) {
+        n.fx = null;
+        n.fy = null;
+      }
+
+      if (simulation) {
+        simulation.alpha(0.3).restart();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode, focusAnchorId]);
 
   // Trigger filter updates on filter state changes
   useEffect(() => {
@@ -729,15 +1100,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         <h2>Graph View ({activeContext})</h2>
       </div>
 
-      {/* Floating Glassmorphic Command & Filter HUD */}
+      {/* Floating Glassmorphic Query & Filter HUD (Top-Right) */}
       {isToolbarCollapsed ? (
         <button
           className="graph-floating-toggle-btn"
           onClick={toggleToolbarCollapse}
           title="Expand Filter Controls (/)"
         >
-          <SlidersHorizontal size={14} style={{ color: 'var(--accent-hover)' }} />
-          <span>Filters & Controls</span>
+          <Search size={14} style={{ color: 'var(--accent-hover)' }} />
+          <span>Search & Filters</span>
           {matchStats.isFiltering && (
             <span className="graph-collapsed-filter-dot" title={`${matchStats.matchCount} matched`}>
               {matchStats.hasNoMatches ? '0' : matchStats.matchCount}
@@ -747,7 +1118,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         </button>
       ) : (
         <div className="graph-floating-toolbar">
-          {/* Search Row */}
+          {/* Top Row: Search + Match Stats + Reset + Collapse */}
           <div className="graph-search-row">
             <div className="graph-search-input-wrapper">
               <Search size={14} className="graph-search-icon" />
@@ -771,7 +1142,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                 {matchStats.hasNoMatches ? (
                   'No matches'
                 ) : (
-                  `${matchStats.matchCount} matched · ${matchStats.inScopeCount} in scope`
+                  `${matchStats.matchCount} matched`
                 )}
               </div>
             )}
@@ -780,18 +1151,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             {(matchStats.isFiltering || focusAnchorId) && (
               <button
                 onClick={clearAllFilters}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  padding: '5px 8px',
-                  fontSize: '0.72rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4
-                }}
+                className="graph-hud-reset-btn"
                 title="Reset all filters (Esc)"
               >
                 <X size={12} /> Reset
@@ -808,82 +1168,218 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             </button>
           </div>
 
-        {/* Focus Anchor Badge (When right-clicked / pinned) */}
-        {focusAnchorId && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Focal Anchor:</span>
-            <div className="graph-focus-anchor-badge">
-              <Crosshair size={12} />
-              <span>{focusAnchorTitle || focusAnchorId}</span>
-              <button 
-                onClick={() => { setFocusAnchorId(null); setFocusAnchorTitle(null); }}
-                style={{ background: 'transparent', border: 'none', color: '#c4b5fd', cursor: 'pointer', padding: 0, display: 'flex' }}
+          {/* Focus Anchor Badge (When right-clicked / pinned or in orbit mode) */}
+          {focusAnchorId && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                {layoutMode === 'orbit' ? 'Orbit Center:' : 'Focal Anchor:'}
+              </span>
+              <div className="graph-focus-anchor-badge">
+                <Crosshair size={12} />
+                <span>{focusAnchorTitle || focusAnchorId}</span>
+                <button 
+                  onClick={() => { setFocusAnchorId(null); setFocusAnchorTitle(null); }}
+                  style={{ background: 'transparent', border: 'none', color: '#c4b5fd', cursor: 'pointer', padding: 0, display: 'flex' }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+              {layoutMode === 'orbit' && (
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  (Click node to re-center orbit)
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Type Filter Pills */}
+          <div className="graph-type-pills-row">
+            {MEMORY_TYPES.map((type) => {
+              const count = typeCounts[type] || 0;
+              const isActive = selectedType === type;
+              const typeColor = type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
+              const label = type === 'codemap' ? 'File (codemap)' : type;
+              return (
+                <button
+                  key={type}
+                  className={`graph-type-pill ${isActive ? 'active' : ''}`}
+                  onClick={() => setSelectedType(type)}
+                >
+                  <span
+                    className="graph-type-pill-dot"
+                    style={{
+                      backgroundColor: typeColor,
+                      boxShadow: isActive ? `0 0 6px ${typeColor}` : 'none'
+                    }}
+                  />
+                  <span style={{ textTransform: 'capitalize' }}>{label}</span>
+                  <span style={{ opacity: 0.7, fontSize: '0.68rem', marginLeft: 2 }}>({count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Scope Depth Segmented Switcher */}
+          <div className="graph-scope-row">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
+              <span>Neighborhood Scope:</span>
+            </div>
+            <div className="graph-scope-segmented">
+              <button
+                className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
+                onClick={() => setScopeDepth(0)}
+                title="Highlight only exact matches (0-hop)"
               >
-                <X size={11} />
+                Exact (0)
               </button>
+              <button
+                className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
+                onClick={() => setScopeDepth(1)}
+                title="Highlight matches + immediate neighbors (1-hop)"
+              >
+                + Direct (1-hop)
+              </button>
+              <button
+                className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
+                onClick={() => setScopeDepth(2)}
+                title="Highlight matches + extended topological paths (2-hop)"
+              >
+                + Extended (2-hop)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom-Right Layout & Physics Controls HUD */}
+      <div className="graph-layout-hud">
+        {/* Physics Tuning Panel Drawer (stacked above control row) */}
+        {isPhysicsOpen && (
+          <div className="graph-physics-panel" style={{ width: '420px', maxWidth: 'calc(100vw - 40px)' }}>
+            <div className="graph-physics-header">
+              <div className="graph-physics-title">
+                <Sparkles size={13} style={{ color: 'var(--accent-color, #38bdf8)' }} />
+                <span>Physics & Clustering Forces</span>
+              </div>
+              <div className="graph-physics-presets">
+                {(['auto', 'strongly_clustered', 'clustered', 'standard', 'massive'] as const).map(preset => (
+                  <button
+                    key={preset}
+                    className={`graph-preset-chip ${physics.activePreset === preset ? 'active' : ''}`}
+                    onClick={() => applyPreset(preset)}
+                  >
+                    {preset.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="graph-physics-sliders-grid">
+              {/* Repulsion / Charge */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Repulsion (Charge)</span>
+                  <span className="graph-slider-val">{physics.chargeStrength}</span>
+                </div>
+                <input
+                  type="range"
+                  min="-1200"
+                  max="-100"
+                  step="25"
+                  value={physics.chargeStrength}
+                  onChange={(e) => updatePhysics({ chargeStrength: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Link Distance */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Link Distance</span>
+                  <span className="graph-slider-val">{physics.linkDistance}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="40"
+                  max="300"
+                  step="10"
+                  value={physics.linkDistance}
+                  onChange={(e) => updatePhysics({ linkDistance: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Collision Radius */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Collision Radius</span>
+                  <span className="graph-slider-val">{physics.collisionRadius}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="15"
+                  max="65"
+                  step="1"
+                  value={physics.collisionRadius}
+                  onChange={(e) => updatePhysics({ collisionRadius: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Module Clustering Gravity */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Module Clustering</span>
+                  <span className="graph-slider-val">{physics.moduleGravity.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="0.50"
+                  step="0.02"
+                  value={physics.moduleGravity}
+                  onChange={(e) => updatePhysics({ moduleGravity: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
             </div>
           </div>
         )}
 
-        {/* Type Filter Pills */}
-        <div className="graph-type-pills-row">
-          {MEMORY_TYPES.map((type) => {
-            const count = typeCounts[type] || 0;
-            const isActive = selectedType === type;
-            const typeColor = type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
-            const label = type === 'codemap' ? 'File (codemap)' : type;
-            return (
-              <button
-                key={type}
-                className={`graph-type-pill ${isActive ? 'active' : ''}`}
-                onClick={() => setSelectedType(type)}
-              >
-                <span
-                  className="graph-type-pill-dot"
-                  style={{
-                    backgroundColor: typeColor,
-                    boxShadow: isActive ? `0 0 6px ${typeColor}` : 'none'
-                  }}
-                />
-                <span style={{ textTransform: 'capitalize' }}>{label}</span>
-                <span style={{ opacity: 0.7, fontSize: '0.68rem', marginLeft: 2 }}>({count})</span>
-              </button>
-            );
-          })}
-        </div>
+        <div className="graph-layout-control-row">
+          {/* Layout Mode Segmented Switcher */}
+          <div className="graph-layout-mode-group">
+            <button
+              className={`graph-layout-mode-btn ${layoutMode === 'force' ? 'active' : ''}`}
+              onClick={() => {
+                setLayoutMode('force');
+                setFocusAnchorId(null);
+                setFocusAnchorTitle(null);
+              }}
+              title="Force-Directed Simulation Layout"
+            >
+              <Compass size={13} />
+              <span>Force</span>
+            </button>
+            <button
+              className={`graph-layout-mode-btn ${layoutMode === 'orbit' ? 'active' : ''}`}
+              onClick={() => setLayoutMode('orbit')}
+              title="Ego Radial Orbit View (concentric neighborhood rings)"
+            >
+              <Orbit size={13} />
+              <span>Ego Orbit</span>
+            </button>
+          </div>
 
-        {/* Scope Depth Segmented Switcher */}
-        <div className="graph-scope-row">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
-            <span>Neighborhood Scope:</span>
-          </div>
-          <div className="graph-scope-segmented">
-            <button
-              className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
-              onClick={() => setScopeDepth(0)}
-              title="Highlight only exact matches (0-hop)"
-            >
-              Exact (0)
-            </button>
-            <button
-              className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
-              onClick={() => setScopeDepth(1)}
-              title="Highlight matches + immediate neighbors (1-hop)"
-            >
-              + Direct (1-hop)
-            </button>
-            <button
-              className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
-              onClick={() => setScopeDepth(2)}
-              title="Highlight matches + extended topological paths (2-hop)"
-            >
-              + Extended (2-hop)
-            </button>
-          </div>
+          {/* Physics Settings Toggle */}
+          <button
+            className={`graph-hud-icon-btn ${isPhysicsOpen ? 'active' : ''}`}
+            onClick={() => setIsPhysicsOpen(prev => !prev)}
+            title="Physics & Clustering Controls"
+          >
+            <SlidersHorizontal size={13} />
+            <span>Physics</span>
+            <span className="graph-preset-indicator">{physics.activePreset}</span>
+          </button>
         </div>
       </div>
-    )}
 
       {/* Main D3 Graph SVG */}
       <svg ref={svgRef} className="graph-svg" style={{ width: '100%', height: '100%', display: 'block' }}></svg>

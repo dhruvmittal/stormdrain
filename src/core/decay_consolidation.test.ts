@@ -119,6 +119,16 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
     const updatedMem2 = ctx.getMemory(mem2);
     expect(updatedMem1?.metadata.tags).toContain('consolidated');
     expect(updatedMem2?.metadata.tags).toContain('consolidated');
+
+    // Verify source memories are disconnected from the target file vertex both on disk and in DB
+    const targetId = ctx.resolveTargetId('data_processor.ts');
+    expect(updatedMem1?.metadata.relations.some(r => r.target === targetId)).toBe(false);
+    expect(updatedMem2?.metadata.relations.some(r => r.target === targetId)).toBe(false);
+
+    const rels1 = ctx.getRelations(mem1);
+    const rels2 = ctx.getRelations(mem2);
+    expect(rels1.outgoing.some(r => r.target === targetId)).toBe(false);
+    expect(rels2.outgoing.some(r => r.target === targetId)).toBe(false);
   });
 
   it('should handle sd_consolidate via MCP tool server', async () => {

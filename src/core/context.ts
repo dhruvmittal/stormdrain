@@ -670,6 +670,8 @@ export class ContextManager {
       }
       mem.metadata.superseded_by = consolidatedId;
       mem.metadata.confidence = Math.max(0.4, Math.round(mem.metadata.confidence * 0.7 * 100) / 100);
+      // Disconnect original micro-memory from the target file node
+      mem.metadata.relations = mem.metadata.relations.filter(r => r.target !== targetId);
       this.saveMemory(mem, `[stormdrain] consolidate: marked ${mem.metadata.id} as consolidated (superseded by ${consolidatedId})`);
       this.addRelation(consolidatedId, mem.metadata.id, 'distilled_from');
     }
