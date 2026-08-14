@@ -663,17 +663,47 @@ export class ContextManager {
       targetFileOrId
     );
 
-    // Mark source micro-memories as consolidated & superseded, and link distilled_from
+    // Mark source micro-memories as consolidated & superseded, transfer their relations, and link part_of
     for (const mem of memories) {
       if (!mem.metadata.tags.includes('consolidated')) {
         mem.metadata.tags.push('consolidated');
       }
       mem.metadata.superseded_by = consolidatedId;
       mem.metadata.confidence = Math.max(0.4, Math.round(mem.metadata.confidence * 0.7 * 100) / 100);
-      // Disconnect original micro-memory from the target file node
-      mem.metadata.relations = mem.metadata.relations.filter(r => r.target !== targetId);
+
+      // 1. Transfer outgoing relations (except the target file itself) to the new guide
+      for (const rel of mem.metadata.relations) {
+        if (rel.target !== targetId) {
+          this.addRelation(consolidatedId, rel.target, rel.type);
+        }
+      }
+
+      // 2. Transfer incoming relations from other memories to point to the new guide
+      const incoming = this.db.prepare(`
+        SELECT source_id, type FROM relations WHERE target_id = ?
+      `).all(mem.metadata.id) as Array<{ source_id: string; type: string }>;
+
+      for (const inc of incoming) {
+        if (inc.source_id === consolidatedId || memories.some(m => m.metadata.id === inc.source_id)) {
+          continue;
+        }
+        const srcMem = this.getMemory(inc.source_id);
+        if (srcMem) {
+          // Remove relation pointing to micro-memory
+          srcMem.metadata.relations = srcMem.metadata.relations.filter(r => r.target !== mem.metadata.id);
+          // Add relation pointing to consolidation guide
+          const alreadyExists = srcMem.metadata.relations.some(r => r.target === consolidatedId && r.type === inc.type);
+          if (!alreadyExists) {
+            srcMem.metadata.relations.push({ target: consolidatedId, type: inc.type as any });
+          }
+          srcMem.metadata.updated = new Date().toISOString();
+          this.saveMemory(srcMem, `[stormdrain] transfer relation: update incoming link from ${inc.source_id} to point to consolidation guide ${consolidatedId}`);
+        }
+      }
+
+      // 3. Set the micro-memory's outgoing relations to strictly point to the guide via 'part_of'
+      mem.metadata.relations = [{ target: consolidatedId, type: 'part_of' }];
       this.saveMemory(mem, `[stormdrain] consolidate: marked ${mem.metadata.id} as consolidated (superseded by ${consolidatedId})`);
-      this.addRelation(consolidatedId, mem.metadata.id, 'distilled_from');
     }
 
     return { consolidatedId, mergedCount: memories.length };
