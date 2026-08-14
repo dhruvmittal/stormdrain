@@ -578,12 +578,23 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     activeTier1SetRef.current = tier1Set;
     activeInScopeSetRef.current = inScopeSet;
 
-    setMatchStats({
-      matchCount: tier1Set.size,
-      inScopeCount: inScopeSet.size,
-      totalCount: nodes.length,
-      isFiltering,
-      hasNoMatches,
+    setMatchStats(prev => {
+      if (
+        prev.matchCount === tier1Set.size &&
+        prev.inScopeCount === inScopeSet.size &&
+        prev.totalCount === nodes.length &&
+        prev.isFiltering === isFiltering &&
+        prev.hasNoMatches === hasNoMatches
+      ) {
+        return prev;
+      }
+      return {
+        matchCount: tier1Set.size,
+        inScopeCount: inScopeSet.size,
+        totalCount: nodes.length,
+        isFiltering,
+        hasNoMatches,
+      };
     });
 
     // Interrupt any ongoing style transitions
@@ -1385,41 +1396,48 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
             g.on('mouseenter', (_event: any, d: any) => {
               hoveredNodeIdRef.current = d.id;
+              const neighbors = adjacencyRef.current.get(d.id) || new Set<string>();
               
               if (linkSelectionRef.current) {
-                const perfLimit = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
-                const useTrans = (rawGraphDataRef.current.nodes?.length || 0) < perfLimit;
-                const sel = useTrans ? (linkSelectionRef.current.transition().duration(100) as any) : linkSelectionRef.current;
-                
-                sel
+                const isFiltering = activeTier1SetRef.current.size > 0;
+                linkSelectionRef.current
                   .attr('stroke-opacity', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    
                     if (srcId === d.id || tgtId === d.id) return 1.0;
 
-                    // Preserve active filter styling for other links
-                    const srcTier1 = activeTier1SetRef.current.has(srcId);
-                    const tgtTier1 = activeTier1SetRef.current.has(tgtId);
-                    const srcInScope = activeInScopeSetRef.current.has(srcId);
-                    const tgtInScope = activeInScopeSetRef.current.has(tgtId);
-
-                    if (srcTier1 && tgtTier1) return 0.95;
-                    if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
-                    if (srcInScope && tgtInScope) return 0.50;
-                    return 0.08;
+                    if (isFiltering) {
+                      const srcTier1 = activeTier1SetRef.current.has(srcId);
+                      const tgtTier1 = activeTier1SetRef.current.has(tgtId);
+                      const srcInScope = activeInScopeSetRef.current.has(srcId);
+                      const tgtInScope = activeInScopeSetRef.current.has(tgtId);
+                      if (srcTier1 && tgtTier1) return 0.95;
+                      if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
+                      if (srcInScope && tgtInScope) return 0.50;
+                      return 0.08;
+                    }
+                    return 0.6;
                   })
                   .attr('stroke-width', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    
                     if (srcId === d.id || tgtId === d.id) return 2.5;
+
+                    if (isFiltering) {
+                      if (activeTier1SetRef.current.has(srcId) && activeTier1SetRef.current.has(tgtId)) return 2.8;
+                      if (activeInScopeSetRef.current.has(srcId) && activeInScopeSetRef.current.has(tgtId)) return 1.8;
+                      return 0.8;
+                    }
                     return l.type === 'imports' ? 1.5 : 2;
                   });
               }
 
               if (nodeSelectionRef.current) {
-                applyLabelVisibility();
+                nodeSelectionRef.current
+                  .filter((n: any) => n.id === d.id || neighbors.has(n.id))
+                  .select('.node-label')
+                  .style('display', 'block')
+                  .style('opacity', 1.0);
               }
             });
 
@@ -1690,13 +1708,21 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }
       }
 
-      // Smoothly reset camera zoom transform so (centerX, centerY) aligns with viewport center
-      if (svgRef.current && zoomBehaviorRef.current) {
-        d3.select(svgRef.current)
-          .transition('zoom')
-          .duration(650)
-          .ease(d3.easeCubicOut)
-          .call(zoomBehaviorRef.current.transform as any, d3.zoomIdentity);
+      // Smoothly reset camera zoom transform if shifted, preserving frame rate on large graphs
+      const currentTransform = currentZoomTransformRef.current;
+      const isAlreadyIdentity = currentTransform && currentTransform.k === 1 && currentTransform.x === 0 && currentTransform.y === 0;
+
+      if (!isAlreadyIdentity && svgRef.current && zoomBehaviorRef.current) {
+        const perfThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+        if (nodes.length < perfThreshold) {
+          d3.select(svgRef.current)
+            .transition('zoom')
+            .duration(450)
+            .ease(d3.easeCubicOut)
+            .call(zoomBehaviorRef.current.transform as any, d3.zoomIdentity);
+        } else {
+          zoomBehaviorRef.current.transform(d3.select(svgRef.current) as any, d3.zoomIdentity);
+        }
         currentZoomTransformRef.current = d3.zoomIdentity;
       }
 
@@ -1740,19 +1766,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodesGroup.style('pointer-events', 'none');
       setTimeout(() => {
         nodesGroup.style('pointer-events', '');
-      }, 700);
+      }, 350);
 
-      const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+      const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 1200;
       const useTransition = nodes.length < performanceThreshold;
 
       // Animate nodes and links into orbit positions
       const tNode: any = useTransition
-        ? (nodeSelectionRef.current as any).transition('layout').duration(650).ease(d3.easeCubicOut)
+        ? (nodeSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
         : nodeSelectionRef.current;
       tNode.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
       const tLink: any = useTransition
-        ? (linkSelectionRef.current as any).transition('layout').duration(650).ease(d3.easeCubicOut)
+        ? (linkSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
         : linkSelectionRef.current;
       tLink
         .attr('x1', (d: any) => d.source.x ?? (typeof d.source === 'object' ? d.source.x : centerX))
