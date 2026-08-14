@@ -76,6 +76,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const nodeSelectionRef = useRef<d3.Selection<SVGGElement, any, SVGGElement, unknown> | null>(null);
   const linkSelectionRef = useRef<d3.Selection<SVGLineElement, any, SVGGElement, unknown> | null>(null);
   const rawGraphDataRef = useRef<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const apiGraphDataRef = useRef<{ nodes: any[]; links: any[] } | null>(null);
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Performance & Position Preservation refs
@@ -86,6 +87,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const activeTier1SetRef = useRef<Set<string>>(new Set());
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
   const lastLoadedVersionRef = useRef<string>('');
+  const lastShowConsolidatedRef = useRef<boolean>(false);
   const configSettingsRef = useRef<StormDrainSettings | null>(null);
   const maxUpdatedTimeRef = useRef<number>(0);
 
@@ -101,6 +103,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
   const [focusAnchorTitle, setFocusAnchorTitle] = useState<string | null>(null);
+  const [showConsolidated, setShowConsolidated] = useState<boolean>(() => {
+    return localStorage.getItem('stormdrain_graph_show_consolidated') === 'true';
+  });
   
   const [matchStats, setMatchStats] = useState<{
     matchCount: number;
@@ -436,6 +441,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           return 'block';
         }
 
+        // Consolidated/superseded satellite memories: hide labels unless hovered
+        if (d.superseded_by) {
+          return 'none';
+        }
+
         // 2. Actively filtering (show only search matches)
         if (isFiltering) {
           const isMatch = activeTier1SetRef.current.has(d.id) || activeInScopeSetRef.current.has(d.id);
@@ -582,19 +592,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       activeInScopeSetRef.current.clear();
 
       tOrSel(nodeSelectionRef.current, 200)
-        .style('opacity', 1.0)
+        .style('opacity', (d: any) => d.superseded_by ? 0.35 : 1.0)
         .style('pointer-events', 'auto')
         .style('filter', 'none');
 
       nodeSelectionRef.current.select('.node-circle')
-        .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
+        .attr('r', (d: any) => d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6)))
         .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'var(--bg-color)')
         .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 2.5 : 2)
         .style('filter', (d: any) => isNodeHighlighted(d) ? `drop-shadow(0 0 6px ${highlightColor})` : 'none');
 
       nodeSelectionRef.current.select('.node-highlight-ring')
         .attr('r', (d: any) => {
-          const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
+          const base = d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6));
           return base + 4.5;
         })
         .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'none')
@@ -612,20 +622,36 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       applyLabelVisibility();
 
+      const consolidatedIds = new Set(
+        nodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+      );
+
       linkSelectionRef.current
         .attr('stroke', (d: any) => isLinkHighlighted(d) ? highlightColor : getEdgeColor(d.type))
         .attr('stroke-width', (d: any) => isLinkHighlighted(d) ? 3.5 : (d.type === 'imports' ? 1.5 : 2))
-        .attr('stroke-opacity', (d: any) => isLinkHighlighted(d) ? 0.9 : 0.6);
+        .attr('stroke-opacity', (d: any) => {
+          if (isLinkHighlighted(d)) return 0.9;
+          const s = typeof d.source === 'object' ? d.source.id : d.source;
+          const t = typeof d.target === 'object' ? d.target.id : d.target;
+          return (consolidatedIds.has(s) || consolidatedIds.has(t)) ? 0.15 : 0.6;
+        })
+        .attr('stroke-dasharray', (d: any) => {
+          const s = typeof d.source === 'object' ? d.source.id : d.source;
+          const t = typeof d.target === 'object' ? d.target.id : d.target;
+          if (consolidatedIds.has(s) || consolidatedIds.has(t)) return '2,2';
+          return d.type === 'imports' ? '4 2' : 'none';
+        });
 
       return;
     }
 
     tOrSel(nodeSelectionRef.current, 220)
       .style('opacity', (d: any) => {
-        if (tier1Set.has(d.id)) return 1.0;
-        if (tier2Set.has(d.id)) return 0.75;
-        if (tier3Set.has(d.id)) return 0.50;
-        return 0.25; // Tier 4: Ambient
+        let baseOpacity = 0.25;
+        if (tier1Set.has(d.id)) baseOpacity = 1.0;
+        else if (tier2Set.has(d.id)) baseOpacity = 0.75;
+        else if (tier3Set.has(d.id)) baseOpacity = 0.50;
+        return d.superseded_by ? baseOpacity * 0.35 : baseOpacity;
       })
       .style('pointer-events', (d: any) => {
         if (inScopeSet.has(d.id)) return 'auto';
@@ -638,7 +664,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     nodeSelectionRef.current.select('.node-circle')
       .attr('r', (d: any) => {
-        const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
+        const base = d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6));
         return tier1Set.has(d.id) ? base + 3 : base;
       })
       .attr('stroke', (d: any) => {
@@ -657,7 +683,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     nodeSelectionRef.current.select('.node-highlight-ring')
       .attr('r', (d: any) => {
-        const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
+        const base = d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6));
         const extra = tier1Set.has(d.id) ? 3 : 0;
         return base + extra + 4.5;
       })
@@ -681,6 +707,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     applyLabelVisibility();
 
+    const consolidatedIds = new Set(
+      nodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+    );
+
     // Link Styling Across Tiers
     linkSelectionRef.current
       .attr('stroke', (d: any) => isLinkHighlighted(d) ? highlightColor : getEdgeColor(d.type))
@@ -694,10 +724,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         const srcInScope = inScopeSet.has(srcId);
         const tgtInScope = inScopeSet.has(tgtId);
 
-        if (srcTier1 && tgtTier1) return 0.95;
-        if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
-        if (srcInScope && tgtInScope) return 0.50;
-        return 0.08; // Ambient edge
+        let baseOpacity = 0.08;
+        if (srcTier1 && tgtTier1) baseOpacity = 0.95;
+        else if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) baseOpacity = 0.75;
+        else if (srcInScope && tgtInScope) baseOpacity = 0.50;
+
+        if (consolidatedIds.has(srcId) || consolidatedIds.has(tgtId)) {
+          return baseOpacity * 0.25;
+        }
+        return baseOpacity;
       })
       .attr('stroke-width', (l: any) => {
         if (isLinkHighlighted(l)) return 3.5;
@@ -707,6 +742,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (tier1Set.has(srcId) && tier1Set.has(tgtId)) return 2.8;
         if (inScopeSet.has(srcId) && inScopeSet.has(tgtId)) return 1.8;
         return 0.8;
+      })
+      .attr('stroke-dasharray', (d: any) => {
+        const s = typeof d.source === 'object' ? d.source.id : d.source;
+        const t = typeof d.target === 'object' ? d.target.id : d.target;
+        if (consolidatedIds.has(s) || consolidatedIds.has(t)) return '2,2';
+        return d.type === 'imports' ? '4 2' : 'none';
       });
 
   }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
@@ -739,17 +780,31 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       let rawData;
       let needMapping = true;
 
-      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current && rawGraphDataRef.current?.nodes?.length > 0) {
-        rawData = rawGraphDataRef.current;
-        needMapping = false;
+      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current && apiGraphDataRef.current) {
+        rawData = apiGraphDataRef.current;
+        if (showConsolidated === lastShowConsolidatedRef.current && rawGraphDataRef.current?.nodes?.length > 0) {
+          needMapping = false;
+        }
       } else {
         rawData = await api.getGraph(activeContext);
         if (!isMounted || !rawData || !rawData.nodes) return;
+        apiGraphDataRef.current = rawData;
         lastLoadedVersionRef.current = version;
       }
+      lastShowConsolidatedRef.current = showConsolidated;
 
       let nodes = rawData.nodes;
       let links = rawData.links;
+
+      if (!showConsolidated) {
+        nodes = nodes.filter((n: any) => !n.superseded_by);
+        const activeNodeIds = new Set(nodes.map((n: any) => n.id));
+        links = links.filter((l: any) => {
+          const s = typeof l.source === 'object' ? l.source.id : l.source;
+          const t = typeof l.target === 'object' ? l.target.id : l.target;
+          return activeNodeIds.has(s) && activeNodeIds.has(t);
+        });
+      }
       let layoutChanged = false;
 
       // Calculate max updated time across all nodes to support highlighting newest changes
@@ -870,6 +925,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (isContextSwitch) {
           previousContextRef.current = activeContext;
           lastLoadedVersionRef.current = '';
+          apiGraphDataRef.current = null;
           positionsCacheRef.current.clear();
           currentZoomTransformRef.current = null;
           isInitializedRef.current = false;
@@ -882,8 +938,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }
 
         // Filter valid links where both source & target exist in nodes
-        const nodeIds = new Set((rawData.nodes || []).map((n: any) => n.id));
-        const validLinks = (rawData.links || []).filter(
+        const nodeIds = new Set(nodes.map((n: any) => n.id));
+        const validLinks = links.filter(
           (l: any) => nodeIds.has(typeof l.source === 'object' ? l.source.id : l.source) &&
                       nodeIds.has(typeof l.target === 'object' ? l.target.id : l.target)
         );
@@ -891,7 +947,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         const positionsCache = positionsCacheRef.current;
 
         // Map nodes with persistent positions or proximity-based placement for new nodes
-        nodes = (rawData.nodes || []).map((n: any) => {
+        nodes = nodes.map((n: any) => {
           const cached = positionsCache.get(n.id);
           if (cached) {
             return {
@@ -1012,17 +1068,27 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (n.type === 'codemap' || n.id.startsWith('file_')) {
           n.module = getModuleName(n);
         } else {
-          // Attached memories inherit target file module
-          const connectedLink = links.find((l: any) =>
-            (l.source === n.id && fileToModuleMap.has(l.target)) ||
-            (l.target === n.id && fileToModuleMap.has(l.source))
-          );
-          if (connectedLink) {
-            const fileId = fileToModuleMap.has(connectedLink.source) ? connectedLink.source : connectedLink.target;
-            n.module = fileToModuleMap.get(fileId) || '_memories';
-          } else {
-            n.module = n.context === '_global' ? '_global' : '_memories';
+          // Transitive Module Inheritance via BFS
+          let targetModule = '';
+          const visited = new Set<string>([n.id]);
+          const queue = [n.id];
+          while (queue.length > 0) {
+            const currId = queue.shift()!;
+            if (fileToModuleMap.has(currId)) {
+              targetModule = fileToModuleMap.get(currId)!;
+              break;
+            }
+            const neighbors = adj.get(currId);
+            if (neighbors) {
+              for (const neighbor of neighbors) {
+                if (!visited.has(neighbor)) {
+                  visited.add(neighbor);
+                  queue.push(neighbor);
+                }
+              }
+            }
           }
+          n.module = targetModule || (n.context === '_global' ? '_global' : '_memories');
         }
         moduleSet.add(n.module);
       }
@@ -1161,14 +1227,29 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       if (!simulation) {
         simulation = d3.forceSimulation()
-          .force('link', d3.forceLink().id((d: any) => d.id).distance(effectivePhysics.linkDistance))
+          .force('link', d3.forceLink().id((d: any) => d.id)
+            .distance((link: any) => {
+              const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
+              return isCodeToCode ? effectivePhysics.linkDistance : Math.min(25, effectivePhysics.linkDistance);
+            })
+            .strength((link: any) => {
+              const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
+              return isCodeToCode ? 0.15 : 0.85;
+            })
+          )
           .force('charge', d3.forceManyBody()
-            .strength(effectivePhysics.chargeStrength)
+            .strength((d: any) => {
+              if (d.superseded_by) return -5;
+              return d.type === 'codemap' ? effectivePhysics.chargeStrength : -35;
+            })
             .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
             .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
           )
           .force('center', d3.forceCenter(width / 2, height / 2))
-          .force('collide', d3.forceCollide(effectivePhysics.collisionRadius))
+          .force('collide', d3.forceCollide((d: any) => {
+            if (d.superseded_by) return 4;
+            return d.type === 'codemap' ? effectivePhysics.collisionRadius : Math.min(8, effectivePhysics.collisionRadius);
+          }))
           .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effectivePhysics.moduleGravity))
           .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effectivePhysics.moduleGravity))
           .alphaDecay(0.045)
@@ -1198,6 +1279,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         simulation.alpha(0.2).restart();
       }
 
+      const consolidatedNodeIds = new Set(
+        nodesToBind.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+      );
+
       // Data Join for Links (keyed by source->target)
       const link = linkGroup
         .selectAll<SVGLineElement, any>('line')
@@ -1209,11 +1294,33 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         .join(
           enter => enter.append('line')
             .attr('stroke', (d: any) => getEdgeColor(d.type))
-            .attr('stroke-dasharray', (d: any) => d.type === 'imports' ? '4 2' : 'none')
+            .attr('stroke-dasharray', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return '2,2';
+              return d.type === 'imports' ? '4 2' : 'none';
+            })
             .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2)
-            .attr('stroke-opacity', 0.6),
+            .attr('stroke-opacity', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return 0.15;
+              return 0.6;
+            }),
           update => update
-            .attr('stroke', (d: any) => getEdgeColor(d.type)),
+            .attr('stroke', (d: any) => getEdgeColor(d.type))
+            .attr('stroke-dasharray', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return '2,2';
+              return d.type === 'imports' ? '4 2' : 'none';
+            })
+            .attr('stroke-opacity', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return 0.15;
+              return 0.6;
+            }),
           exit => exit.remove()
         );
 
@@ -1228,6 +1335,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const g = enter.append('g')
               .attr('class', 'node-item')
               .style('cursor', 'pointer')
+              .style('opacity', (d: any) => d.superseded_by ? 0.35 : 1)
               .call(d3.drag()
                 .filter((event: any) => {
                   if (layoutModeRef.current === 'orbit') return false;
@@ -1239,7 +1347,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
             g.append('circle')
               .attr('class', 'node-circle')
-              .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
+              .attr('r', (d: any) => d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6)))
               .attr('fill', (d: any) => getTypeColor(d.type))
               .attr('stroke', 'var(--bg-color)')
               .attr('stroke-width', 2);
@@ -1325,8 +1433,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             return g;
           },
           update => {
+            update.style('opacity', (d: any) => d.superseded_by ? 0.35 : 1);
             update.select('.node-circle')
-              .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
+              .attr('r', (d: any) => d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6)))
               .attr('fill', (d: any) => getTypeColor(d.type));
 
             update.select('.node-highlight-ring')
@@ -1423,7 +1532,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return () => {
       isMounted = false;
     };
-  }, [activeContext, effectiveVersion, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth]);
+  }, [activeContext, effectiveVersion, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth, showConsolidated]);
 
   // Live Physics Updates (when sliders move or preset changes)
   useEffect(() => {
@@ -1439,17 +1548,31 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     simulation
       .force('charge', d3.forceManyBody()
-        .strength(effective.chargeStrength)
+        .strength((d: any) => {
+          if (d.superseded_by) return -5;
+          return d.type === 'codemap' ? effective.chargeStrength : -35;
+        })
         .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
         .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
       )
-      .force('collide', d3.forceCollide(effective.collisionRadius))
+      .force('collide', d3.forceCollide((d: any) => {
+        if (d.superseded_by) return 4;
+        return d.type === 'codemap' ? effective.collisionRadius : Math.min(8, effective.collisionRadius);
+      }))
       .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effective.moduleGravity))
       .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effective.moduleGravity));
 
     const linkForce = simulation.force('link') as d3.ForceLink<any, any>;
     if (linkForce) {
-      linkForce.distance(effective.linkDistance);
+      linkForce
+        .distance((link: any) => {
+          const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
+          return isCodeToCode ? effective.linkDistance : Math.min(25, effective.linkDistance);
+        })
+        .strength((link: any) => {
+          const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
+          return isCodeToCode ? 0.15 : 0.85;
+        });
     }
 
     simulation.alpha(0.25).restart();
@@ -1793,6 +1916,36 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                 title="Highlight matches + extended topological paths (2-hop)"
               >
                 + Extended (2-hop)
+              </button>
+            </div>
+          </div>
+
+          {/* Show Consolidated Toggle */}
+          <div className="graph-scope-row" style={{ marginTop: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Orbit size={13} style={{ color: 'var(--accent-hover)' }} />
+              <span>Consolidated Nodes:</span>
+            </div>
+            <div className="graph-scope-segmented">
+              <button
+                className={`graph-scope-btn ${!showConsolidated ? 'active' : ''}`}
+                onClick={() => {
+                  setShowConsolidated(false);
+                  localStorage.setItem('stormdrain_graph_show_consolidated', 'false');
+                }}
+                title="Hide consolidated memory satellites"
+              >
+                Hide
+              </button>
+              <button
+                className={`graph-scope-btn ${showConsolidated ? 'active' : ''}`}
+                onClick={() => {
+                  setShowConsolidated(true);
+                  localStorage.setItem('stormdrain_graph_show_consolidated', 'true');
+                }}
+                title="Show consolidated memory satellites"
+              >
+                Show
               </button>
             </div>
           </div>

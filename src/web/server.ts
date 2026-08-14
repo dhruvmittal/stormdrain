@@ -263,7 +263,7 @@ export const startWebServer = (port: number = 3456) => {
   }));
 
   app.get('/api/graph', withContext(async (req, res, ctx) => {
-    const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated FROM memories`).all();
+    const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all();
     const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all();
     res.json({ nodes: memories, links: relations });
   }));
