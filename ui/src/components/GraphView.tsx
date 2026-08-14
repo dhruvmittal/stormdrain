@@ -86,8 +86,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const activeTier1SetRef = useRef<Set<string>>(new Set());
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
-  const lastLoadedVersionRef = useRef<string>('');
-  const lastShowConsolidatedRef = useRef<boolean>(false);
+  const runIdRef = useRef<number>(0);
+  const lastEffectiveVersionRef = useRef<number | string>(-1);
   const configSettingsRef = useRef<StormDrainSettings | null>(null);
   const maxUpdatedTimeRef = useRef<number>(0);
 
@@ -766,58 +766,154 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!activeContext || !svgRef.current) return;
 
     let isMounted = true;
+    const currentRunId = ++runIdRef.current;
 
     const initGraph = async () => {
-      const version = await api.getGraphVersion(activeContext);
       const isContextSwitch = previousContextRef.current !== activeContext;
 
-      const cfg = await api.getConfig();
-      configSettingsRef.current = cfg;
+      if (!configSettingsRef.current) {
+        const cfg = await api.getConfig();
+        if (!isMounted || runIdRef.current !== currentRunId) return;
+        configSettingsRef.current = cfg;
+      }
+      const cfg = configSettingsRef.current;
 
       const width = svgRef.current?.parentElement?.clientWidth || 900;
       const height = svgRef.current?.parentElement?.clientHeight || 700;
 
-      let rawData;
-      let needMapping = true;
+      let rawData = apiGraphDataRef.current;
 
-      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current && apiGraphDataRef.current) {
-        rawData = apiGraphDataRef.current;
-        if (showConsolidated === lastShowConsolidatedRef.current && rawGraphDataRef.current?.nodes?.length > 0) {
-          needMapping = false;
-        }
-      } else {
+      if (isContextSwitch || !rawData || lastEffectiveVersionRef.current !== effectiveVersion) {
         rawData = await api.getGraph(activeContext);
-        if (!isMounted || !rawData || !rawData.nodes) return;
+        if (!isMounted || runIdRef.current !== currentRunId || !rawData || !rawData.nodes) return;
         apiGraphDataRef.current = rawData;
-        lastLoadedVersionRef.current = version;
+        lastEffectiveVersionRef.current = effectiveVersion;
       }
-      lastShowConsolidatedRef.current = showConsolidated;
 
-      let nodes = rawData.nodes;
-      let links = rawData.links;
+      if (!isMounted || runIdRef.current !== currentRunId) return;
 
-      if (!showConsolidated) {
-        nodes = nodes.filter((n: any) => !n.superseded_by);
-        const activeNodeIds = new Set(nodes.map((n: any) => n.id));
-        links = links.filter((l: any) => {
+      // Reset state if switching context
+      if (isContextSwitch) {
+        previousContextRef.current = activeContext;
+        lastEffectiveVersionRef.current = -1;
+        positionsCacheRef.current.clear();
+        currentZoomTransformRef.current = null;
+        isInitializedRef.current = false;
+        if (simulationRef.current) {
+          simulationRef.current.stop();
+          simulationRef.current = null;
+        }
+        d3.select(svgRef.current).selectAll('*').remove();
+        containerRef.current = null;
+      }
+
+      let nodes = showConsolidated
+        ? [...rawData.nodes]
+        : rawData.nodes.filter((n: any) => !n.superseded_by);
+
+      const nodeIds = new Set(nodes.map((n: any) => n.id));
+      const validLinks = rawData.links.filter((l: any) => {
+        const s = typeof l.source === 'object' ? l.source.id : l.source;
+        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        return nodeIds.has(s) && nodeIds.has(t);
+      });
+
+      const positionsCache = positionsCacheRef.current;
+
+      // Map nodes with persistent positions or proximity-based placement for new nodes
+      nodes = nodes.map((n: any) => {
+        const cached = positionsCache.get(n.id);
+        if (cached) {
+          return {
+            ...n,
+            x: cached.x,
+            y: cached.y,
+            vx: cached.vx ?? 0,
+            vy: cached.vy ?? 0,
+            fx: cached.fx ?? null,
+            fy: cached.fy ?? null,
+          };
+        }
+
+        // New node: Proximity-based spawning near a connected neighbor
+        let spawnX = width / 2 + (Math.random() - 0.5) * 80;
+        let spawnY = height / 2 + (Math.random() - 0.5) * 80;
+
+        const connectedLink = validLinks.find((l: any) => {
           const s = typeof l.source === 'object' ? l.source.id : l.source;
           const t = typeof l.target === 'object' ? l.target.id : l.target;
-          return activeNodeIds.has(s) && activeNodeIds.has(t);
+          return (s === n.id && positionsCache.has(t)) || (t === n.id && positionsCache.has(s));
         });
-      }
+
+        if (connectedLink) {
+          const s = typeof connectedLink.source === 'object' ? connectedLink.source.id : connectedLink.source;
+          const t = typeof connectedLink.target === 'object' ? connectedLink.target.id : connectedLink.target;
+          const neighborId = s === n.id ? t : s;
+          const neighborPos = positionsCache.get(neighborId);
+          if (neighborPos) {
+            spawnX = neighborPos.x + (Math.random() - 0.5) * 50;
+            spawnY = neighborPos.y + (Math.random() - 0.5) * 50;
+          }
+        }
+
+        return {
+          ...n,
+          x: spawnX,
+          y: spawnY,
+          vx: 0,
+          vy: 0,
+        };
+      });
+
+      // Always create fresh normalized link objects with string source/target
+      const links = validLinks.map((l: any) => ({
+        source: typeof l.source === 'object' ? l.source.id : l.source,
+        target: typeof l.target === 'object' ? l.target.id : l.target,
+        type: l.type,
+      }));
+
+      // Check if layout properties changed
+      const currentNodes = rawGraphDataRef.current?.nodes || [];
+      const currentLinks = rawGraphDataRef.current?.links || [];
       let layoutChanged = false;
 
-      // Calculate max updated time across all nodes to support highlighting newest changes
-      const updateTimes = nodes.map((n: any) => n.updated ? new Date(n.updated).getTime() : 0).filter((t: number) => t > 0);
-      maxUpdatedTimeRef.current = updateTimes.length > 0 ? Math.max(...updateTimes) : 0;
+      if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
+        layoutChanged = true;
+      } else {
+        const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
+        for (const n of nodes) {
+          const oldNode = oldNodeMap.get(n.id);
+          if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
+            layoutChanged = true;
+            break;
+          }
+        }
+        if (!layoutChanged) {
+          const oldLinkSet = new Set(currentLinks.map((l: any) => {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            return `${s}->${t}->${l.type}`;
+          }));
+          for (const l of links) {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
+              layoutChanged = true;
+              break;
+            }
+          }
+        }
+      }
 
-      // Newest changes highlight heuristic:
+      // Live comparison heuristic for newly added / modified nodes
       const highlightNewestEnabled = cfg?.graph?.highlightNewest;
       const timeoutMs = (cfg?.graph?.highlightTimeout || 2) * 60 * 1000;
 
       if (highlightNewestEnabled) {
-        if (isContextSwitch || !rawGraphDataRef.current || !rawGraphDataRef.current.nodes || rawGraphDataRef.current.nodes.length === 0) {
-          // Clear active sets
+        const updateTimes = nodes.map((n: any) => n.updated ? new Date(n.updated).getTime() : 0).filter((t: number) => t > 0);
+        maxUpdatedTimeRef.current = updateTimes.length > 0 ? Math.max(...updateTimes) : 0;
+
+        if (isContextSwitch || currentNodes.length === 0) {
           activeHighlightNodesRef.current.clear();
           activeHighlightLinksRef.current.clear();
           if (highlightTimeoutRef.current) {
@@ -825,20 +921,17 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             highlightTimeoutRef.current = null;
           }
 
-          // Initial load heuristic: highlight nodes updated recently
           if (maxUpdatedTimeRef.current > 0) {
             const timeSinceMaxUpdate = Date.now() - maxUpdatedTimeRef.current;
             if (timeSinceMaxUpdate < timeoutMs) {
               const newestTime = maxUpdatedTimeRef.current;
-              const margin = 5 * 1000; // 5s batch margin
-              
+              const margin = 5 * 1000;
               nodes.forEach((n: any) => {
                 const t = n.updated ? new Date(n.updated).getTime() : 0;
                 if (newestTime - t <= margin) {
                   activeHighlightNodesRef.current.add(n.id);
                 }
               });
-
               const remainingTime = timeoutMs - timeSinceMaxUpdate;
               if (remainingTime > 0) {
                 highlightTimeoutRef.current = setTimeout(() => {
@@ -850,17 +943,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             }
           }
         } else {
-          // Live comparison heuristic
-          const prevNodes = rawGraphDataRef.current.nodes || [];
-          const prevLinks = rawGraphDataRef.current.links || [];
-
-          const prevNodesMap = new Map<string, any>(prevNodes.map((n: any) => [n.id, n]));
-          const prevLinksMap = new Map<string, any>(prevLinks.map((l: any) => [getLinkKey(l), l]));
+          const prevNodesMap = new Map<string, any>(currentNodes.map((n: any) => [n.id, n]));
+          const prevLinksMap = new Map<string, any>(currentLinks.map((l: any) => [getLinkKey(l), l]));
 
           const newHighlightNodes = new Set<string>();
           const newHighlightLinks = new Set<string>();
 
-          // Node additions and modifications
           nodes.forEach((n: any) => {
             const prev = prevNodesMap.get(n.id);
             if (!prev) {
@@ -870,7 +958,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             }
           });
 
-          // Edge additions
           links.forEach((l: any) => {
             const key = getLinkKey(l);
             const prev = prevLinksMap.get(key);
@@ -883,9 +970,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             }
           });
 
-          // Edge removals
           const currentLinksMap = new Map<string, any>(links.map((l: any) => [getLinkKey(l), l]));
-          prevLinks.forEach((l: any) => {
+          currentLinks.forEach((l: any) => {
             const key = getLinkKey(l);
             if (!currentLinksMap.has(key)) {
               const s = typeof l.source === 'object' ? l.source.id : l.source;
@@ -895,15 +981,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             }
           });
 
-          // If there are changes, overwrite highlight lists and start/reset timer
           if (newHighlightNodes.size > 0 || newHighlightLinks.size > 0) {
             activeHighlightNodesRef.current = newHighlightNodes;
             activeHighlightLinksRef.current = newHighlightLinks;
-
             if (highlightTimeoutRef.current) {
               clearTimeout(highlightTimeoutRef.current);
             }
-
             highlightTimeoutRef.current = setTimeout(() => {
               activeHighlightNodesRef.current.clear();
               activeHighlightLinksRef.current.clear();
@@ -920,118 +1003,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }
       }
 
-      if (needMapping) {
-        // Check if switching context
-        if (isContextSwitch) {
-          previousContextRef.current = activeContext;
-          lastLoadedVersionRef.current = '';
-          apiGraphDataRef.current = null;
-          positionsCacheRef.current.clear();
-          currentZoomTransformRef.current = null;
-          isInitializedRef.current = false;
-          if (simulationRef.current) {
-            simulationRef.current.stop();
-            simulationRef.current = null;
-          }
-          d3.select(svgRef.current).selectAll('*').remove();
-          containerRef.current = null;
-        }
-
-        // Filter valid links where both source & target exist in nodes
-        const nodeIds = new Set(nodes.map((n: any) => n.id));
-        const validLinks = links.filter(
-          (l: any) => nodeIds.has(typeof l.source === 'object' ? l.source.id : l.source) &&
-                      nodeIds.has(typeof l.target === 'object' ? l.target.id : l.target)
-        );
-
-        const positionsCache = positionsCacheRef.current;
-
-        // Map nodes with persistent positions or proximity-based placement for new nodes
-        nodes = nodes.map((n: any) => {
-          const cached = positionsCache.get(n.id);
-          if (cached) {
-            return {
-              ...n,
-              x: cached.x,
-              y: cached.y,
-              vx: cached.vx ?? 0,
-              vy: cached.vy ?? 0,
-              fx: cached.fx ?? null,
-              fy: cached.fy ?? null,
-            };
-          }
-
-          // New node: Proximity-based spawning near a connected neighbor
-          let spawnX = width / 2 + (Math.random() - 0.5) * 80;
-          let spawnY = height / 2 + (Math.random() - 0.5) * 80;
-
-          const connectedLink = validLinks.find((l: any) => {
-            const s = typeof l.source === 'object' ? l.source.id : l.source;
-            const t = typeof l.target === 'object' ? l.target.id : l.target;
-            return (s === n.id && positionsCache.has(t)) || (t === n.id && positionsCache.has(s));
-          });
-
-          if (connectedLink) {
-            const s = typeof connectedLink.source === 'object' ? connectedLink.source.id : connectedLink.source;
-            const t = typeof connectedLink.target === 'object' ? connectedLink.target.id : connectedLink.target;
-            const neighborId = s === n.id ? t : s;
-            const neighborPos = positionsCache.get(neighborId);
-            if (neighborPos) {
-              spawnX = neighborPos.x + (Math.random() - 0.5) * 50;
-              spawnY = neighborPos.y + (Math.random() - 0.5) * 50;
-            }
-          }
-
-          return {
-            ...n,
-            x: spawnX,
-            y: spawnY,
-            vx: 0,
-            vy: 0,
-          };
-        });
-
-        // Normalize links
-        links = validLinks.map((l: any) => ({
-          source: typeof l.source === 'object' ? l.source.id : l.source,
-          target: typeof l.target === 'object' ? l.target.id : l.target,
-          type: l.type,
-        }));
-
-        // Check if layout properties changed
-        const currentNodes = rawGraphDataRef.current?.nodes || [];
-        const currentLinks = rawGraphDataRef.current?.links || [];
-
-        if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
-          layoutChanged = true;
-        } else {
-          const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
-          for (const n of nodes) {
-            const oldNode = oldNodeMap.get(n.id);
-            if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
-              layoutChanged = true;
-              break;
-            }
-          }
-          if (!layoutChanged) {
-            const oldLinkSet = new Set(currentLinks.map((l: any) => {
-              const s = typeof l.source === 'object' ? l.source.id : l.source;
-              const t = typeof l.target === 'object' ? l.target.id : l.target;
-              return `${s}->${t}->${l.type}`;
-            }));
-            for (const l of links) {
-              const s = typeof l.source === 'object' ? l.source.id : l.source;
-              const t = typeof l.target === 'object' ? l.target.id : l.target;
-              if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
-                layoutChanged = true;
-                break;
-              }
-            }
-          }
-        }
-
-        rawGraphDataRef.current = { nodes, links };
-      }
+      rawGraphDataRef.current = { nodes, links };
 
       // Compute type distributions
       const counts: Record<string, number> = { all: nodes.length };
@@ -1046,8 +1018,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         adj.set(n.id, new Set());
       }
       for (const l of links) {
-        const src = l.source;
-        const tgt = l.target;
+        const src = typeof l.source === 'object' ? l.source.id : l.source;
+        const tgt = typeof l.target === 'object' ? l.target.id : l.target;
         if (!adj.has(src)) adj.set(src, new Set());
         if (!adj.has(tgt)) adj.set(tgt, new Set());
         adj.get(src)!.add(tgt);
