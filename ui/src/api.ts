@@ -226,6 +226,7 @@ export interface GraphColorSettings {
     defaultEdge?: string;
     [key: string]: string | undefined;
   };
+  highlight?: string;
 }
 
 export function applyThemeColors(colors?: GraphColorSettings) {
@@ -245,6 +246,9 @@ export function applyThemeColors(colors?: GraphColorSettings) {
       }
     }
   }
+  if (colors.highlight) {
+    root.style.setProperty('--color-highlight', colors.highlight);
+  }
 }
 
 export interface GraphSettings {
@@ -260,6 +264,8 @@ export interface GraphSettings {
   labelFilter?: 'all' | 'always-show-memories';
   labelTextBacking?: boolean;
   labelFocusMode?: boolean;
+  highlightNewest?: boolean;
+  highlightTimeout?: number;
   colors?: GraphColorSettings;
 }
 

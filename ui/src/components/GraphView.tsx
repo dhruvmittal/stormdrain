@@ -87,6 +87,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
   const lastLoadedVersionRef = useRef<string>('');
   const configSettingsRef = useRef<StormDrainSettings | null>(null);
+  const maxUpdatedTimeRef = useRef<number>(0);
+
+  // Newest changes highlight refs
+  const activeHighlightNodesRef = useRef<Set<string>>(new Set());
+  const activeHighlightLinksRef = useRef<Set<string>>(new Set());
+  const highlightTimeoutRef = useRef<any>(null);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -279,36 +285,54 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return colorSettings.edges[type] || (type === 'imports' ? (colorSettings.edges.imports || '#38bdf8') : 'var(--border-color)');
   }, [colorSettings]);
 
-  // Synchronize D3 visual nodes and edges immediately when colorSettings updates
-  useEffect(() => {
-    if (nodeSelectionRef.current) {
-      nodeSelectionRef.current.select('.node-circle')
-        .attr('fill', (d: any) => getTypeColor(d.type));
-      nodeSelectionRef.current.select('.node-label')
-        .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)');
-    }
-    if (linkSelectionRef.current) {
-      linkSelectionRef.current
-        .attr('stroke', (d: any) => getEdgeColor(d.type));
-    }
-  }, [colorSettings, getTypeColor, getEdgeColor]);
-
   // References for hovering and landmarks culling
   const hoveredNodeIdRef = useRef<string | null>(null);
   const landmarkSetRef = useRef<Set<string>>(new Set());
+
+  const getLinkKey = useCallback((l: any) => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    return `${s}->${t}`;
+  }, []);
+
+  const isNodeHighlighted = useCallback((d: any) => {
+    if (!configSettingsRef.current?.graph?.highlightNewest) return false;
+    return activeHighlightNodesRef.current.has(d.id);
+  }, []);
+
+  const isLinkHighlighted = useCallback((l: any) => {
+    if (!configSettingsRef.current?.graph?.highlightNewest) return false;
+    const key = getLinkKey(l);
+    return activeHighlightLinksRef.current.has(key);
+  }, [getLinkKey]);
 
   // Helper to extract file basenames and truncate long memory descriptions
   const getLabelText = useCallback((d: any) => {
     if (d.type === 'codemap') {
       const parts = d.title.split('/');
       return parts[parts.length - 1];
+    } else {
+      const title = d.title || '';
+      return title.length > 32 ? title.substring(0, 29) + '...' : title;
     }
-    const title = d.title || '';
-    if (title.length > 32) {
-      return title.substring(0, 29) + '...';
-    }
-    return title;
   }, []);
+
+  // Synchronize D3 visual nodes and edges immediately when colorSettings updates
+  useEffect(() => {
+    if (nodeSelectionRef.current) {
+      nodeSelectionRef.current.select('.node-circle')
+        .attr('fill', (d: any) => getTypeColor(d.type));
+      nodeSelectionRef.current.select('.node-label')
+        .attr('fill', (d: any) => {
+          if (isNodeHighlighted(d)) return colorSettings.highlight || '#fbbf24';
+          return d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)';
+        });
+    }
+    if (linkSelectionRef.current) {
+      linkSelectionRef.current
+        .attr('stroke', (d: any) => isLinkHighlighted(d) ? (colorSettings.highlight || '#fbbf24') : getEdgeColor(d.type));
+    }
+  }, [colorSettings, getTypeColor, getEdgeColor, isNodeHighlighted, isLinkHighlighted]);
 
   // Spatial grid partitioning algorithm to elect visible hub landmarks
   const computeSpatialLandmarks = useCallback((nodes: any[], degreeMap: Map<string, number>) => {
@@ -466,6 +490,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const hasActiveFilter = Boolean(query || selectedType !== 'all');
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
 
+    const highlightColor = configSettingsRef.current?.colors?.highlight || '#fbbf24';
+
     // Compute Tier 1 (Match Set)
     const tier1Set = new Set<string>();
     
@@ -560,19 +586,36 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         .style('pointer-events', 'auto')
         .style('filter', 'none');
 
-      tOrSel(nodeSelectionRef.current.select('.node-circle'), 200)
+      nodeSelectionRef.current.select('.node-circle')
         .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
-        .attr('stroke', 'var(--bg-color)')
-        .attr('stroke-width', 2);
+        .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'var(--bg-color)')
+        .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 2.5 : 2)
+        .style('filter', (d: any) => isNodeHighlighted(d) ? `drop-shadow(0 0 6px ${highlightColor})` : 'none');
 
-      tOrSel(nodeSelectionRef.current.select('.node-label'), 200)
-        .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400');
+      nodeSelectionRef.current.select('.node-highlight-ring')
+        .attr('r', (d: any) => {
+          const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
+          return base + 4.5;
+        })
+        .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'none')
+        .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 1.5 : 0)
+        .attr('stroke-dasharray', '3,3')
+        .attr('stroke-opacity', (d: any) => isNodeHighlighted(d) ? 0.8 : 0);
+
+      nodeSelectionRef.current.select('.node-label')
+        .text((d: any) => getLabelText(d))
+        .style('font-weight', (d: any) => isNodeHighlighted(d) ? '700' : (d.type === 'codemap' ? '600' : '400'))
+        .attr('fill', (d: any) => {
+          if (isNodeHighlighted(d)) return highlightColor;
+          return d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)';
+        });
 
       applyLabelVisibility();
 
-      tOrSel(linkSelectionRef.current, 200)
-        .attr('stroke-opacity', 0.6)
-        .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2);
+      linkSelectionRef.current
+        .attr('stroke', (d: any) => isLinkHighlighted(d) ? highlightColor : getEdgeColor(d.type))
+        .attr('stroke-width', (d: any) => isLinkHighlighted(d) ? 3.5 : (d.type === 'imports' ? 1.5 : 2))
+        .attr('stroke-opacity', (d: any) => isLinkHighlighted(d) ? 0.9 : 0.6);
 
       return;
     }
@@ -586,42 +629,63 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       })
       .style('pointer-events', (d: any) => {
         if (inScopeSet.has(d.id)) return 'auto';
-        return 'none'; // Disable pointer events on ambient nodes to prevent accidental hover resets
+        return 'none';
       })
       .style('filter', (d: any) => {
         if (tier1Set.has(d.id) || tier2Set.has(d.id) || tier3Set.has(d.id)) return 'none';
         return 'grayscale(0.6)';
       });
 
-    tOrSel(nodeSelectionRef.current.select('.node-circle'), 220)
+    nodeSelectionRef.current.select('.node-circle')
       .attr('r', (d: any) => {
         const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
-        if (tier1Set.has(d.id)) return base + 3;
-        return base;
+        return tier1Set.has(d.id) ? base + 3 : base;
       })
       .attr('stroke', (d: any) => {
+        if (isNodeHighlighted(d)) return highlightColor;
         if (tier1Set.has(d.id)) return '#38bdf8';
         if (tier2Set.has(d.id)) return 'var(--text-main)';
         return 'var(--bg-color)';
       })
       .attr('stroke-width', (d: any) => {
+        if (isNodeHighlighted(d)) return 2.5;
         if (tier1Set.has(d.id)) return 3;
         if (tier2Set.has(d.id)) return 2;
         return 1;
-      });
+      })
+      .style('filter', (d: any) => isNodeHighlighted(d) ? `drop-shadow(0 0 6px ${highlightColor})` : 'none');
 
-    tOrSel(nodeSelectionRef.current.select('.node-label'), 220)
+    nodeSelectionRef.current.select('.node-highlight-ring')
+      .attr('r', (d: any) => {
+        const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
+        const extra = tier1Set.has(d.id) ? 3 : 0;
+        return base + extra + 4.5;
+      })
+      .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'none')
+      .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 1.5 : 0)
+      .attr('stroke-dasharray', '3,3')
+      .attr('stroke-opacity', (d: any) => isNodeHighlighted(d) ? 0.8 : 0);
+
+    nodeSelectionRef.current.select('.node-label')
+      .text((d: any) => getLabelText(d))
       .style('font-weight', (d: any) => {
+        if (isNodeHighlighted(d)) return '700';
         if (tier1Set.has(d.id)) return '700';
         if (tier2Set.has(d.id)) return '600';
         return '400';
+      })
+      .attr('fill', (d: any) => {
+        if (isNodeHighlighted(d)) return highlightColor;
+        return d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)';
       });
 
     applyLabelVisibility();
 
     // Link Styling Across Tiers
-    tOrSel(linkSelectionRef.current, 220)
+    linkSelectionRef.current
+      .attr('stroke', (d: any) => isLinkHighlighted(d) ? highlightColor : getEdgeColor(d.type))
       .attr('stroke-opacity', (l: any) => {
+        if (isLinkHighlighted(l)) return 0.9;
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
         const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
 
@@ -636,6 +700,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return 0.08; // Ambient edge
       })
       .attr('stroke-width', (l: any) => {
+        if (isLinkHighlighted(l)) return 3.5;
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
         const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
 
@@ -644,7 +709,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return 0.8;
       });
 
-  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId]);
+  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
 
   const applyActiveFilterStylingRef = useRef(applyActiveFilterStyling);
   useEffect(() => {
@@ -686,6 +751,119 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       let nodes = rawData.nodes;
       let links = rawData.links;
       let layoutChanged = false;
+
+      // Calculate max updated time across all nodes to support highlighting newest changes
+      const updateTimes = nodes.map((n: any) => n.updated ? new Date(n.updated).getTime() : 0).filter((t: number) => t > 0);
+      maxUpdatedTimeRef.current = updateTimes.length > 0 ? Math.max(...updateTimes) : 0;
+
+      // Newest changes highlight heuristic:
+      const highlightNewestEnabled = cfg?.graph?.highlightNewest;
+      const timeoutMs = (cfg?.graph?.highlightTimeout || 2) * 60 * 1000;
+
+      if (highlightNewestEnabled) {
+        if (isContextSwitch || !rawGraphDataRef.current || !rawGraphDataRef.current.nodes || rawGraphDataRef.current.nodes.length === 0) {
+          // Clear active sets
+          activeHighlightNodesRef.current.clear();
+          activeHighlightLinksRef.current.clear();
+          if (highlightTimeoutRef.current) {
+            clearTimeout(highlightTimeoutRef.current);
+            highlightTimeoutRef.current = null;
+          }
+
+          // Initial load heuristic: highlight nodes updated recently
+          if (maxUpdatedTimeRef.current > 0) {
+            const timeSinceMaxUpdate = Date.now() - maxUpdatedTimeRef.current;
+            if (timeSinceMaxUpdate < timeoutMs) {
+              const newestTime = maxUpdatedTimeRef.current;
+              const margin = 5 * 1000; // 5s batch margin
+              
+              nodes.forEach((n: any) => {
+                const t = n.updated ? new Date(n.updated).getTime() : 0;
+                if (newestTime - t <= margin) {
+                  activeHighlightNodesRef.current.add(n.id);
+                }
+              });
+
+              const remainingTime = timeoutMs - timeSinceMaxUpdate;
+              if (remainingTime > 0) {
+                highlightTimeoutRef.current = setTimeout(() => {
+                  activeHighlightNodesRef.current.clear();
+                  activeHighlightLinksRef.current.clear();
+                  applyActiveFilterStyling();
+                }, remainingTime);
+              }
+            }
+          }
+        } else {
+          // Live comparison heuristic
+          const prevNodes = rawGraphDataRef.current.nodes || [];
+          const prevLinks = rawGraphDataRef.current.links || [];
+
+          const prevNodesMap = new Map<string, any>(prevNodes.map((n: any) => [n.id, n]));
+          const prevLinksMap = new Map<string, any>(prevLinks.map((l: any) => [getLinkKey(l), l]));
+
+          const newHighlightNodes = new Set<string>();
+          const newHighlightLinks = new Set<string>();
+
+          // Node additions and modifications
+          nodes.forEach((n: any) => {
+            const prev = prevNodesMap.get(n.id);
+            if (!prev) {
+              newHighlightNodes.add(n.id);
+            } else if (n.updated && prev.updated && n.updated !== prev.updated) {
+              newHighlightNodes.add(n.id);
+            }
+          });
+
+          // Edge additions
+          links.forEach((l: any) => {
+            const key = getLinkKey(l);
+            const prev = prevLinksMap.get(key);
+            if (!prev) {
+              const s = typeof l.source === 'object' ? l.source.id : l.source;
+              const t = typeof l.target === 'object' ? l.target.id : l.target;
+              newHighlightNodes.add(s);
+              newHighlightNodes.add(t);
+              newHighlightLinks.add(key);
+            }
+          });
+
+          // Edge removals
+          const currentLinksMap = new Map<string, any>(links.map((l: any) => [getLinkKey(l), l]));
+          prevLinks.forEach((l: any) => {
+            const key = getLinkKey(l);
+            if (!currentLinksMap.has(key)) {
+              const s = typeof l.source === 'object' ? l.source.id : l.source;
+              const t = typeof l.target === 'object' ? l.target.id : l.target;
+              if (prevNodesMap.has(s)) newHighlightNodes.add(s);
+              if (prevNodesMap.has(t)) newHighlightNodes.add(t);
+            }
+          });
+
+          // If there are changes, overwrite highlight lists and start/reset timer
+          if (newHighlightNodes.size > 0 || newHighlightLinks.size > 0) {
+            activeHighlightNodesRef.current = newHighlightNodes;
+            activeHighlightLinksRef.current = newHighlightLinks;
+
+            if (highlightTimeoutRef.current) {
+              clearTimeout(highlightTimeoutRef.current);
+            }
+
+            highlightTimeoutRef.current = setTimeout(() => {
+              activeHighlightNodesRef.current.clear();
+              activeHighlightLinksRef.current.clear();
+              applyActiveFilterStyling();
+            }, timeoutMs);
+          }
+        }
+      } else {
+        activeHighlightNodesRef.current.clear();
+        activeHighlightLinksRef.current.clear();
+        if (highlightTimeoutRef.current) {
+          clearTimeout(highlightTimeoutRef.current);
+          highlightTimeoutRef.current = null;
+        }
+      }
 
       if (needMapping) {
         // Check if switching context
@@ -1066,6 +1244,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               .attr('stroke', 'var(--bg-color)')
               .attr('stroke-width', 2);
 
+            g.append('circle')
+              .attr('class', 'node-highlight-ring')
+              .attr('fill', 'none')
+              .attr('stroke', 'none')
+              .attr('stroke-width', 0)
+              .attr('stroke-dasharray', '3,3')
+              .attr('stroke-opacity', 0);
+
             g.append('text')
               .attr('class', 'node-label')
               .text((d: any) => getLabelText(d))
@@ -1142,6 +1328,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             update.select('.node-circle')
               .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
               .attr('fill', (d: any) => getTypeColor(d.type));
+
+            update.select('.node-highlight-ring')
+              .attr('fill', 'none')
+              .attr('stroke', 'none');
 
             update.select('.node-label')
               .text((d: any) => getLabelText(d))

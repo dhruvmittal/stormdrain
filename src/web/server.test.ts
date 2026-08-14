@@ -150,7 +150,10 @@ describe('Web API Server', () => {
     expect(initialConfig.graph.labelFilter).toBe('all');
     expect(initialConfig.graph.labelTextBacking).toBe(true);
     expect(initialConfig.graph.labelFocusMode).toBe(false);
-
+    expect(initialConfig.graph.highlightNewest).toBe(false);
+    expect(initialConfig.graph.highlightTimeout).toBe(2);
+    expect(initialConfig.colors.highlight).toBe('#f59e0b');
+ 
     // 2. POST config update
     const updateRes = await fetch(`${baseUrl}/api/config`, {
       method: 'POST',
@@ -168,9 +171,12 @@ describe('Web API Server', () => {
           labelMode: 'hover-only',
           labelFilter: 'always-show-memories',
           labelTextBacking: false,
-          labelFocusMode: true
+          labelFocusMode: true,
+          highlightNewest: true,
+          highlightTimeout: 5
         },
         colors: {
+          highlight: '#ff0000',
           nodes: {
             concept: '#ffffff',
             codemap: '#123456'
@@ -191,18 +197,24 @@ describe('Web API Server', () => {
     expect(updateData.settings.graph.labelFilter).toBe('always-show-memories');
     expect(updateData.settings.graph.labelTextBacking).toBe(false);
     expect(updateData.settings.graph.labelFocusMode).toBe(true);
+    expect(updateData.settings.graph.highlightNewest).toBe(true);
+    expect(updateData.settings.graph.highlightTimeout).toBe(5);
+    expect(updateData.settings.colors.highlight).toBe('#ff0000');
     expect(updateData.settings.colors.nodes.concept).toBe('#ffffff');
     expect(updateData.settings.colors.nodes.codemap).toBe('#123456');
-
+ 
     // 2b. GET updated config from separate request
     const getUpdatedRes = await fetch(`${baseUrl}/api/config`);
     const getUpdatedData = await getUpdatedRes.json();
+    expect(getUpdatedData.colors.highlight).toBe('#ff0000');
     expect(getUpdatedData.colors.nodes.concept).toBe('#ffffff');
     expect(getUpdatedData.colors.nodes.codemap).toBe('#123456');
     expect(getUpdatedData.graph.performanceThreshold).toBe(800);
     expect(getUpdatedData.graph.labelMode).toBe('hover-only');
     expect(getUpdatedData.graph.labelFocusMode).toBe(true);
-
+    expect(getUpdatedData.graph.highlightNewest).toBe(true);
+    expect(getUpdatedData.graph.highlightTimeout).toBe(5);
+ 
     // 3. POST config reset
     const resetRes = await fetch(`${baseUrl}/api/config/reset`, {
       method: 'POST'
@@ -219,6 +231,9 @@ describe('Web API Server', () => {
     expect(resetData.settings.graph.labelFilter).toBe('all');
     expect(resetData.settings.graph.labelTextBacking).toBe(true);
     expect(resetData.settings.graph.labelFocusMode).toBe(false);
+    expect(resetData.settings.graph.highlightNewest).toBe(false);
+    expect(resetData.settings.graph.highlightTimeout).toBe(2);
+    expect(resetData.settings.colors.highlight).toBe('#f59e0b');
     expect(resetData.settings.colors.nodes.concept).toBe('#38bdf8');
   });
 

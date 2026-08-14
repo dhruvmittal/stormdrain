@@ -640,7 +640,7 @@ export class ContextManager {
       return { consolidatedId: '', mergedCount: 0 };
     }
 
-    const title = `Consolidated Knowledge Guide: ${targetFileOrId}`;
+    const title = targetFileOrId;
     const allTags = new Set<string>(['consolidated-guide', 'super-memory']);
     
     let combinedContent = `# Consolidated Guide for ${targetFileOrId}\n\n`;

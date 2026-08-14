@@ -95,6 +95,8 @@ export interface GraphSettings {
   labelFilter?: 'all' | 'always-show-memories';
   labelTextBacking?: boolean;
   labelFocusMode?: boolean;
+  highlightNewest?: boolean;
+  highlightTimeout?: number;
 }
 
 export interface DecaySettings {
@@ -138,6 +140,7 @@ export interface GraphEdgeColors {
 export interface GraphColorSettings {
   nodes: GraphNodeColors;
   edges: GraphEdgeColors;
+  highlight?: string;
 }
 
 export interface StormDrainSettings {

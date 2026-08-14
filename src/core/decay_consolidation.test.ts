@@ -109,7 +109,7 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
     const superMem = ctx.getMemory(result.consolidatedId);
     expect(superMem).not.toBeNull();
     expect(superMem?.metadata.type).toBe('guide');
-    expect(superMem?.metadata.title).toContain('Consolidated Knowledge Guide');
+    expect(superMem?.metadata.title).toBe('data_processor.ts');
     expect(superMem?.content).toContain('Memory Leak Warning in Processor');
     expect(superMem?.content).toContain('Stream Chunking Optimization');
     expect(superMem?.metadata.tags).toContain('consolidated-guide');

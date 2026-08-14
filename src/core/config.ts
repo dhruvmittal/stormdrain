@@ -27,7 +27,9 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
     labelMode: 'dynamic',
     labelFilter: 'all',
     labelTextBacking: true,
-    labelFocusMode: false
+    labelFocusMode: false,
+    highlightNewest: false,
+    highlightTimeout: 2
   },
   decay: {
     decayRate: 0.85,
@@ -61,7 +63,8 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
       part_of: '#ec4899',
       distilled_from: '#8b5cf6',
       defaultEdge: '#334155'
-    }
+    },
+    highlight: '#f59e0b'
   }
 };
 
@@ -115,7 +118,8 @@ export class ConfigManager {
       git: { ...DEFAULT_SETTINGS.git, ...(disk.git || {}) },
       colors: {
         nodes: { ...DEFAULT_SETTINGS.colors!.nodes, ...(disk.colors?.nodes || {}) },
-        edges: { ...DEFAULT_SETTINGS.colors!.edges, ...(disk.colors?.edges || {}) }
+        edges: { ...DEFAULT_SETTINGS.colors!.edges, ...(disk.colors?.edges || {}) },
+        highlight: disk.colors?.highlight || DEFAULT_SETTINGS.colors!.highlight
       }
     };
 
@@ -160,7 +164,8 @@ export class ConfigManager {
       git: { ...current.git, ...(partial.git || {}) },
       colors: {
         nodes: { ...current.colors!.nodes, ...(partial.colors?.nodes || {}) },
-        edges: { ...current.colors!.edges, ...(partial.colors?.edges || {}) }
+        edges: { ...current.colors!.edges, ...(partial.colors?.edges || {}) },
+        highlight: partial.colors?.highlight ?? current.colors?.highlight
       }
     };
 
