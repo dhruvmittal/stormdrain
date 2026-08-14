@@ -98,6 +98,10 @@ describe('ConfigManager', () => {
     expect(settings.graph.reverseWeight).toBe(0.25);
     expect(settings.decay.decayRate).toBe(0.85);
     expect(settings.git.debounceMs).toBe(1500);
+    expect(settings.graph.attenuateInterModule).toBe(true);
+    expect(settings.graph.freezeOutOfScopeNodes).toBe(true);
+    expect(settings.graph.interModuleTensionRatio).toBe(0.25);
+    expect(settings.graph.memoryChargeStrength).toBe(-140);
   });
 
   it('should update settings partially and persist to disk', () => {

@@ -29,7 +29,11 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
     labelTextBacking: true,
     labelFocusMode: false,
     highlightNewest: false,
-    highlightTimeout: 2
+    highlightTimeout: 2,
+    attenuateInterModule: true,
+    freezeOutOfScopeNodes: true,
+    interModuleTensionRatio: 0.25,
+    memoryChargeStrength: -140
   },
   decay: {
     decayRate: 0.85,

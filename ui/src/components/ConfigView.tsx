@@ -165,7 +165,11 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
     labelFilter: 'all',
     labelTextBacking: true,
     highlightNewest: false,
-    highlightTimeout: 2
+    highlightTimeout: 2,
+    attenuateInterModule: true,
+    freezeOutOfScopeNodes: true,
+    interModuleTensionRatio: 0.25,
+    memoryChargeStrength: -140
   },
   decay: {
     decayRate: 0.85,
@@ -815,6 +819,84 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
                 })}
               />
               <span className="range-val-badge">{(settings.graph.repulsionTheta ?? 0.95).toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="config-field">
+            <div className="config-field-info">
+              <label>Attenuate Inter-Module Header Dependencies</label>
+              <span>Relax link tension between different C++ modules to prevent module collapse</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.attenuateInterModule ?? true}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, attenuateInterModule: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Inter-Module Tension Ratio</label>
+              <span>Link strength multiplier applied to cross-module edges relative to intra-module edges</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="0.05" 
+                max="1.00" 
+                step="0.05"
+                value={settings.graph.interModuleTensionRatio ?? 0.25}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, interModuleTensionRatio: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{((settings.graph.interModuleTensionRatio ?? 0.25) * 100).toFixed(0)}%</span>
+            </div>
+          </div>
+
+          <div className="config-field">
+            <div className="config-field-info">
+              <label>Freeze Subgraph Physics in Focus Mode</label>
+              <span>Pin out-of-scope nodes during Focus Mode to eliminate background CPU tick overhead</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.freezeOutOfScopeNodes ?? true}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, freezeOutOfScopeNodes: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Default Memory Node Repulsion</label>
+              <span>Repulsive charge strength between attached memory nodes</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="-400" 
+                max="-10" 
+                step="10"
+                value={settings.graph.memoryChargeStrength ?? -140}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, memoryChargeStrength: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{settings.graph.memoryChargeStrength ?? -140}</span>
             </div>
           </div>
 

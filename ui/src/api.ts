@@ -266,6 +266,10 @@ export interface GraphSettings {
   labelFocusMode?: boolean;
   highlightNewest?: boolean;
   highlightTimeout?: number;
+  attenuateInterModule?: boolean;
+  freezeOutOfScopeNodes?: boolean;
+  interModuleTensionRatio?: number;
+  memoryChargeStrength?: number;
   colors?: GraphColorSettings;
 }
 

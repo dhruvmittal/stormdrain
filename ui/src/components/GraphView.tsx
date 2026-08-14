@@ -14,12 +14,23 @@ type ScopeDepth = 0 | 1 | 2;
 
 const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
+import { 
+  getDegreeAwareLinkDistance, 
+  getEdgeStrength, 
+  getRepulsionDistanceMax, 
+  getCollisionRadius, 
+  getMemoryChargeStrength 
+} from '../utils/physicsHelpers';
+
 // Physics Engine Types & Presets
 interface PhysicsSettings {
   chargeStrength: number;
   linkDistance: number;
   collisionRadius: number;
   moduleGravity: number;
+  memoryChargeStrength?: number;
+  interModuleTensionRatio?: number;
+  attenuateInterModule?: boolean;
   activePreset: 'auto' | 'strongly_clustered' | 'clustered' | 'standard' | 'massive' | 'custom';
 }
 
@@ -1201,27 +1212,37 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         simulation = d3.forceSimulation()
           .force('link', d3.forceLink().id((d: any) => d.id)
             .distance((link: any) => {
-              const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
-              return isCodeToCode ? effectivePhysics.linkDistance : Math.min(25, effectivePhysics.linkDistance);
+              const srcType = typeof link.source === 'object' ? link.source.type : '';
+              const tgtType = typeof link.target === 'object' ? link.target.type : '';
+              const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+              if (isCodeToCode) return effectivePhysics.linkDistance;
+              const targetNode = typeof link.target === 'object' ? link.target : link.source;
+              const attachedCount = (adjacencyRef.current?.get(targetNode.id)?.size || 1) - 1;
+              return getDegreeAwareLinkDistance(attachedCount, effectivePhysics.linkDistance);
             })
             .strength((link: any) => {
-              const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
-              return isCodeToCode ? 0.15 : 0.85;
+              const srcType = typeof link.source === 'object' ? link.source.type : '';
+              const tgtType = typeof link.target === 'object' ? link.target.type : '';
+              const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+              const srcModule = typeof link.source === 'object' ? link.source.module : '';
+              const tgtModule = typeof link.target === 'object' ? link.target.module : '';
+              const isInterModule = isCodeToCode && srcModule !== tgtModule;
+              const ratio = physics.interModuleTensionRatio ?? configSettingsRef.current?.graph?.interModuleTensionRatio ?? 0.25;
+              const attenuate = physics.attenuateInterModule ?? configSettingsRef.current?.graph?.attenuateInterModule ?? true;
+              return getEdgeStrength(isCodeToCode, isInterModule, 0.15, ratio, attenuate);
             })
           )
           .force('charge', d3.forceManyBody()
             .strength((d: any) => {
               if (d.superseded_by) return -5;
-              return d.type === 'codemap' ? effectivePhysics.chargeStrength : -35;
+              const customMemoryCharge = physics.memoryChargeStrength ?? configSettingsRef.current?.graph?.memoryChargeStrength ?? -140;
+              return d.type === 'codemap' ? effectivePhysics.chargeStrength : getMemoryChargeStrength(customMemoryCharge);
             })
             .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
-            .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
+            .distanceMax(getRepulsionDistanceMax(effectivePhysics.linkDistance, configSettingsRef.current?.graph?.repulsionDistanceMax))
           )
           .force('center', d3.forceCenter(width / 2, height / 2))
-          .force('collide', d3.forceCollide((d: any) => {
-            if (d.superseded_by) return 4;
-            return d.type === 'codemap' ? effectivePhysics.collisionRadius : Math.min(8, effectivePhysics.collisionRadius);
-          }))
+          .force('collide', d3.forceCollide((d: any) => getCollisionRadius(d.type, Boolean(d.superseded_by), effectivePhysics.collisionRadius)))
           .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effectivePhysics.moduleGravity))
           .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effectivePhysics.moduleGravity))
           .alphaDecay(0.045)
@@ -1246,7 +1267,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           simulation.tick();
         }
         isInitializedRef.current = true;
-      } else if (layoutChanged || activeIdsChanged) {
+        if (layoutModeRef.current === 'orbit') {
+          simulation.stop();
+        }
+      } else if (layoutModeRef.current === 'force' && (layoutChanged || activeIdsChanged)) {
         // Warm restart with low alpha so existing nodes gently nudge without scattering
         simulation.alpha(0.2).restart();
       }
@@ -1363,9 +1387,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               hoveredNodeIdRef.current = d.id;
               
               if (linkSelectionRef.current) {
-                linkSelectionRef.current
-                  .transition()
-                  .duration(120)
+                const perfLimit = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+                const useTrans = (rawGraphDataRef.current.nodes?.length || 0) < perfLimit;
+                const sel = useTrans ? (linkSelectionRef.current.transition().duration(100) as any) : linkSelectionRef.current;
+                
+                sel
                   .attr('stroke-opacity', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
@@ -1522,15 +1548,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       .force('charge', d3.forceManyBody()
         .strength((d: any) => {
           if (d.superseded_by) return -5;
-          return d.type === 'codemap' ? effective.chargeStrength : -35;
+          const customMemoryCharge = physics.memoryChargeStrength ?? configSettingsRef.current?.graph?.memoryChargeStrength ?? -140;
+          return d.type === 'codemap' ? effective.chargeStrength : getMemoryChargeStrength(customMemoryCharge);
         })
         .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
-        .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
+        .distanceMax(getRepulsionDistanceMax(effective.linkDistance, configSettingsRef.current?.graph?.repulsionDistanceMax))
       )
-      .force('collide', d3.forceCollide((d: any) => {
-        if (d.superseded_by) return 4;
-        return d.type === 'codemap' ? effective.collisionRadius : Math.min(8, effective.collisionRadius);
-      }))
+      .force('collide', d3.forceCollide((d: any) => getCollisionRadius(d.type, Boolean(d.superseded_by), effective.collisionRadius)))
       .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effective.moduleGravity))
       .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effective.moduleGravity));
 
@@ -1538,12 +1562,24 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (linkForce) {
       linkForce
         .distance((link: any) => {
-          const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
-          return isCodeToCode ? effective.linkDistance : Math.min(25, effective.linkDistance);
+          const srcType = typeof link.source === 'object' ? link.source.type : '';
+          const tgtType = typeof link.target === 'object' ? link.target.type : '';
+          const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+          if (isCodeToCode) return effective.linkDistance;
+          const targetNode = typeof link.target === 'object' ? link.target : link.source;
+          const attachedCount = (adjacencyRef.current?.get(targetNode.id)?.size || 1) - 1;
+          return getDegreeAwareLinkDistance(attachedCount, effective.linkDistance);
         })
         .strength((link: any) => {
-          const isCodeToCode = link.source.type === 'codemap' && link.target.type === 'codemap';
-          return isCodeToCode ? 0.15 : 0.85;
+          const srcType = typeof link.source === 'object' ? link.source.type : '';
+          const tgtType = typeof link.target === 'object' ? link.target.type : '';
+          const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+          const srcModule = typeof link.source === 'object' ? link.source.module : '';
+          const tgtModule = typeof link.target === 'object' ? link.target.module : '';
+          const isInterModule = isCodeToCode && srcModule !== tgtModule;
+          const ratio = physics.interModuleTensionRatio ?? configSettingsRef.current?.graph?.interModuleTensionRatio ?? 0.25;
+          const attenuate = physics.attenuateInterModule ?? configSettingsRef.current?.graph?.attenuateInterModule ?? true;
+          return getEdgeStrength(isCodeToCode, isInterModule, 0.15, ratio, attenuate);
         });
     }
 
@@ -1639,6 +1675,30 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         n.fx = n.x;
         n.fy = n.y;
       });
+
+      // Synchronize positionsCacheRef with radial orbit coordinates
+      for (const n of nodes) {
+        if (n.x !== undefined && n.y !== undefined) {
+          positionsCacheRef.current.set(n.id, {
+            x: n.x,
+            y: n.y,
+            vx: 0,
+            vy: 0,
+            fx: n.fx,
+            fy: n.fy,
+          });
+        }
+      }
+
+      // Smoothly reset camera zoom transform so (centerX, centerY) aligns with viewport center
+      if (svgRef.current && zoomBehaviorRef.current) {
+        d3.select(svgRef.current)
+          .transition('zoom')
+          .duration(650)
+          .ease(d3.easeCubicOut)
+          .call(zoomBehaviorRef.current.transform as any, d3.zoomIdentity);
+        currentZoomTransformRef.current = d3.zoomIdentity;
+      }
 
       // Render concentric guide circles
       if (!guideGroup.empty()) {
@@ -2009,6 +2069,38 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                   step="0.02"
                   value={physics.moduleGravity}
                   onChange={(e) => updatePhysics({ moduleGravity: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Memory Repulsion (Separate from File Charge) */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Memory Repulsion</span>
+                  <span className="graph-slider-val">{physics.memoryChargeStrength ?? -140}</span>
+                </div>
+                <input
+                  type="range"
+                  min="-400"
+                  max="-10"
+                  step="10"
+                  value={physics.memoryChargeStrength ?? -140}
+                  onChange={(e) => updatePhysics({ memoryChargeStrength: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Inter-Module Tension Ratio */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Inter-Module Tension</span>
+                  <span className="graph-slider-val">{((physics.interModuleTensionRatio ?? 0.25) * 100).toFixed(0)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.05"
+                  max="1.00"
+                  step="0.05"
+                  value={physics.interModuleTensionRatio ?? 0.25}
+                  onChange={(e) => updatePhysics({ interModuleTensionRatio: Number(e.target.value), activePreset: 'custom' })}
                 />
               </div>
             </div>

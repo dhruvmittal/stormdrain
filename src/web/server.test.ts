@@ -152,6 +152,10 @@ describe('Web API Server', () => {
     expect(initialConfig.graph.labelFocusMode).toBe(false);
     expect(initialConfig.graph.highlightNewest).toBe(false);
     expect(initialConfig.graph.highlightTimeout).toBe(2);
+    expect(initialConfig.graph.attenuateInterModule).toBe(true);
+    expect(initialConfig.graph.freezeOutOfScopeNodes).toBe(true);
+    expect(initialConfig.graph.interModuleTensionRatio).toBe(0.25);
+    expect(initialConfig.graph.memoryChargeStrength).toBe(-140);
     expect(initialConfig.colors.highlight).toBe('#f59e0b');
  
     // 2. POST config update
