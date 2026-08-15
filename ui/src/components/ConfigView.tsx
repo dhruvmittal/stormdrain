@@ -43,7 +43,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         part_of: '#ec4899',
         distilled_from: '#8b5cf6',
         defaultEdge: '#334155'
-      }
+      },
+      highlight: '#fbbf24'
     }
   },
   {
@@ -73,7 +74,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         part_of: '#2dd4bf',
         distilled_from: '#0ea5e9',
         defaultEdge: '#1e293b'
-      }
+      },
+      highlight: '#38bdf8'
     }
   },
   {
@@ -103,7 +105,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         part_of: '#f43f5e',
         distilled_from: '#f59e0b',
         defaultEdge: '#292524'
-      }
+      },
+      highlight: '#facc15'
     }
   },
   {
@@ -133,7 +136,8 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
         part_of: '#f1f5f9',
         distilled_from: '#64748b',
         defaultEdge: '#1e293b'
-      }
+      },
+      highlight: '#cbd5e1'
     }
   }
 ];
@@ -159,7 +163,13 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
     repulsionTheta: 0.95,
     labelMode: 'dynamic',
     labelFilter: 'all',
-    labelTextBacking: true
+    labelTextBacking: true,
+    highlightNewest: false,
+    highlightTimeout: 2,
+    attenuateInterModule: true,
+    freezeOutOfScopeNodes: true,
+    interModuleTensionRatio: 0.25,
+    memoryChargeStrength: -140
   },
   decay: {
     decayRate: 0.85,
@@ -193,7 +203,8 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
       part_of: '#ec4899',
       distilled_from: '#8b5cf6',
       defaultEdge: '#334155'
-    }
+    },
+    highlight: '#fbbf24'
   }
 };
 
@@ -811,6 +822,84 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
             </div>
           </div>
 
+          <div className="config-field">
+            <div className="config-field-info">
+              <label>Attenuate Inter-Module Header Dependencies</label>
+              <span>Relax link tension between different C++ modules to prevent module collapse</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.attenuateInterModule ?? true}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, attenuateInterModule: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Inter-Module Tension Ratio</label>
+              <span>Link strength multiplier applied to cross-module edges relative to intra-module edges</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="0.05" 
+                max="1.00" 
+                step="0.05"
+                value={settings.graph.interModuleTensionRatio ?? 0.25}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, interModuleTensionRatio: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{((settings.graph.interModuleTensionRatio ?? 0.25) * 100).toFixed(0)}%</span>
+            </div>
+          </div>
+
+          <div className="config-field">
+            <div className="config-field-info">
+              <label>Freeze Subgraph Physics in Focus Mode</label>
+              <span>Pin out-of-scope nodes during Focus Mode to eliminate background CPU tick overhead</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.freezeOutOfScopeNodes ?? true}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, freezeOutOfScopeNodes: e.target.checked }
+                })}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
+          <div className="config-field vertical">
+            <div className="config-field-info">
+              <label>Default Memory Node Repulsion</label>
+              <span>Repulsive charge strength between attached memory nodes</span>
+            </div>
+            <div className="range-control">
+              <input 
+                type="range" 
+                min="-400" 
+                max="-10" 
+                step="10"
+                value={settings.graph.memoryChargeStrength ?? -140}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  graph: { ...settings.graph, memoryChargeStrength: Number(e.target.value) }
+                })}
+              />
+              <span className="range-val-badge">{settings.graph.memoryChargeStrength ?? -140}</span>
+            </div>
+          </div>
+
           <div className="config-field vertical">
             <div className="config-field-info">
               <label>Default Label Mode</label>
@@ -901,6 +990,51 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
               <span className="slider round"></span>
             </label>
           </div>
+
+          <div className="config-field" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 0 0' }}>
+            <div className="config-field-info" style={{ flex: '1', paddingRight: '12px' }}>
+              <label style={{ margin: '0' }}>Default Highlight Newest Changes</label>
+              <span>Pull the user's eye to the most recently updated and created nodes in the graph view</span>
+            </div>
+            <label className="switch">
+              <input 
+                type="checkbox" 
+                checked={settings.graph.highlightNewest === true}
+                onChange={(e) => {
+                  isDirtyRef.current = true;
+                  setSettings({
+                    ...settings,
+                    graph: { ...settings.graph, highlightNewest: e.target.checked }
+                  });
+                }}
+              />
+              <span className="slider round"></span>
+            </label>
+          </div>
+
+          {settings.graph.highlightNewest && (
+            <div className="config-field" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 0 0', paddingLeft: '16px', borderLeft: '2px solid var(--accent-color)' }}>
+              <div className="config-field-info" style={{ flex: '1', paddingRight: '12px' }}>
+                <label style={{ margin: '0' }}>Highlight Timeout (Minutes)</label>
+                <span>Automatically remove visual highlight after N minutes of inactivity</span>
+              </div>
+              <input 
+                type="number" 
+                min="1" 
+                max="60" 
+                style={{ width: '80px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-input)', color: 'var(--text-main)' }}
+                value={settings.graph.highlightTimeout ?? 2}
+                onChange={(e) => {
+                  isDirtyRef.current = true;
+                  const val = parseInt(e.target.value, 10);
+                  setSettings({
+                    ...settings,
+                    graph: { ...settings.graph, highlightTimeout: isNaN(val) ? 2 : val }
+                  });
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Card 6: Graph Appearance & Palette */}
@@ -1029,6 +1163,42 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Highlight Color Customization */}
+          <div className="config-field vertical" style={{ marginTop: '16px' }}>
+            <div className="config-field-info">
+              <label>Newest Change Highlight Color</label>
+              <span>Custom accent color for nodes, rings, and links highlighting the latest modifications</span>
+            </div>
+            <div className="colors-grid">
+              <div className="color-swatch-item">
+                <div className="color-swatch-left">
+                  <input
+                    type="color"
+                    className="color-input"
+                    value={settings.colors?.highlight || '#fbbf24'}
+                    onChange={(e) => {
+                      isDirtyRef.current = true;
+                      setSettings({
+                        ...settings,
+                        colors: {
+                          ...settings.colors,
+                          nodes: settings.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes,
+                          edges: settings.colors?.edges || DEFAULT_SETTINGS.colors!.edges,
+                          highlight: e.target.value
+                        }
+                      });
+                    }}
+                  />
+                  <div className="color-label-group">
+                    <span className="color-name">Highlight Color</span>
+                    <span className="color-desc">Used for gold glowing drop-shadows and outer dashed rings</span>
+                  </div>
+                </div>
+                <code className="color-hex">{(settings.colors?.highlight || '#fbbf24').toUpperCase()}</code>
+              </div>
             </div>
           </div>
         </div>

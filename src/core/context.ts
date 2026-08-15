@@ -260,13 +260,41 @@ export class ContextManager {
   }
 
   public listMemories(): Memory[] {
-    const rows = this.db.prepare('SELECT id FROM memories WHERE type != ?').all('codemap') as Array<{ id: string }>;
+    const rows = this.db.prepare(`
+      SELECT m.*, f.content
+      FROM memories m
+      LEFT JOIN memories_fts f ON f.id = m.id
+      WHERE m.type != 'codemap'
+      ORDER BY m.updated DESC
+    `).all() as Array<any>;
+
     const results: Memory[] = [];
-    for (const r of rows) {
-      const m = this.getMemory(r.id);
-      if (m) {
-        results.push(m);
-      }
+    const getTagsStmt = this.db.prepare('SELECT tag FROM tags WHERE memory_id = ?');
+    const getRelsStmt = this.db.prepare('SELECT target_id as target, type FROM relations WHERE source_id = ?');
+
+    for (const row of rows) {
+      const tagRows = getTagsStmt.all(row.id) as Array<{ tag: string }>;
+      const relRows = getRelsStmt.all(row.id) as Array<{ target: string; type: string }>;
+
+      results.push({
+        metadata: {
+          id: row.id,
+          type: row.type,
+          title: row.title,
+          context: row.context || this.name,
+          tags: tagRows.map(t => t.tag),
+          confidence: row.confidence ?? 1.0,
+          created: row.created || new Date().toISOString(),
+          updated: row.updated || new Date().toISOString(),
+          accessed: row.accessed || new Date().toISOString(),
+          access_count: row.access_count ?? 0,
+          source: row.source || 'manual',
+          expires: row.expires || null,
+          superseded_by: row.superseded_by || null,
+          relations: relRows.map(r => ({ target: r.target, type: r.type as any }))
+        },
+        content: row.content || ''
+      });
     }
     return results;
   }
@@ -366,30 +394,20 @@ export class ContextManager {
     const isCodemap = mem.metadata.type === 'codemap';
 
     // Fetch outgoing relations with titles
-    const outgoing: Array<{ target: string; type: string; title?: string }> = [];
-    for (const rel of mem.metadata.relations || []) {
-      const tgtMem = this.db.prepare('SELECT title, type FROM memories WHERE id = ?').get(rel.target) as { title: string; type: string } | undefined;
-      outgoing.push({
-        target: rel.target,
-        type: rel.type,
-        title: tgtMem?.title || rel.target
-      });
-    }
+    const outgoing = this.db.prepare(`
+      SELECT r.target_id as target, r.type, COALESCE(m.title, r.target_id) as title
+      FROM relations r
+      LEFT JOIN memories m ON m.id = r.target_id
+      WHERE r.source_id = ?
+    `).all(effectiveId) as Array<{ target: string; type: string; title: string }>;
 
     // Fetch incoming relations with titles
-    const incomingRows = this.db.prepare(`
-      SELECT source_id as source, type FROM relations WHERE target_id = ?
-    `).all(effectiveId) as Array<{ source: string; type: string }>;
-
-    const incoming: Array<{ source: string; type: string; title?: string }> = [];
-    for (const inc of incomingRows) {
-      const srcMem = this.db.prepare('SELECT title, type FROM memories WHERE id = ?').get(inc.source) as { title: string; type: string } | undefined;
-      incoming.push({
-        source: inc.source,
-        type: inc.type,
-        title: srcMem?.title || inc.source
-      });
-    }
+    const incoming = this.db.prepare(`
+      SELECT r.source_id as source, r.type, COALESCE(m.title, r.source_id) as title
+      FROM relations r
+      LEFT JOIN memories m ON m.id = r.source_id
+      WHERE r.target_id = ?
+    `).all(effectiveId) as Array<{ source: string; type: string; title: string }>;
 
     // If codemap, extract AST outline and attached micro-memories
     let astOutline: string[] | undefined = undefined;
@@ -493,9 +511,23 @@ export class ContextManager {
 
     for (const v of vertices) {
       const existing = this.getMemory(v.id);
+      let contentOrRelationsChanged = true;
+
+      const relations = v.imports.map(impPath => ({
+        target: makeFileVertexId(impPath),
+        type: 'imports'
+      }));
+
       if (existing) {
         const hashMatch = existing.content.match(/Hash: `([^`]+)`/);
         const oldHash = hashMatch ? hashMatch[1] : '';
+        const oldRelsKey = (existing.metadata.relations || []).map((r: any) => `${r.target}:${r.type}`).sort().join(',');
+        const newRelsKey = relations.map((r: any) => `${r.target}:${r.type}`).sort().join(',');
+
+        if (oldHash && oldHash === v.hash && oldRelsKey === newRelsKey && existing.content.trim() === v.content.trim()) {
+          contentOrRelationsChanged = false;
+        }
+
         if (oldHash && oldHash !== v.hash) {
           // File content changed! Find all memories attached to this file vertex
           const attachedRelations = this.db.prepare(`
@@ -518,18 +550,18 @@ export class ContextManager {
         }
       }
 
-      const relations = v.imports.map(impPath => ({
-        target: makeFileVertexId(impPath),
-        type: 'imports'
-      }));
+      if (contentOrRelationsChanged) {
+        const memory: Memory = {
+          metadata: {
+            ...createMemoryMetadata(v.id, 'codemap', v.title, this.name, v.tags, relations, 'auto-scan'),
+            created: existing ? existing.metadata.created : new Date().toISOString()
+          },
+          content: v.content
+        };
 
-      const memory: Memory = {
-        metadata: createMemoryMetadata(v.id, 'codemap', v.title, this.name, v.tags, relations, 'auto-scan'),
-        content: v.content
-      };
-
-      this.saveMemory(memory, `[stormdrain] sync: file vertex "${v.relativePath}"`);
-      createdCount++;
+        this.saveMemory(memory, `[stormdrain] sync: file vertex "${v.relativePath}"`);
+        createdCount++;
+      }
     }
 
     return { createdCount, decayedCount };
@@ -640,7 +672,7 @@ export class ContextManager {
       return { consolidatedId: '', mergedCount: 0 };
     }
 
-    const title = `Consolidated Knowledge Guide: ${targetFileOrId}`;
+    const title = targetFileOrId;
     const allTags = new Set<string>(['consolidated-guide', 'super-memory']);
     
     let combinedContent = `# Consolidated Guide for ${targetFileOrId}\n\n`;
@@ -663,17 +695,47 @@ export class ContextManager {
       targetFileOrId
     );
 
-    // Mark source micro-memories as consolidated & superseded, and link distilled_from
+    // Mark source micro-memories as consolidated & superseded, transfer their relations, and link part_of
     for (const mem of memories) {
       if (!mem.metadata.tags.includes('consolidated')) {
         mem.metadata.tags.push('consolidated');
       }
       mem.metadata.superseded_by = consolidatedId;
       mem.metadata.confidence = Math.max(0.4, Math.round(mem.metadata.confidence * 0.7 * 100) / 100);
-      // Disconnect original micro-memory from the target file node
-      mem.metadata.relations = mem.metadata.relations.filter(r => r.target !== targetId);
+
+      // 1. Transfer outgoing relations (except the target file itself) to the new guide
+      for (const rel of mem.metadata.relations) {
+        if (rel.target !== targetId) {
+          this.addRelation(consolidatedId, rel.target, rel.type);
+        }
+      }
+
+      // 2. Transfer incoming relations from other memories to point to the new guide
+      const incoming = this.db.prepare(`
+        SELECT source_id, type FROM relations WHERE target_id = ?
+      `).all(mem.metadata.id) as Array<{ source_id: string; type: string }>;
+
+      for (const inc of incoming) {
+        if (inc.source_id === consolidatedId || memories.some(m => m.metadata.id === inc.source_id)) {
+          continue;
+        }
+        const srcMem = this.getMemory(inc.source_id);
+        if (srcMem) {
+          // Remove relation pointing to micro-memory
+          srcMem.metadata.relations = srcMem.metadata.relations.filter(r => r.target !== mem.metadata.id);
+          // Add relation pointing to consolidation guide
+          const alreadyExists = srcMem.metadata.relations.some(r => r.target === consolidatedId && r.type === inc.type);
+          if (!alreadyExists) {
+            srcMem.metadata.relations.push({ target: consolidatedId, type: inc.type as any });
+          }
+          srcMem.metadata.updated = new Date().toISOString();
+          this.saveMemory(srcMem, `[stormdrain] transfer relation: update incoming link from ${inc.source_id} to point to consolidation guide ${consolidatedId}`);
+        }
+      }
+
+      // 3. Set the micro-memory's outgoing relations to strictly point to the guide via 'part_of'
+      mem.metadata.relations = [{ target: consolidatedId, type: 'part_of' }];
       this.saveMemory(mem, `[stormdrain] consolidate: marked ${mem.metadata.id} as consolidated (superseded by ${consolidatedId})`);
-      this.addRelation(consolidatedId, mem.metadata.id, 'distilled_from');
     }
 
     return { consolidatedId, mergedCount: memories.length };

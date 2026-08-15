@@ -14,12 +14,25 @@ type ScopeDepth = 0 | 1 | 2;
 
 const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
+import { 
+  getDegreeAwareLinkDistance, 
+  getEdgeStrength, 
+  getRepulsionDistanceMax, 
+  getCollisionRadius, 
+  getMemoryChargeStrength,
+  getAdaptiveAlphaDecay,
+  getAdaptiveVelocityDecay
+} from '../utils/physicsHelpers';
+
 // Physics Engine Types & Presets
 interface PhysicsSettings {
   chargeStrength: number;
   linkDistance: number;
   collisionRadius: number;
   moduleGravity: number;
+  memoryChargeStrength?: number;
+  interModuleTensionRatio?: number;
+  attenuateInterModule?: boolean;
   activePreset: 'auto' | 'strongly_clustered' | 'clustered' | 'standard' | 'massive' | 'custom';
 }
 
@@ -76,17 +89,28 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const nodeSelectionRef = useRef<d3.Selection<SVGGElement, any, SVGGElement, unknown> | null>(null);
   const linkSelectionRef = useRef<d3.Selection<SVGLineElement, any, SVGGElement, unknown> | null>(null);
   const rawGraphDataRef = useRef<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const apiGraphDataRef = useRef<{ nodes: any[]; links: any[] } | null>(null);
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Performance & Position Preservation refs
   const isInitializedRef = useRef<boolean>(false);
   const previousContextRef = useRef<string>(activeContext);
   const positionsCacheRef = useRef<Map<string, { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
+  const isDraggingRef = useRef<boolean>(false);
+  const pendingRefreshRef = useRef<boolean>(false);
+  const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const activeTier1SetRef = useRef<Set<string>>(new Set());
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
-  const lastLoadedVersionRef = useRef<string>('');
+  const runIdRef = useRef<number>(0);
+  const lastEffectiveVersionRef = useRef<number | string>(-1);
   const configSettingsRef = useRef<StormDrainSettings | null>(null);
+  const maxUpdatedTimeRef = useRef<number>(0);
+
+  // Newest changes highlight refs
+  const activeHighlightNodesRef = useRef<Set<string>>(new Set());
+  const activeHighlightLinksRef = useRef<Set<string>>(new Set());
+  const highlightTimeoutRef = useRef<any>(null);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -95,6 +119,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
   const [focusAnchorTitle, setFocusAnchorTitle] = useState<string | null>(null);
+  const [showConsolidated, setShowConsolidated] = useState<boolean>(() => {
+    return localStorage.getItem('stormdrain_graph_show_consolidated') === 'true';
+  });
   
   const [matchStats, setMatchStats] = useState<{
     matchCount: number;
@@ -279,36 +306,54 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return colorSettings.edges[type] || (type === 'imports' ? (colorSettings.edges.imports || '#38bdf8') : 'var(--border-color)');
   }, [colorSettings]);
 
-  // Synchronize D3 visual nodes and edges immediately when colorSettings updates
-  useEffect(() => {
-    if (nodeSelectionRef.current) {
-      nodeSelectionRef.current.select('.node-circle')
-        .attr('fill', (d: any) => getTypeColor(d.type));
-      nodeSelectionRef.current.select('.node-label')
-        .attr('fill', (d: any) => d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)');
-    }
-    if (linkSelectionRef.current) {
-      linkSelectionRef.current
-        .attr('stroke', (d: any) => getEdgeColor(d.type));
-    }
-  }, [colorSettings, getTypeColor, getEdgeColor]);
-
   // References for hovering and landmarks culling
   const hoveredNodeIdRef = useRef<string | null>(null);
   const landmarkSetRef = useRef<Set<string>>(new Set());
+
+  const getLinkKey = useCallback((l: any) => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    return `${s}->${t}`;
+  }, []);
+
+  const isNodeHighlighted = useCallback((d: any) => {
+    if (!configSettingsRef.current?.graph?.highlightNewest) return false;
+    return activeHighlightNodesRef.current.has(d.id);
+  }, []);
+
+  const isLinkHighlighted = useCallback((l: any) => {
+    if (!configSettingsRef.current?.graph?.highlightNewest) return false;
+    const key = getLinkKey(l);
+    return activeHighlightLinksRef.current.has(key);
+  }, [getLinkKey]);
 
   // Helper to extract file basenames and truncate long memory descriptions
   const getLabelText = useCallback((d: any) => {
     if (d.type === 'codemap') {
       const parts = d.title.split('/');
       return parts[parts.length - 1];
+    } else {
+      const title = d.title || '';
+      return title.length > 32 ? title.substring(0, 29) + '...' : title;
     }
-    const title = d.title || '';
-    if (title.length > 32) {
-      return title.substring(0, 29) + '...';
-    }
-    return title;
   }, []);
+
+  // Synchronize D3 visual nodes and edges immediately when colorSettings updates
+  useEffect(() => {
+    if (nodeSelectionRef.current) {
+      nodeSelectionRef.current.select('.node-circle')
+        .attr('fill', (d: any) => getTypeColor(d.type));
+      nodeSelectionRef.current.select('.node-label')
+        .attr('fill', (d: any) => {
+          if (isNodeHighlighted(d)) return colorSettings.highlight || '#fbbf24';
+          return d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)';
+        });
+    }
+    if (linkSelectionRef.current) {
+      linkSelectionRef.current
+        .attr('stroke', (d: any) => isLinkHighlighted(d) ? (colorSettings.highlight || '#fbbf24') : getEdgeColor(d.type));
+    }
+  }, [colorSettings, getTypeColor, getEdgeColor, isNodeHighlighted, isLinkHighlighted]);
 
   // Spatial grid partitioning algorithm to elect visible hub landmarks
   const computeSpatialLandmarks = useCallback((nodes: any[], degreeMap: Map<string, number>) => {
@@ -412,6 +457,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           return 'block';
         }
 
+        // Consolidated/superseded satellite memories: hide labels unless hovered
+        if (d.superseded_by) {
+          return 'none';
+        }
+
         // 2. Actively filtering (show only search matches)
         if (isFiltering) {
           const isMatch = activeTier1SetRef.current.has(d.id) || activeInScopeSetRef.current.has(d.id);
@@ -465,6 +515,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const query = debouncedQuery.trim().toLowerCase();
     const hasActiveFilter = Boolean(query || selectedType !== 'all');
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
+    const highlightColor = configSettingsRef.current?.colors?.highlight || '#fbbf24';
 
     // Compute Tier 1 (Match Set)
     const tier1Set = new Set<string>();
@@ -531,12 +583,23 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     activeTier1SetRef.current = tier1Set;
     activeInScopeSetRef.current = inScopeSet;
 
-    setMatchStats({
-      matchCount: tier1Set.size,
-      inScopeCount: inScopeSet.size,
-      totalCount: nodes.length,
-      isFiltering,
-      hasNoMatches,
+    setMatchStats(prev => {
+      if (
+        prev.matchCount === tier1Set.size &&
+        prev.inScopeCount === inScopeSet.size &&
+        prev.totalCount === nodes.length &&
+        prev.isFiltering === isFiltering &&
+        prev.hasNoMatches === hasNoMatches
+      ) {
+        return prev;
+      }
+      return {
+        matchCount: tier1Set.size,
+        inScopeCount: inScopeSet.size,
+        totalCount: nodes.length,
+        isFiltering,
+        hasNoMatches,
+      };
     });
 
     // Interrupt any ongoing style transitions
@@ -556,72 +619,130 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       activeInScopeSetRef.current.clear();
 
       tOrSel(nodeSelectionRef.current, 200)
-        .style('opacity', 1.0)
+        .style('opacity', (d: any) => d.superseded_by ? 0.35 : 1.0)
         .style('pointer-events', 'auto')
         .style('filter', 'none');
 
-      tOrSel(nodeSelectionRef.current.select('.node-circle'), 200)
-        .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
-        .attr('stroke', 'var(--bg-color)')
-        .attr('stroke-width', 2);
+      nodeSelectionRef.current.select('.node-circle')
+        .attr('r', (d: any) => d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6)))
+        .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'var(--bg-color)')
+        .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 2.5 : 2)
+        .style('filter', (d: any) => isNodeHighlighted(d) ? `drop-shadow(0 0 6px ${highlightColor})` : 'none');
 
-      tOrSel(nodeSelectionRef.current.select('.node-label'), 200)
-        .style('font-weight', (d: any) => d.type === 'codemap' ? '600' : '400');
+      nodeSelectionRef.current.select('.node-highlight-ring')
+        .attr('r', (d: any) => {
+          const base = d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6));
+          return base + 4.5;
+        })
+        .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'none')
+        .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 1.5 : 0)
+        .attr('stroke-dasharray', '3,3')
+        .attr('stroke-opacity', (d: any) => isNodeHighlighted(d) ? 0.8 : 0);
+
+      nodeSelectionRef.current.select('.node-label')
+        .text((d: any) => getLabelText(d))
+        .style('font-weight', (d: any) => isNodeHighlighted(d) ? '700' : (d.type === 'codemap' ? '600' : '400'))
+        .attr('fill', (d: any) => {
+          if (isNodeHighlighted(d)) return highlightColor;
+          return d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)';
+        });
 
       applyLabelVisibility();
 
-      tOrSel(linkSelectionRef.current, 200)
-        .attr('stroke-opacity', 0.6)
-        .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2);
+      const consolidatedIds = new Set(
+        nodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+      );
+
+      linkSelectionRef.current
+        .attr('stroke', (d: any) => isLinkHighlighted(d) ? highlightColor : getEdgeColor(d.type))
+        .attr('stroke-width', (d: any) => isLinkHighlighted(d) ? 3.5 : (d.type === 'imports' ? 1.5 : 2))
+        .attr('stroke-opacity', (d: any) => {
+          if (isLinkHighlighted(d)) return 0.9;
+          const s = typeof d.source === 'object' ? d.source.id : d.source;
+          const t = typeof d.target === 'object' ? d.target.id : d.target;
+          return (consolidatedIds.has(s) || consolidatedIds.has(t)) ? 0.15 : 0.6;
+        })
+        .attr('stroke-dasharray', (d: any) => {
+          const s = typeof d.source === 'object' ? d.source.id : d.source;
+          const t = typeof d.target === 'object' ? d.target.id : d.target;
+          if (consolidatedIds.has(s) || consolidatedIds.has(t)) return '2,2';
+          return d.type === 'imports' ? '4 2' : 'none';
+        });
 
       return;
     }
 
     tOrSel(nodeSelectionRef.current, 220)
       .style('opacity', (d: any) => {
-        if (tier1Set.has(d.id)) return 1.0;
-        if (tier2Set.has(d.id)) return 0.75;
-        if (tier3Set.has(d.id)) return 0.50;
-        return 0.25; // Tier 4: Ambient
+        let baseOpacity = 0.25;
+        if (tier1Set.has(d.id)) baseOpacity = 1.0;
+        else if (tier2Set.has(d.id)) baseOpacity = 0.75;
+        else if (tier3Set.has(d.id)) baseOpacity = 0.50;
+        return d.superseded_by ? baseOpacity * 0.35 : baseOpacity;
       })
       .style('pointer-events', (d: any) => {
         if (inScopeSet.has(d.id)) return 'auto';
-        return 'none'; // Disable pointer events on ambient nodes to prevent accidental hover resets
+        return 'none';
       })
       .style('filter', (d: any) => {
         if (tier1Set.has(d.id) || tier2Set.has(d.id) || tier3Set.has(d.id)) return 'none';
         return 'grayscale(0.6)';
       });
 
-    tOrSel(nodeSelectionRef.current.select('.node-circle'), 220)
+    nodeSelectionRef.current.select('.node-circle')
       .attr('r', (d: any) => {
-        const base = d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6);
-        if (tier1Set.has(d.id)) return base + 3;
-        return base;
+        const base = d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6));
+        return tier1Set.has(d.id) ? base + 3 : base;
       })
       .attr('stroke', (d: any) => {
+        if (isNodeHighlighted(d)) return highlightColor;
         if (tier1Set.has(d.id)) return '#38bdf8';
         if (tier2Set.has(d.id)) return 'var(--text-main)';
         return 'var(--bg-color)';
       })
       .attr('stroke-width', (d: any) => {
+        if (isNodeHighlighted(d)) return 2.5;
         if (tier1Set.has(d.id)) return 3;
         if (tier2Set.has(d.id)) return 2;
         return 1;
-      });
+      })
+      .style('filter', (d: any) => isNodeHighlighted(d) ? `drop-shadow(0 0 6px ${highlightColor})` : 'none');
 
-    tOrSel(nodeSelectionRef.current.select('.node-label'), 220)
+    nodeSelectionRef.current.select('.node-highlight-ring')
+      .attr('r', (d: any) => {
+        const base = d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6));
+        const extra = tier1Set.has(d.id) ? 3 : 0;
+        return base + extra + 4.5;
+      })
+      .attr('stroke', (d: any) => isNodeHighlighted(d) ? highlightColor : 'none')
+      .attr('stroke-width', (d: any) => isNodeHighlighted(d) ? 1.5 : 0)
+      .attr('stroke-dasharray', '3,3')
+      .attr('stroke-opacity', (d: any) => isNodeHighlighted(d) ? 0.8 : 0);
+
+    nodeSelectionRef.current.select('.node-label')
+      .text((d: any) => getLabelText(d))
       .style('font-weight', (d: any) => {
+        if (isNodeHighlighted(d)) return '700';
         if (tier1Set.has(d.id)) return '700';
         if (tier2Set.has(d.id)) return '600';
         return '400';
+      })
+      .attr('fill', (d: any) => {
+        if (isNodeHighlighted(d)) return highlightColor;
+        return d.type === 'codemap' ? (colorSettings.nodes.codemap || '#06b6d4') : 'var(--text-main)';
       });
 
     applyLabelVisibility();
 
+    const consolidatedIds = new Set(
+      nodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+    );
+
     // Link Styling Across Tiers
-    tOrSel(linkSelectionRef.current, 220)
+    linkSelectionRef.current
+      .attr('stroke', (d: any) => isLinkHighlighted(d) ? highlightColor : getEdgeColor(d.type))
       .attr('stroke-opacity', (l: any) => {
+        if (isLinkHighlighted(l)) return 0.9;
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
         const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
 
@@ -630,21 +751,33 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         const srcInScope = inScopeSet.has(srcId);
         const tgtInScope = inScopeSet.has(tgtId);
 
-        if (srcTier1 && tgtTier1) return 0.95;
-        if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
-        if (srcInScope && tgtInScope) return 0.50;
-        return 0.08; // Ambient edge
+        let baseOpacity = 0.08;
+        if (srcTier1 && tgtTier1) baseOpacity = 0.95;
+        else if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) baseOpacity = 0.75;
+        else if (srcInScope && tgtInScope) baseOpacity = 0.50;
+
+        if (consolidatedIds.has(srcId) || consolidatedIds.has(tgtId)) {
+          return baseOpacity * 0.25;
+        }
+        return baseOpacity;
       })
       .attr('stroke-width', (l: any) => {
+        if (isLinkHighlighted(l)) return 3.5;
         const srcId = typeof l.source === 'object' ? l.source.id : l.source;
         const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
 
         if (tier1Set.has(srcId) && tier1Set.has(tgtId)) return 2.8;
         if (inScopeSet.has(srcId) && inScopeSet.has(tgtId)) return 1.8;
         return 0.8;
+      })
+      .attr('stroke-dasharray', (d: any) => {
+        const s = typeof d.source === 'object' ? d.source.id : d.source;
+        const t = typeof d.target === 'object' ? d.target.id : d.target;
+        if (consolidatedIds.has(s) || consolidatedIds.has(t)) return '2,2';
+        return d.type === 'imports' ? '4 2' : 'none';
       });
 
-  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId]);
+  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
 
   const applyActiveFilterStylingRef = useRef(applyActiveFilterStyling);
   useEffect(() => {
@@ -660,144 +793,290 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!activeContext || !svgRef.current) return;
 
     let isMounted = true;
+    const currentRunId = ++runIdRef.current;
 
     const initGraph = async () => {
-      const version = await api.getGraphVersion(activeContext);
       const isContextSwitch = previousContextRef.current !== activeContext;
 
-      const cfg = await api.getConfig();
-      configSettingsRef.current = cfg;
+      // Defer graph DOM re-binding while active dragging interaction or physics animation is in progress
+      const isAnimating = isDraggingRef.current || Boolean(simulationRef.current && simulationRef.current.alpha() > 0.05);
+      if (isAnimating && !isContextSwitch) {
+        pendingRefreshRef.current = true;
+        return;
+      }
+
+      if (!configSettingsRef.current) {
+        const cfg = await api.getConfig();
+        if (!isMounted || runIdRef.current !== currentRunId) return;
+        configSettingsRef.current = cfg;
+      }
+      const cfg = configSettingsRef.current;
 
       const width = svgRef.current?.parentElement?.clientWidth || 900;
       const height = svgRef.current?.parentElement?.clientHeight || 700;
 
-      let rawData;
-      let needMapping = true;
+      let rawData = apiGraphDataRef.current;
 
-      if (!isContextSwitch && version && version === lastLoadedVersionRef.current && isInitializedRef.current && rawGraphDataRef.current?.nodes?.length > 0) {
-        rawData = rawGraphDataRef.current;
-        needMapping = false;
-      } else {
+      if (isContextSwitch || !rawData || lastEffectiveVersionRef.current !== effectiveVersion) {
         rawData = await api.getGraph(activeContext);
-        if (!isMounted || !rawData || !rawData.nodes) return;
-        lastLoadedVersionRef.current = version;
+        if (!isMounted || runIdRef.current !== currentRunId || !rawData || !rawData.nodes) return;
+        apiGraphDataRef.current = rawData;
+        lastEffectiveVersionRef.current = effectiveVersion;
       }
 
-      let nodes = rawData.nodes;
-      let links = rawData.links;
-      let layoutChanged = false;
+      if (!isMounted || runIdRef.current !== currentRunId) return;
 
-      if (needMapping) {
-        // Check if switching context
-        if (isContextSwitch) {
-          previousContextRef.current = activeContext;
-          lastLoadedVersionRef.current = '';
-          positionsCacheRef.current.clear();
-          currentZoomTransformRef.current = null;
-          isInitializedRef.current = false;
-          if (simulationRef.current) {
-            simulationRef.current.stop();
-            simulationRef.current = null;
-          }
-          d3.select(svgRef.current).selectAll('*').remove();
-          containerRef.current = null;
+      // Reset state if switching context
+      if (isContextSwitch) {
+        previousContextRef.current = activeContext;
+        lastEffectiveVersionRef.current = -1;
+        positionsCacheRef.current.clear();
+        currentZoomTransformRef.current = null;
+        isInitializedRef.current = false;
+        if (simulationRef.current) {
+          simulationRef.current.stop();
+          simulationRef.current = null;
         }
+        d3.select(svgRef.current).selectAll('*').remove();
+        containerRef.current = null;
+      }
 
-        // Filter valid links where both source & target exist in nodes
-        const nodeIds = new Set((rawData.nodes || []).map((n: any) => n.id));
-        const validLinks = (rawData.links || []).filter(
-          (l: any) => nodeIds.has(typeof l.source === 'object' ? l.source.id : l.source) &&
-                      nodeIds.has(typeof l.target === 'object' ? l.target.id : l.target)
-        );
+      let nodes = showConsolidated
+        ? [...rawData.nodes]
+        : rawData.nodes.filter((n: any) => !n.superseded_by);
 
-        const positionsCache = positionsCacheRef.current;
+      const nodeIds = new Set(nodes.map((n: any) => n.id));
+      const validLinks = rawData.links.filter((l: any) => {
+        const s = typeof l.source === 'object' ? l.source.id : l.source;
+        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        return nodeIds.has(s) && nodeIds.has(t);
+      });
 
-        // Map nodes with persistent positions or proximity-based placement for new nodes
-        nodes = (rawData.nodes || []).map((n: any) => {
-          const cached = positionsCache.get(n.id);
-          if (cached) {
-            return {
-              ...n,
-              x: cached.x,
-              y: cached.y,
-              vx: cached.vx ?? 0,
-              vy: cached.vy ?? 0,
-              fx: cached.fx ?? null,
-              fy: cached.fy ?? null,
-            };
-          }
+      const positionsCache = positionsCacheRef.current;
+      const liveNodes = simulationRef.current?.nodes() || rawGraphDataRef.current?.nodes || [];
+      const liveNodeMap = new Map(liveNodes.map((n: any) => [n.id, n]));
 
-          // New node: Proximity-based spawning near a connected neighbor
-          let spawnX = width / 2 + (Math.random() - 0.5) * 80;
-          let spawnY = height / 2 + (Math.random() - 0.5) * 80;
+      // Map nodes with persistent positions or proximity-based placement for new nodes
+      nodes = nodes.map((n: any) => {
+        const live = liveNodeMap.get(n.id);
+        const cached = positionsCache.get(n.id);
+        const source = (live && live.x !== undefined) ? live : cached;
 
-          const connectedLink = validLinks.find((l: any) => {
-            const s = typeof l.source === 'object' ? l.source.id : l.source;
-            const t = typeof l.target === 'object' ? l.target.id : l.target;
-            return (s === n.id && positionsCache.has(t)) || (t === n.id && positionsCache.has(s));
-          });
-
-          if (connectedLink) {
-            const s = typeof connectedLink.source === 'object' ? connectedLink.source.id : connectedLink.source;
-            const t = typeof connectedLink.target === 'object' ? connectedLink.target.id : connectedLink.target;
-            const neighborId = s === n.id ? t : s;
-            const neighborPos = positionsCache.get(neighborId);
-            if (neighborPos) {
-              spawnX = neighborPos.x + (Math.random() - 0.5) * 50;
-              spawnY = neighborPos.y + (Math.random() - 0.5) * 50;
-            }
-          }
-
+        if (source) {
           return {
             ...n,
-            x: spawnX,
-            y: spawnY,
+            x: source.x,
+            y: source.y,
             vx: 0,
             vy: 0,
+            fx: source.fx ?? null,
+            fy: source.fy ?? null,
           };
+        }
+
+        // New node: Proximity-based spawning near a connected neighbor
+        let spawnX = width / 2 + (Math.random() - 0.5) * 80;
+        let spawnY = height / 2 + (Math.random() - 0.5) * 80;
+
+        const connectedLink = validLinks.find((l: any) => {
+          const s = typeof l.source === 'object' ? l.source.id : l.source;
+          const t = typeof l.target === 'object' ? l.target.id : l.target;
+          return (s === n.id && positionsCache.has(t)) || (t === n.id && positionsCache.has(s));
         });
 
-        // Normalize links
-        links = validLinks.map((l: any) => ({
-          source: typeof l.source === 'object' ? l.source.id : l.source,
-          target: typeof l.target === 'object' ? l.target.id : l.target,
-          type: l.type,
-        }));
+        if (connectedLink) {
+          const s = typeof connectedLink.source === 'object' ? connectedLink.source.id : connectedLink.source;
+          const t = typeof connectedLink.target === 'object' ? connectedLink.target.id : connectedLink.target;
+          const neighborId = s === n.id ? t : s;
+          const neighborPos = positionsCache.get(neighborId);
+          if (neighborPos) {
+            spawnX = neighborPos.x + (Math.random() - 0.5) * 50;
+            spawnY = neighborPos.y + (Math.random() - 0.5) * 50;
+          }
+        }
 
-        // Check if layout properties changed
-        const currentNodes = rawGraphDataRef.current?.nodes || [];
-        const currentLinks = rawGraphDataRef.current?.links || [];
+        return {
+          ...n,
+          x: spawnX,
+          y: spawnY,
+          vx: 0,
+          vy: 0,
+        };
+      });
 
-        if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
-          layoutChanged = true;
-        } else {
-          const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
-          for (const n of nodes) {
-            const oldNode = oldNodeMap.get(n.id);
-            if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
+      // Always create fresh normalized link objects with string source/target
+      const links = validLinks.map((l: any) => ({
+        source: typeof l.source === 'object' ? l.source.id : l.source,
+        target: typeof l.target === 'object' ? l.target.id : l.target,
+        type: l.type,
+      }));
+
+      // Check if layout properties changed
+      const currentNodes = rawGraphDataRef.current?.nodes || [];
+      const currentLinks = rawGraphDataRef.current?.links || [];
+      let layoutChanged = false;
+
+      if (nodes.length !== currentNodes.length || links.length !== currentLinks.length) {
+        layoutChanged = true;
+      } else {
+        const oldNodeMap = new Map(currentNodes.map((n: any) => [n.id, n]));
+        for (const n of nodes) {
+          const oldNode = oldNodeMap.get(n.id);
+          if (!oldNode || oldNode.title !== n.title || oldNode.type !== n.type || oldNode.confidence !== n.confidence) {
+            layoutChanged = true;
+            break;
+          }
+        }
+        if (!layoutChanged) {
+          const oldLinkSet = new Set(currentLinks.map((l: any) => {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            return `${s}->${t}->${l.type}`;
+          }));
+          for (const l of links) {
+            const s = typeof l.source === 'object' ? l.source.id : l.source;
+            const t = typeof l.target === 'object' ? l.target.id : l.target;
+            if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
               layoutChanged = true;
               break;
             }
           }
-          if (!layoutChanged) {
-            const oldLinkSet = new Set(currentLinks.map((l: any) => {
-              const s = typeof l.source === 'object' ? l.source.id : l.source;
-              const t = typeof l.target === 'object' ? l.target.id : l.target;
-              return `${s}->${t}->${l.type}`;
-            }));
-            for (const l of links) {
-              const s = typeof l.source === 'object' ? l.source.id : l.source;
-              const t = typeof l.target === 'object' ? l.target.id : l.target;
-              if (!oldLinkSet.has(`${s}->${t}->${l.type}`)) {
-                layoutChanged = true;
-                break;
+        }
+      }
+
+      // Live comparison heuristic for newly added / modified nodes
+      const highlightNewestEnabled = cfg?.graph?.highlightNewest;
+      const timeoutMs = (cfg?.graph?.highlightTimeout || 2) * 60 * 1000;
+
+      const parseTimestamp = (ts: any): number => {
+        if (!ts) return 0;
+        if (typeof ts === 'number') return ts;
+        let str = String(ts).trim();
+        if (!str) return 0;
+        if (!str.includes('T') && str.includes(' ')) {
+          str = str.replace(' ', 'T') + 'Z';
+        } else if (!str.endsWith('Z') && !str.includes('+') && !str.includes('-')) {
+          str = str + 'Z';
+        }
+        const time = new Date(str).getTime();
+        return isNaN(time) ? 0 : time;
+      };
+
+      if (highlightNewestEnabled) {
+        const updateTimes = nodes.map((n: any) => parseTimestamp(n.updated)).filter((t: number) => t > 0);
+        maxUpdatedTimeRef.current = updateTimes.length > 0 ? Math.max(...updateTimes) : 0;
+
+        if (isContextSwitch || currentNodes.length === 0) {
+          activeHighlightNodesRef.current.clear();
+          activeHighlightLinksRef.current.clear();
+          if (highlightTimeoutRef.current) {
+            clearTimeout(highlightTimeoutRef.current);
+            highlightTimeoutRef.current = null;
+          }
+
+          if (maxUpdatedTimeRef.current > 0) {
+            const timeSinceMaxUpdate = Date.now() - maxUpdatedTimeRef.current;
+            if (timeSinceMaxUpdate < timeoutMs) {
+              const newestTime = maxUpdatedTimeRef.current;
+              // Highlight nodes created/updated within 10s margin of newest timestamp
+              const margin = 10 * 1000;
+              nodes.forEach((n: any) => {
+                const t = parseTimestamp(n.updated);
+                if (t > 0 && (newestTime - t <= margin)) {
+                  // Only highlight codemap file vertices if their update is also fresh to Date.now()
+                  if (n.type === 'codemap') {
+                    if (Date.now() - t <= timeoutMs) {
+                      activeHighlightNodesRef.current.add(n.id);
+                    }
+                  } else {
+                    activeHighlightNodesRef.current.add(n.id);
+                  }
+                }
+              });
+              const remainingTime = timeoutMs - timeSinceMaxUpdate;
+              if (remainingTime > 0) {
+                highlightTimeoutRef.current = setTimeout(() => {
+                  activeHighlightNodesRef.current.clear();
+                  activeHighlightLinksRef.current.clear();
+                  applyActiveFilterStyling();
+                }, remainingTime);
               }
             }
           }
-        }
+        } else {
+          const prevNodesMap = new Map<string, any>(currentNodes.map((n: any) => [n.id, n]));
+          const prevLinksMap = new Map<string, any>(currentLinks.map((l: any) => [getLinkKey(l), l]));
 
-        rawGraphDataRef.current = { nodes, links };
+          const newHighlightNodes = new Set<string>();
+          const newHighlightLinks = new Set<string>();
+
+          nodes.forEach((n: any) => {
+            const prev = prevNodesMap.get(n.id);
+            if (!prev) {
+              // Brand new node added in live session
+              if (n.updated) {
+                const t = parseTimestamp(n.updated);
+                if (t > 0 && (Date.now() - t <= timeoutMs)) {
+                  newHighlightNodes.add(n.id);
+                }
+              } else {
+                newHighlightNodes.add(n.id);
+              }
+            } else if (n.updated && prev.updated) {
+              const nTime = parseTimestamp(n.updated);
+              const pTime = parseTimestamp(prev.updated);
+              if (nTime > 0 && pTime > 0 && nTime > pTime) {
+                newHighlightNodes.add(n.id);
+              }
+            }
+          });
+
+          links.forEach((l: any) => {
+            const key = getLinkKey(l);
+            const prev = prevLinksMap.get(key);
+            if (!prev) {
+              const s = typeof l.source === 'object' ? l.source.id : l.source;
+              const t = typeof l.target === 'object' ? l.target.id : l.target;
+              newHighlightNodes.add(s);
+              newHighlightNodes.add(t);
+              newHighlightLinks.add(key);
+            }
+          });
+
+          const currentLinksMap = new Map<string, any>(links.map((l: any) => [getLinkKey(l), l]));
+          currentLinks.forEach((l: any) => {
+            const key = getLinkKey(l);
+            if (!currentLinksMap.has(key)) {
+              const s = typeof l.source === 'object' ? l.source.id : l.source;
+              const t = typeof l.target === 'object' ? l.target.id : l.target;
+              if (prevNodesMap.has(s)) newHighlightNodes.add(s);
+              if (prevNodesMap.has(t)) newHighlightNodes.add(t);
+            }
+          });
+
+          if (newHighlightNodes.size > 0 || newHighlightLinks.size > 0) {
+            activeHighlightNodesRef.current = newHighlightNodes;
+            activeHighlightLinksRef.current = newHighlightLinks;
+            if (highlightTimeoutRef.current) {
+              clearTimeout(highlightTimeoutRef.current);
+            }
+            highlightTimeoutRef.current = setTimeout(() => {
+              activeHighlightNodesRef.current.clear();
+              activeHighlightLinksRef.current.clear();
+              applyActiveFilterStyling();
+            }, timeoutMs);
+          }
+        }
+      } else {
+        activeHighlightNodesRef.current.clear();
+        activeHighlightLinksRef.current.clear();
+        if (highlightTimeoutRef.current) {
+          clearTimeout(highlightTimeoutRef.current);
+          highlightTimeoutRef.current = null;
+        }
       }
+
+      rawGraphDataRef.current = { nodes, links };
 
       // Compute type distributions
       const counts: Record<string, number> = { all: nodes.length };
@@ -812,8 +1091,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         adj.set(n.id, new Set());
       }
       for (const l of links) {
-        const src = l.source;
-        const tgt = l.target;
+        const src = typeof l.source === 'object' ? l.source.id : l.source;
+        const tgt = typeof l.target === 'object' ? l.target.id : l.target;
         if (!adj.has(src)) adj.set(src, new Set());
         if (!adj.has(tgt)) adj.set(tgt, new Set());
         adj.get(src)!.add(tgt);
@@ -834,17 +1113,27 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (n.type === 'codemap' || n.id.startsWith('file_')) {
           n.module = getModuleName(n);
         } else {
-          // Attached memories inherit target file module
-          const connectedLink = links.find((l: any) =>
-            (l.source === n.id && fileToModuleMap.has(l.target)) ||
-            (l.target === n.id && fileToModuleMap.has(l.source))
-          );
-          if (connectedLink) {
-            const fileId = fileToModuleMap.has(connectedLink.source) ? connectedLink.source : connectedLink.target;
-            n.module = fileToModuleMap.get(fileId) || '_memories';
-          } else {
-            n.module = n.context === '_global' ? '_global' : '_memories';
+          // Transitive Module Inheritance via BFS
+          let targetModule = '';
+          const visited = new Set<string>([n.id]);
+          const queue = [n.id];
+          while (queue.length > 0) {
+            const currId = queue.shift()!;
+            if (fileToModuleMap.has(currId)) {
+              targetModule = fileToModuleMap.get(currId)!;
+              break;
+            }
+            const neighbors = adj.get(currId);
+            if (neighbors) {
+              for (const neighbor of neighbors) {
+                if (!visited.has(neighbor)) {
+                  visited.add(neighbor);
+                  queue.push(neighbor);
+                }
+              }
+            }
           }
+          n.module = targetModule || (n.context === '_global' ? '_global' : '_memories');
         }
         moduleSet.add(n.module);
       }
@@ -983,18 +1272,43 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       if (!simulation) {
         simulation = d3.forceSimulation()
-          .force('link', d3.forceLink().id((d: any) => d.id).distance(effectivePhysics.linkDistance))
+          .force('link', d3.forceLink().id((d: any) => d.id)
+            .distance((link: any) => {
+              const srcType = typeof link.source === 'object' ? link.source.type : '';
+              const tgtType = typeof link.target === 'object' ? link.target.type : '';
+              const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+              if (isCodeToCode) return effectivePhysics.linkDistance;
+              const targetNode = typeof link.target === 'object' ? link.target : link.source;
+              const attachedCount = (adjacencyRef.current?.get(targetNode.id)?.size || 1) - 1;
+              return getDegreeAwareLinkDistance(attachedCount, effectivePhysics.linkDistance);
+            })
+            .strength((link: any) => {
+              const srcType = typeof link.source === 'object' ? link.source.type : '';
+              const tgtType = typeof link.target === 'object' ? link.target.type : '';
+              const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+              const srcModule = typeof link.source === 'object' ? link.source.module : '';
+              const tgtModule = typeof link.target === 'object' ? link.target.module : '';
+              const isInterModule = isCodeToCode && srcModule !== tgtModule;
+              const ratio = physics.interModuleTensionRatio ?? configSettingsRef.current?.graph?.interModuleTensionRatio ?? 0.25;
+              const attenuate = physics.attenuateInterModule ?? configSettingsRef.current?.graph?.attenuateInterModule ?? true;
+              return getEdgeStrength(isCodeToCode, isInterModule, 0.15, ratio, attenuate);
+            })
+          )
           .force('charge', d3.forceManyBody()
-            .strength(effectivePhysics.chargeStrength)
+            .strength((d: any) => {
+              if (d.superseded_by) return -5;
+              const customMemoryCharge = physics.memoryChargeStrength ?? configSettingsRef.current?.graph?.memoryChargeStrength ?? -140;
+              return d.type === 'codemap' ? effectivePhysics.chargeStrength : getMemoryChargeStrength(customMemoryCharge);
+            })
             .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
-            .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
+            .distanceMax(getRepulsionDistanceMax(effectivePhysics.linkDistance, configSettingsRef.current?.graph?.repulsionDistanceMax))
           )
           .force('center', d3.forceCenter(width / 2, height / 2))
-          .force('collide', d3.forceCollide(effectivePhysics.collisionRadius))
+          .force('collide', d3.forceCollide((d: any) => getCollisionRadius(d.type, Boolean(d.superseded_by), effectivePhysics.collisionRadius)))
           .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effectivePhysics.moduleGravity))
           .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effectivePhysics.moduleGravity))
-          .alphaDecay(0.045)
-          .velocityDecay(0.45);
+          .alphaDecay(getAdaptiveAlphaDecay(nodesToBind.length))
+          .velocityDecay(getAdaptiveVelocityDecay(nodesToBind.length));
 
         simulationRef.current = simulation;
       }
@@ -1015,10 +1329,17 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           simulation.tick();
         }
         isInitializedRef.current = true;
-      } else if (layoutChanged || activeIdsChanged) {
+        if (layoutModeRef.current === 'orbit') {
+          simulation.stop();
+        }
+      } else if (layoutModeRef.current === 'force' && (layoutChanged || activeIdsChanged)) {
         // Warm restart with low alpha so existing nodes gently nudge without scattering
         simulation.alpha(0.2).restart();
       }
+
+      const consolidatedNodeIds = new Set(
+        nodesToBind.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+      );
 
       // Data Join for Links (keyed by source->target)
       const link = linkGroup
@@ -1031,11 +1352,33 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         .join(
           enter => enter.append('line')
             .attr('stroke', (d: any) => getEdgeColor(d.type))
-            .attr('stroke-dasharray', (d: any) => d.type === 'imports' ? '4 2' : 'none')
+            .attr('stroke-dasharray', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return '2,2';
+              return d.type === 'imports' ? '4 2' : 'none';
+            })
             .attr('stroke-width', (d: any) => d.type === 'imports' ? 1.5 : 2)
-            .attr('stroke-opacity', 0.6),
+            .attr('stroke-opacity', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return 0.15;
+              return 0.6;
+            }),
           update => update
-            .attr('stroke', (d: any) => getEdgeColor(d.type)),
+            .attr('stroke', (d: any) => getEdgeColor(d.type))
+            .attr('stroke-dasharray', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return '2,2';
+              return d.type === 'imports' ? '4 2' : 'none';
+            })
+            .attr('stroke-opacity', (d: any) => {
+              const s = typeof d.source === 'object' ? d.source.id : d.source;
+              const t = typeof d.target === 'object' ? d.target.id : d.target;
+              if (consolidatedNodeIds.has(s) || consolidatedNodeIds.has(t)) return 0.15;
+              return 0.6;
+            }),
           exit => exit.remove()
         );
 
@@ -1050,6 +1393,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const g = enter.append('g')
               .attr('class', 'node-item')
               .style('cursor', 'pointer')
+              .style('opacity', (d: any) => d.superseded_by ? 0.35 : 1)
               .call(d3.drag()
                 .filter((event: any) => {
                   if (layoutModeRef.current === 'orbit') return false;
@@ -1061,10 +1405,18 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
             g.append('circle')
               .attr('class', 'node-circle')
-              .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
+              .attr('r', (d: any) => d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6)))
               .attr('fill', (d: any) => getTypeColor(d.type))
               .attr('stroke', 'var(--bg-color)')
               .attr('stroke-width', 2);
+
+            g.append('circle')
+              .attr('class', 'node-highlight-ring')
+              .attr('fill', 'none')
+              .attr('stroke', 'none')
+              .attr('stroke-width', 0)
+              .attr('stroke-dasharray', '3,3')
+              .attr('stroke-opacity', 0);
 
             g.append('text')
               .attr('class', 'node-label')
@@ -1095,39 +1447,48 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
             g.on('mouseenter', (_event: any, d: any) => {
               hoveredNodeIdRef.current = d.id;
+              const neighbors = adjacencyRef.current.get(d.id) || new Set<string>();
               
               if (linkSelectionRef.current) {
+                const isFiltering = activeTier1SetRef.current.size > 0;
                 linkSelectionRef.current
-                  .transition()
-                  .duration(120)
                   .attr('stroke-opacity', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    
                     if (srcId === d.id || tgtId === d.id) return 1.0;
 
-                    // Preserve active filter styling for other links
-                    const srcTier1 = activeTier1SetRef.current.has(srcId);
-                    const tgtTier1 = activeTier1SetRef.current.has(tgtId);
-                    const srcInScope = activeInScopeSetRef.current.has(srcId);
-                    const tgtInScope = activeInScopeSetRef.current.has(tgtId);
-
-                    if (srcTier1 && tgtTier1) return 0.95;
-                    if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
-                    if (srcInScope && tgtInScope) return 0.50;
-                    return 0.08;
+                    if (isFiltering) {
+                      const srcTier1 = activeTier1SetRef.current.has(srcId);
+                      const tgtTier1 = activeTier1SetRef.current.has(tgtId);
+                      const srcInScope = activeInScopeSetRef.current.has(srcId);
+                      const tgtInScope = activeInScopeSetRef.current.has(tgtId);
+                      if (srcTier1 && tgtTier1) return 0.95;
+                      if ((srcTier1 && tgtInScope) || (tgtTier1 && srcInScope)) return 0.75;
+                      if (srcInScope && tgtInScope) return 0.50;
+                      return 0.08;
+                    }
+                    return 0.6;
                   })
                   .attr('stroke-width', (l: any) => {
                     const srcId = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgtId = typeof l.target === 'object' ? l.target.id : l.target;
-                    
                     if (srcId === d.id || tgtId === d.id) return 2.5;
+
+                    if (isFiltering) {
+                      if (activeTier1SetRef.current.has(srcId) && activeTier1SetRef.current.has(tgtId)) return 2.8;
+                      if (activeInScopeSetRef.current.has(srcId) && activeInScopeSetRef.current.has(tgtId)) return 1.8;
+                      return 0.8;
+                    }
                     return l.type === 'imports' ? 1.5 : 2;
                   });
               }
 
               if (nodeSelectionRef.current) {
-                applyLabelVisibility();
+                nodeSelectionRef.current
+                  .filter((n: any) => n.id === d.id || neighbors.has(n.id))
+                  .select('.node-label')
+                  .style('display', 'block')
+                  .style('opacity', 1.0);
               }
             });
 
@@ -1139,9 +1500,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             return g;
           },
           update => {
+            update.style('opacity', (d: any) => d.superseded_by ? 0.35 : 1);
             update.select('.node-circle')
-              .attr('r', (d: any) => d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6))
+              .attr('r', (d: any) => d.superseded_by ? 4 : (d.type === 'codemap' ? 10 : 8 + ((d.confidence || 0.8) * 6)))
               .attr('fill', (d: any) => getTypeColor(d.type));
+
+            update.select('.node-highlight-ring')
+              .attr('fill', 'none')
+              .attr('stroke', 'none');
 
             update.select('.node-label')
               .text((d: any) => getLabelText(d))
@@ -1162,6 +1528,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .attr('y2', (d: any) => d.target.y);
 
         node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+
+        if (simulation && simulation.alpha() < 0.015) {
+          simulation.stop();
+        }
       });
 
       simulation.on('end', () => {
@@ -1180,6 +1550,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }
         recomputeLandmarks();
         applyActiveFilterStyling();
+
+        if (pendingRefreshRef.current && !isDraggingRef.current) {
+          pendingRefreshRef.current = false;
+          setRefreshTrigger(prev => prev + 1);
+        }
       });
 
       // Synchronously position elements once immediately after pre-warming
@@ -1196,6 +1571,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       function dragstarted(event: any, d: any) {
         if (layoutModeRef.current === 'orbit') return;
+        isDraggingRef.current = true;
         if (!event.active) simulation!.alphaTarget(0.2).restart();
         d.fx = d.x;
         d.fy = d.y;
@@ -1205,6 +1581,18 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (layoutModeRef.current === 'orbit') return;
         d.fx = event.x;
         d.fy = event.y;
+        d.x = event.x;
+        d.y = event.y;
+        if (d.x !== undefined && d.y !== undefined) {
+          positionsCacheRef.current.set(d.id, {
+            x: event.x,
+            y: event.y,
+            vx: d.vx,
+            vy: d.vy,
+            fx: d.fx,
+            fy: d.fy,
+          });
+        }
       }
       
       function dragended(event: any, d: any) {
@@ -1212,6 +1600,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (!event.active) simulation!.alphaTarget(0);
         d.fx = null;
         d.fy = null;
+        isDraggingRef.current = false;
         if (d.x !== undefined && d.y !== undefined) {
           positionsCacheRef.current.set(d.id, {
             x: d.x,
@@ -1221,6 +1610,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             fx: d.fx,
             fy: d.fy,
           });
+        }
+
+        if (pendingRefreshRef.current) {
+          pendingRefreshRef.current = false;
+          setRefreshTrigger(prev => prev + 1);
         }
       }
 
@@ -1233,7 +1627,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return () => {
       isMounted = false;
     };
-  }, [activeContext, effectiveVersion, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth]);
+  }, [activeContext, effectiveVersion, refreshTrigger, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth, showConsolidated]);
 
   // Live Physics Updates (when sliders move or preset changes)
   useEffect(() => {
@@ -1249,20 +1643,49 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     simulation
       .force('charge', d3.forceManyBody()
-        .strength(effective.chargeStrength)
+        .strength((d: any) => {
+          if (d.superseded_by) return -5;
+          const customMemoryCharge = physics.memoryChargeStrength ?? configSettingsRef.current?.graph?.memoryChargeStrength ?? -140;
+          return d.type === 'codemap' ? effective.chargeStrength : getMemoryChargeStrength(customMemoryCharge);
+        })
         .theta(configSettingsRef.current?.graph?.repulsionTheta ?? 0.95)
-        .distanceMax(configSettingsRef.current?.graph?.repulsionDistanceMax ?? 200)
+        .distanceMax(getRepulsionDistanceMax(effective.linkDistance, configSettingsRef.current?.graph?.repulsionDistanceMax))
       )
-      .force('collide', d3.forceCollide(effective.collisionRadius))
+      .force('collide', d3.forceCollide((d: any) => getCollisionRadius(d.type, Boolean(d.superseded_by), effective.collisionRadius)))
       .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effective.moduleGravity))
       .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effective.moduleGravity));
 
     const linkForce = simulation.force('link') as d3.ForceLink<any, any>;
     if (linkForce) {
-      linkForce.distance(effective.linkDistance);
+      linkForce
+        .distance((link: any) => {
+          const srcType = typeof link.source === 'object' ? link.source.type : '';
+          const tgtType = typeof link.target === 'object' ? link.target.type : '';
+          const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+          if (isCodeToCode) return effective.linkDistance;
+          const targetNode = typeof link.target === 'object' ? link.target : link.source;
+          const attachedCount = (adjacencyRef.current?.get(targetNode.id)?.size || 1) - 1;
+          return getDegreeAwareLinkDistance(attachedCount, effective.linkDistance);
+        })
+        .strength((link: any) => {
+          const srcType = typeof link.source === 'object' ? link.source.type : '';
+          const tgtType = typeof link.target === 'object' ? link.target.type : '';
+          const isCodeToCode = srcType === 'codemap' && tgtType === 'codemap';
+          const srcModule = typeof link.source === 'object' ? link.source.module : '';
+          const tgtModule = typeof link.target === 'object' ? link.target.module : '';
+          const isInterModule = isCodeToCode && srcModule !== tgtModule;
+          const ratio = physics.interModuleTensionRatio ?? configSettingsRef.current?.graph?.interModuleTensionRatio ?? 0.25;
+          const attenuate = physics.attenuateInterModule ?? configSettingsRef.current?.graph?.attenuateInterModule ?? true;
+          return getEdgeStrength(isCodeToCode, isInterModule, 0.15, ratio, attenuate);
+        });
     }
 
-    simulation.alpha(0.25).restart();
+    const nodeCount = rawGraphDataRef.current?.nodes?.length || 0;
+    simulation
+      .alphaDecay(getAdaptiveAlphaDecay(nodeCount))
+      .velocityDecay(getAdaptiveVelocityDecay(nodeCount))
+      .alpha(0.25)
+      .restart();
   }, [physics, layoutMode]);
 
   // Ego Radial Orbit Calculation & Transition
@@ -1355,6 +1778,38 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         n.fy = n.y;
       });
 
+      // Synchronize positionsCacheRef with radial orbit coordinates
+      for (const n of nodes) {
+        if (n.x !== undefined && n.y !== undefined) {
+          positionsCacheRef.current.set(n.id, {
+            x: n.x,
+            y: n.y,
+            vx: 0,
+            vy: 0,
+            fx: n.fx,
+            fy: n.fy,
+          });
+        }
+      }
+
+      // Smoothly reset camera zoom transform if shifted, preserving frame rate on large graphs
+      const currentTransform = currentZoomTransformRef.current;
+      const isAlreadyIdentity = currentTransform && currentTransform.k === 1 && currentTransform.x === 0 && currentTransform.y === 0;
+
+      if (!isAlreadyIdentity && svgRef.current && zoomBehaviorRef.current) {
+        const perfThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+        if (nodes.length < perfThreshold) {
+          d3.select(svgRef.current)
+            .transition('zoom')
+            .duration(450)
+            .ease(d3.easeCubicOut)
+            .call(zoomBehaviorRef.current.transform as any, d3.zoomIdentity);
+        } else {
+          zoomBehaviorRef.current.transform(d3.select(svgRef.current) as any, d3.zoomIdentity);
+        }
+        currentZoomTransformRef.current = d3.zoomIdentity;
+      }
+
       // Render concentric guide circles
       if (!guideGroup.empty()) {
         const rings = [
@@ -1395,19 +1850,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodesGroup.style('pointer-events', 'none');
       setTimeout(() => {
         nodesGroup.style('pointer-events', '');
-      }, 700);
+      }, 350);
 
-      const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
+      const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 1200;
       const useTransition = nodes.length < performanceThreshold;
 
       // Animate nodes and links into orbit positions
       const tNode: any = useTransition
-        ? (nodeSelectionRef.current as any).transition('layout').duration(650).ease(d3.easeCubicOut)
+        ? (nodeSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
         : nodeSelectionRef.current;
       tNode.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
       const tLink: any = useTransition
-        ? (linkSelectionRef.current as any).transition('layout').duration(650).ease(d3.easeCubicOut)
+        ? (linkSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
         : linkSelectionRef.current;
       tLink
         .attr('x1', (d: any) => d.source.x ?? (typeof d.source === 'object' ? d.source.x : centerX))
@@ -1576,35 +2031,53 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             })}
           </div>
 
-          {/* Scope Depth Segmented Switcher */}
+          {/* Combined Scope Depth & Consolidated Nodes Pill Row */}
           <div className="graph-scope-row">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
-              <span>Neighborhood Scope:</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
+                <span>Scope:</span>
+              </div>
+              <div className="graph-scope-segmented">
+                <button
+                  className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
+                  onClick={() => setScopeDepth(0)}
+                  title="Highlight only exact matches (0-hop)"
+                >
+                  Exact (0)
+                </button>
+                <button
+                  className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
+                  onClick={() => setScopeDepth(1)}
+                  title="Highlight matches + immediate neighbors (1-hop)"
+                >
+                  + Direct (1-hop)
+                </button>
+                <button
+                  className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
+                  onClick={() => setScopeDepth(2)}
+                  title="Highlight matches + extended topological paths (2-hop)"
+                >
+                  + Extended (2-hop)
+                </button>
+              </div>
             </div>
-            <div className="graph-scope-segmented">
-              <button
-                className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
-                onClick={() => setScopeDepth(0)}
-                title="Highlight only exact matches (0-hop)"
-              >
-                Exact (0)
-              </button>
-              <button
-                className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
-                onClick={() => setScopeDepth(1)}
-                title="Highlight matches + immediate neighbors (1-hop)"
-              >
-                + Direct (1-hop)
-              </button>
-              <button
-                className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
-                onClick={() => setScopeDepth(2)}
-                title="Highlight matches + extended topological paths (2-hop)"
-              >
-                + Extended (2-hop)
-              </button>
-            </div>
+
+            <button
+              className={`graph-toggle-pill ${showConsolidated ? 'active' : ''}`}
+              onClick={() => {
+                const nextVal = !showConsolidated;
+                setShowConsolidated(nextVal);
+                localStorage.setItem('stormdrain_graph_show_consolidated', String(nextVal));
+                if (activeTier1SetRef.current.size > 0 || debouncedQuery) {
+                  setTimeout(() => applyActiveFilterStylingRef.current(), 0);
+                }
+              }}
+              title={showConsolidated ? "Click to hide consolidated memory satellites" : "Click to show consolidated memory satellites"}
+            >
+              <Orbit size={13} style={{ color: showConsolidated ? 'var(--accent-hover)' : 'var(--text-muted)' }} />
+              <span>Consolidated Nodes</span>
+            </button>
           </div>
         </div>
       )}
@@ -1694,6 +2167,38 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                   step="0.02"
                   value={physics.moduleGravity}
                   onChange={(e) => updatePhysics({ moduleGravity: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Memory Repulsion (Separate from File Charge) */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Memory Repulsion</span>
+                  <span className="graph-slider-val">{physics.memoryChargeStrength ?? -140}</span>
+                </div>
+                <input
+                  type="range"
+                  min="-400"
+                  max="-10"
+                  step="10"
+                  value={physics.memoryChargeStrength ?? -140}
+                  onChange={(e) => updatePhysics({ memoryChargeStrength: Number(e.target.value), activePreset: 'custom' })}
+                />
+              </div>
+
+              {/* Inter-Module Tension Ratio */}
+              <div className="graph-slider-item">
+                <div className="graph-slider-label-row">
+                  <span>Inter-Module Tension</span>
+                  <span className="graph-slider-val">{((physics.interModuleTensionRatio ?? 0.25) * 100).toFixed(0)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.05"
+                  max="1.00"
+                  step="0.05"
+                  value={physics.interModuleTensionRatio ?? 0.25}
+                  onChange={(e) => updatePhysics({ interModuleTensionRatio: Number(e.target.value), activePreset: 'custom' })}
                 />
               </div>
             </div>

@@ -109,7 +109,7 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
     const superMem = ctx.getMemory(result.consolidatedId);
     expect(superMem).not.toBeNull();
     expect(superMem?.metadata.type).toBe('guide');
-    expect(superMem?.metadata.title).toContain('Consolidated Knowledge Guide');
+    expect(superMem?.metadata.title).toBe('data_processor.ts');
     expect(superMem?.content).toContain('Memory Leak Warning in Processor');
     expect(superMem?.content).toContain('Stream Chunking Optimization');
     expect(superMem?.metadata.tags).toContain('consolidated-guide');
@@ -125,10 +125,70 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
     expect(updatedMem1?.metadata.relations.some(r => r.target === targetId)).toBe(false);
     expect(updatedMem2?.metadata.relations.some(r => r.target === targetId)).toBe(false);
 
+    // Verify they strictly link to the guide via a single part_of relation
+    expect(updatedMem1?.metadata.relations).toEqual([{ target: result.consolidatedId, type: 'part_of' }]);
+    expect(updatedMem2?.metadata.relations).toEqual([{ target: result.consolidatedId, type: 'part_of' }]);
+
     const rels1 = ctx.getRelations(mem1);
     const rels2 = ctx.getRelations(mem2);
     expect(rels1.outgoing.some(r => r.target === targetId)).toBe(false);
     expect(rels2.outgoing.some(r => r.target === targetId)).toBe(false);
+    expect(rels1.outgoing).toEqual([{ target: result.consolidatedId, type: 'part_of' }]);
+    expect(rels2.outgoing).toEqual([{ target: result.consolidatedId, type: 'part_of' }]);
+  });
+
+  it('should transfer incoming and outgoing relations to the guide during consolidation', async () => {
+    const srcFile = path.join(tempDir, 'network_helper.ts');
+    fs.writeFileSync(srcFile, '// Network Helper\n');
+    ctx.syncFileGraph(tempDir);
+
+    // 1. Add other memories to link to/from
+    const otherMem1 = ctx.addMemory('concept', 'IP Addressing', 'Content', [], 'manual');
+    const otherMem2 = ctx.addMemory('pattern', 'Retry Mechanism', 'Content', [], 'manual');
+
+    // 2. Add micro-memories glommed onto network_helper.ts with relations
+    const mem1 = ctx.addMemory(
+      'warning',
+      'Timeout Warning',
+      'Timeout of 5s might be too low.',
+      ['timeout'],
+      'manual',
+      undefined,
+      'network_helper.ts'
+    );
+    // outgoing: mem1 -> otherMem1 (supports)
+    ctx.addRelation(mem1, otherMem1, 'supports');
+
+    const mem2 = ctx.addMemory(
+      'lesson',
+      'Socket Buffering',
+      'Use direct buffers.',
+      ['buffer'],
+      'manual',
+      undefined,
+      'network_helper.ts'
+    );
+    // incoming: otherMem2 -> mem2 (depends_on)
+    ctx.addRelation(otherMem2, mem2, 'depends_on');
+
+    // 3. Consolidate
+    const result = ctx.consolidateNeighborhood('network_helper.ts');
+    expect(result.mergedCount).toBe(2);
+
+    // 4. Verify outgoing relation transferred to guide
+    const guideMem = ctx.getMemory(result.consolidatedId);
+    expect(guideMem?.metadata.relations.some(r => r.target === otherMem1 && r.type === 'supports')).toBe(true);
+
+    // 5. Verify incoming relation transferred to guide
+    const updatedOtherMem2 = ctx.getMemory(otherMem2);
+    expect(updatedOtherMem2?.metadata.relations.some(r => r.target === mem2)).toBe(false);
+    expect(updatedOtherMem2?.metadata.relations.some(r => r.target === result.consolidatedId && r.type === 'depends_on')).toBe(true);
+
+    // 6. Verify micro-memories only link to guide via part_of
+    const updatedMem1 = ctx.getMemory(mem1);
+    const updatedMem2 = ctx.getMemory(mem2);
+    expect(updatedMem1?.metadata.relations).toEqual([{ target: result.consolidatedId, type: 'part_of' }]);
+    expect(updatedMem2?.metadata.relations).toEqual([{ target: result.consolidatedId, type: 'part_of' }]);
   });
 
   it('should handle sd_consolidate via MCP tool server', async () => {
