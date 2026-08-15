@@ -964,10 +964,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const timeSinceMaxUpdate = Date.now() - maxUpdatedTimeRef.current;
             if (timeSinceMaxUpdate < timeoutMs) {
               const newestTime = maxUpdatedTimeRef.current;
-              const margin = 5 * 1000;
+              // Highlight all nodes created/updated within 10 seconds of the newest entry
+              const margin = 10 * 1000;
               nodes.forEach((n: any) => {
                 const t = n.updated ? new Date(n.updated).getTime() : 0;
-                if (newestTime - t <= margin) {
+                if (t > 0 && (newestTime - t <= margin)) {
                   activeHighlightNodesRef.current.add(n.id);
                 }
               });
@@ -992,8 +993,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const prev = prevNodesMap.get(n.id);
             if (!prev) {
               newHighlightNodes.add(n.id);
-            } else if (n.updated && prev.updated && n.updated !== prev.updated) {
-              newHighlightNodes.add(n.id);
+            } else if (n.updated && prev.updated) {
+              const nTime = new Date(n.updated).getTime();
+              const pTime = new Date(prev.updated).getTime();
+              if (!isNaN(nTime) && !isNaN(pTime) && nTime > pTime) {
+                newHighlightNodes.add(n.id);
+              }
             }
           });
 
