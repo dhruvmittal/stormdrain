@@ -512,7 +512,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
   }, [debouncedQuery, selectedType, focusAnchorId]);
 
-  const isCanvasMode = renderMode === 'canvas' || (renderMode === 'auto' && (rawGraphDataRef.current?.nodes?.length || 0) > 300);
+  const autoCanvasThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 300;
+  const isCanvasMode = renderMode === 'canvas' || (renderMode === 'auto' && (rawGraphDataRef.current?.nodes?.length || 0) > autoCanvasThreshold);
   useEffect(() => {
     isCanvasModeRef.current = isCanvasMode;
   }, [isCanvasMode]);
@@ -558,6 +559,35 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     const query = debouncedQuery.trim().toLowerCase();
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
+    // 0. Draw Ego Orbit Guide Rings if in Orbit Mode
+    if (layoutModeRef.current === 'orbit') {
+      const anchorId = focusAnchorId || (currentNodes[0]?.id ?? null);
+      const anchorNode = anchorId ? nodeMap.get(anchorId) : null;
+      const centerX = anchorNode?.x ?? (width / 2);
+      const centerY = anchorNode?.y ?? (height / 2);
+
+      const rings = [
+        { r: 180, label: '1-Hop Direct' },
+        { r: 330, label: '2-Hop Extended' },
+        { r: 480, label: 'Ambient Outer' },
+      ];
+
+      ctx.save();
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
+      ctx.lineWidth = 1;
+      ctx.font = '10px Inter, system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
+
+      for (const ring of rings) {
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, ring.r, 0, 2 * Math.PI);
+        ctx.stroke();
+        ctx.fillText(ring.label, centerX + 8, centerY - ring.r + 14);
+      }
+      ctx.restore();
+    }
 
     // 1. Draw Links
     for (const l of currentLinks) {
@@ -1523,7 +1553,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       if (isCanvasMode) {
         linkGroup.selectAll('line').remove();
-        nodeGroup.selectAll('g.node-group').remove();
+        nodeGroup.selectAll('g.node-item, g.node-group').remove();
+        guideGroup.selectAll('*').remove();
         linkSelectionRef.current = null;
         nodeSelectionRef.current = null;
         
@@ -1533,6 +1564,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           }
         });
         return;
+      } else {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
       }
 
       // Data Join for Links (keyed by source->target)
@@ -1890,7 +1927,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   useEffect(() => {
     const simulation = simulationRef.current;
     const container = containerRef.current;
-    if (!container || !nodeSelectionRef.current || !linkSelectionRef.current) return;
+    if (!container) return;
 
     const width = svgRef.current?.parentElement?.clientWidth || 900;
     const height = svgRef.current?.parentElement?.clientHeight || 700;
@@ -2050,23 +2087,29 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         nodesGroup.style('pointer-events', '');
       }, 350);
 
-      const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 1200;
-      const useTransition = nodes.length < performanceThreshold;
+      if (isCanvasModeRef.current) {
+        drawCanvas();
+      } else if (nodeSelectionRef.current && linkSelectionRef.current) {
+        const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 1200;
+        const useTransition = nodes.length < performanceThreshold;
 
-      // Animate nodes and links into orbit positions
-      const tNode: any = useTransition
-        ? (nodeSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
-        : nodeSelectionRef.current;
-      tNode.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+        // Animate nodes and links into orbit positions
+        const tNode: any = useTransition
+          ? (nodeSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
+          : nodeSelectionRef.current;
+        if (tNode) tNode.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
-      const tLink: any = useTransition
-        ? (linkSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
-        : linkSelectionRef.current;
-      tLink
-        .attr('x1', (d: any) => d.source.x ?? (typeof d.source === 'object' ? d.source.x : centerX))
-        .attr('y1', (d: any) => d.source.y ?? (typeof d.source === 'object' ? d.source.y : centerY))
-        .attr('x2', (d: any) => d.target.x ?? (typeof d.target === 'object' ? d.target.x : centerX))
-        .attr('y2', (d: any) => d.target.y ?? (typeof d.target === 'object' ? d.target.y : centerY));
+        const tLink: any = useTransition
+          ? (linkSelectionRef.current as any).transition('layout').duration(450).ease(d3.easeCubicOut)
+          : linkSelectionRef.current;
+        if (tLink) {
+          tLink
+            .attr('x1', (d: any) => d.source.x ?? (typeof d.source === 'object' ? d.source.x : centerX))
+            .attr('y1', (d: any) => d.source.y ?? (typeof d.source === 'object' ? d.source.y : centerY))
+            .attr('x2', (d: any) => d.target.x ?? (typeof d.target === 'object' ? d.target.x : centerX))
+            .attr('y2', (d: any) => d.target.y ?? (typeof d.target === 'object' ? d.target.y : centerY));
+        }
+      }
 
       applyActiveFilterStylingRef.current();
 
@@ -2085,6 +2128,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       if (simulation) {
         simulation.alpha(0.3).restart();
+      }
+      if (isCanvasModeRef.current) {
+        drawCanvas();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

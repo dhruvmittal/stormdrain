@@ -761,8 +761,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
 
           <div className="config-field vertical">
             <div className="config-field-info">
-              <label>Transition Bypass Threshold</label>
-              <span>Bypass SVG opacity animations above this node count to prevent main-thread lag</span>
+              <label>Auto Canvas Engine Threshold</label>
+              <span>Automatically switch from SVG DOM to HTML5 2D Canvas engine when total graph nodes exceed this threshold</span>
             </div>
             <div className="range-control">
               <input 
