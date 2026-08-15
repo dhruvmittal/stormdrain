@@ -144,6 +144,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return localStorage.getItem('stormdrain_graph_hud_collapsed') === 'true';
   });
 
+  // Canvas Hybrid Renderer State & Refs
+  const [renderMode, setRenderMode] = useState<'auto' | 'canvas' | 'svg'>('auto');
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const quadtreeRef = useRef<d3.Quadtree<any> | null>(null);
+  const isCanvasModeRef = useRef<boolean>(false);
+
   // Label Settings & Readability States
   const [isLabelsOpen, setIsLabelsOpen] = useState<boolean>(false);
   const [labelSettings, setLabelSettings] = useState<LabelSettings>(() => {
@@ -504,6 +510,102 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return 1.0;
       });
   }, [debouncedQuery, selectedType, focusAnchorId]);
+
+  const isCanvasMode = renderMode === 'canvas' || (renderMode === 'auto' && (rawGraphDataRef.current?.nodes?.length || 0) > 300);
+  useEffect(() => {
+    isCanvasModeRef.current = isCanvasMode;
+  }, [isCanvasMode]);
+
+  const drawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width || canvas.clientWidth || 800;
+    const height = rect.height || canvas.clientHeight || 600;
+
+    if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+    }
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, width, height);
+
+    const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+
+    const currentNodes = rawGraphDataRef.current?.nodes || [];
+    const currentLinks = rawGraphDataRef.current?.links || [];
+
+    // Build spatial quadtree for O(log N) hit testing
+    quadtreeRef.current = d3.quadtree<any>()
+      .x((d: any) => d.x || 0)
+      .y((d: any) => d.y || 0)
+      .addAll(currentNodes as any);
+
+    // 1. Draw Links
+    for (const l of currentLinks) {
+      const s = typeof l.source === 'object' ? l.source : currentNodes.find((n: any) => n.id === l.source);
+      const t = typeof l.target === 'object' ? l.target : currentNodes.find((n: any) => n.id === l.target);
+      if (!s || !t || s.x == null || t.x == null) continue;
+
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.strokeStyle = getEdgeColor(l.type);
+      ctx.lineWidth = l.type === 'imports' ? 1.2 : 1.8;
+      ctx.globalAlpha = (s.superseded_by || t.superseded_by) ? 0.15 : 0.5;
+      if (l.type === 'imports') {
+        ctx.setLineDash([4, 3]);
+      } else {
+        ctx.setLineDash([]);
+      }
+      ctx.stroke();
+    }
+
+    // 2. Draw Nodes
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    for (const n of currentNodes) {
+      if (n.x == null || n.y == null) continue;
+      const isSuperseded = Boolean(n.superseded_by);
+      const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
+      const color = getTypeColor(n.type);
+
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = isSuperseded ? 0.35 : 1.0;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#0f172a';
+      ctx.stroke();
+
+      // Recency / Search Highlight Ring
+      if (activeHighlightNodesRef.current.has(n.id)) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Labels (zoom-gated when transform.k >= 0.5)
+      if (transform.k >= 0.5 && n.title) {
+        ctx.font = '11px Inter, system-ui, sans-serif';
+        ctx.fillStyle = n.type === 'codemap' ? '#38bdf8' : '#e2e8f0';
+        ctx.fillText(getLabelText(n), n.x + radius + 4, n.y + 4);
+      }
+    }
+
+    ctx.restore();
+  }, [getTypeColor, getEdgeColor, getLabelText]);
 
   // Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
   const applyActiveFilterStyling = useCallback(() => {
@@ -1165,7 +1267,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .scaleExtent([0.15, 6])
           .on('zoom', (event) => {
             currentZoomTransformRef.current = event.transform;
-            container!.attr('transform', event.transform);
+            if (container) container.attr('transform', event.transform);
+            if (isCanvasModeRef.current) {
+              drawCanvas();
+            }
           });
 
         zoomBehaviorRef.current = zoom;
@@ -1521,13 +1626,17 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodeSelectionRef.current = node as any;
 
       simulation.on('tick', () => {
-        link
-          .attr('x1', (d: any) => d.source.x)
-          .attr('y1', (d: any) => d.source.y)
-          .attr('x2', (d: any) => d.target.x)
-          .attr('y2', (d: any) => d.target.y);
+        if (isCanvasModeRef.current) {
+          drawCanvas();
+        } else {
+          link
+            .attr('x1', (d: any) => d.source.x)
+            .attr('y1', (d: any) => d.source.y)
+            .attr('x2', (d: any) => d.target.x)
+            .attr('y2', (d: any) => d.target.y);
 
-        node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+          node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+        }
 
         if (simulation && simulation.alpha() < 0.015) {
           simulation.stop();
@@ -2201,6 +2310,40 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                   onChange={(e) => updatePhysics({ interModuleTensionRatio: Number(e.target.value), activePreset: 'custom' })}
                 />
               </div>
+
+              {/* Render Engine Segmented Selector */}
+              <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px', borderTop: '1px solid rgba(148,163,184,0.15)', paddingTop: '8px' }}>
+                <div className="graph-slider-label-row">
+                  <span>Render Engine</span>
+                  <span className="graph-slider-val" style={{ textTransform: 'uppercase' }}>{renderMode}</span>
+                </div>
+                <div className="graph-scope-segmented" style={{ width: '100%', boxSizing: 'border-box' }}>
+                  <button
+                    className={`graph-scope-btn ${renderMode === 'auto' ? 'active' : ''}`}
+                    style={{ flex: 1 }}
+                    onClick={() => setRenderMode('auto')}
+                    title="Auto-switch to Canvas engine when graph exceeds 300 nodes"
+                  >
+                    Auto (Hybrid)
+                  </button>
+                  <button
+                    className={`graph-scope-btn ${renderMode === 'canvas' ? 'active' : ''}`}
+                    style={{ flex: 1 }}
+                    onClick={() => setRenderMode('canvas')}
+                    title="Force HTML5 2D Canvas engine (ultra high performance for 1000+ nodes)"
+                  >
+                    Canvas
+                  </button>
+                  <button
+                    className={`graph-scope-btn ${renderMode === 'svg' ? 'active' : ''}`}
+                    style={{ flex: 1 }}
+                    onClick={() => setRenderMode('svg')}
+                    title="Force SVG DOM engine (vector graphics for small graphs)"
+                  >
+                    SVG
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -2347,8 +2490,44 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         </div>
       </div>
 
-      {/* Main D3 Graph SVG */}
-      <svg ref={svgRef} className="graph-svg" style={{ width: '100%', height: '100%', display: 'block' }}></svg>
+      {/* Main D3 Graph Canvas & SVG Overlay */}
+      <canvas
+        ref={canvasRef}
+        className="graph-canvas-layer"
+        style={{
+          width: '100%',
+          height: '100%',
+          display: isCanvasMode ? 'block' : 'none'
+        }}
+        onClick={(e) => {
+          if (!isCanvasMode) return;
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+          const [gx, gy] = transform.invert([mx, my]);
+          const clicked = quadtreeRef.current?.find(gx, gy, 18);
+          if (clicked) {
+            if (layoutModeRef.current === 'orbit') {
+              setFocusAnchorId(clicked.id);
+              setFocusAnchorTitle(clicked.title);
+            } else if (!clicked.id.startsWith('file_')) {
+              setEditingId(clicked.id);
+            }
+          }
+        }}
+      />
+      <svg
+        ref={svgRef}
+        className="graph-svg"
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'block',
+          pointerEvents: isCanvasMode ? 'none' : 'auto'
+        }}
+      ></svg>
       
       {/* Edit Modal */}
       {editingId && (
