@@ -1284,6 +1284,36 @@ input:checked + .slider.round:before {
   font-weight: 600;
 }
 
+.graph-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+.graph-toggle-pill:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.graph-toggle-pill.active {
+  background: rgba(59, 130, 246, 0.18);
+  color: var(--accent-hover);
+  border-color: rgba(59, 130, 246, 0.45);
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
+}
+
 /* Layout Mode Segmented Switcher */
 .graph-layout-mode-group {
   display: flex;

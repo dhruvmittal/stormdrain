@@ -2031,65 +2031,53 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             })}
           </div>
 
-          {/* Scope Depth Segmented Switcher */}
+          {/* Combined Scope Depth & Consolidated Nodes Pill Row */}
           <div className="graph-scope-row">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
-              <span>Neighborhood Scope:</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Layers size={13} style={{ color: 'var(--accent-hover)' }} />
+                <span>Scope:</span>
+              </div>
+              <div className="graph-scope-segmented">
+                <button
+                  className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
+                  onClick={() => setScopeDepth(0)}
+                  title="Highlight only exact matches (0-hop)"
+                >
+                  Exact (0)
+                </button>
+                <button
+                  className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
+                  onClick={() => setScopeDepth(1)}
+                  title="Highlight matches + immediate neighbors (1-hop)"
+                >
+                  + Direct (1-hop)
+                </button>
+                <button
+                  className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
+                  onClick={() => setScopeDepth(2)}
+                  title="Highlight matches + extended topological paths (2-hop)"
+                >
+                  + Extended (2-hop)
+                </button>
+              </div>
             </div>
-            <div className="graph-scope-segmented">
-              <button
-                className={`graph-scope-btn ${scopeDepth === 0 ? 'active' : ''}`}
-                onClick={() => setScopeDepth(0)}
-                title="Highlight only exact matches (0-hop)"
-              >
-                Exact (0)
-              </button>
-              <button
-                className={`graph-scope-btn ${scopeDepth === 1 ? 'active' : ''}`}
-                onClick={() => setScopeDepth(1)}
-                title="Highlight matches + immediate neighbors (1-hop)"
-              >
-                + Direct (1-hop)
-              </button>
-              <button
-                className={`graph-scope-btn ${scopeDepth === 2 ? 'active' : ''}`}
-                onClick={() => setScopeDepth(2)}
-                title="Highlight matches + extended topological paths (2-hop)"
-              >
-                + Extended (2-hop)
-              </button>
-            </div>
-          </div>
 
-          {/* Show Consolidated Toggle */}
-          <div className="graph-scope-row" style={{ marginTop: '8px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Orbit size={13} style={{ color: 'var(--accent-hover)' }} />
-              <span>Consolidated Nodes:</span>
-            </div>
-            <div className="graph-scope-segmented">
-              <button
-                className={`graph-scope-btn ${!showConsolidated ? 'active' : ''}`}
-                onClick={() => {
-                  setShowConsolidated(false);
-                  localStorage.setItem('stormdrain_graph_show_consolidated', 'false');
-                }}
-                title="Hide consolidated memory satellites"
-              >
-                Hide
-              </button>
-              <button
-                className={`graph-scope-btn ${showConsolidated ? 'active' : ''}`}
-                onClick={() => {
-                  setShowConsolidated(true);
-                  localStorage.setItem('stormdrain_graph_show_consolidated', 'true');
-                }}
-                title="Show consolidated memory satellites"
-              >
-                Show
-              </button>
-            </div>
+            <button
+              className={`graph-toggle-pill ${showConsolidated ? 'active' : ''}`}
+              onClick={() => {
+                const nextVal = !showConsolidated;
+                setShowConsolidated(nextVal);
+                localStorage.setItem('stormdrain_graph_show_consolidated', String(nextVal));
+                if (activeTier1SetRef.current.size > 0 || debouncedQuery) {
+                  setTimeout(() => applyActiveFilterStylingRef.current(), 0);
+                }
+              }}
+              title={showConsolidated ? "Click to hide consolidated memory satellites" : "Click to show consolidated memory satellites"}
+            >
+              <Orbit size={13} style={{ color: showConsolidated ? 'var(--accent-hover)' : 'var(--text-muted)' }} />
+              <span>Consolidated Nodes</span>
+            </button>
           </div>
         </div>
       )}
