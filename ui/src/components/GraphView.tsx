@@ -543,6 +543,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const currentNodes = rawGraphDataRef.current?.nodes || [];
     const currentLinks = rawGraphDataRef.current?.links || [];
 
+    // Fast O(1) node lookup map to eliminate O(N) array scans per link
+    const nodeMap = new Map<string, any>();
+    for (const n of currentNodes) {
+      nodeMap.set(n.id, n);
+    }
+
     // Build spatial quadtree for O(log N) hit testing
     quadtreeRef.current = d3.quadtree<any>()
       .x((d: any) => d.x || 0)
@@ -551,8 +557,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     // 1. Draw Links
     for (const l of currentLinks) {
-      const s = typeof l.source === 'object' ? l.source : currentNodes.find((n: any) => n.id === l.source);
-      const t = typeof l.target === 'object' ? l.target : currentNodes.find((n: any) => n.id === l.target);
+      const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
+      const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
       if (!s || !t || s.x == null || t.x == null) continue;
 
       ctx.beginPath();
@@ -596,8 +602,32 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         ctx.stroke();
       }
 
-      // Labels (zoom-gated when transform.k >= 0.5)
-      if (transform.k >= 0.5 && n.title) {
+      // Labels rendering respecting labelSettings mode, hover lens, landmarks, and zoom
+      const mode = labelSettingsRef.current?.mode || 'dynamic';
+      const filter = labelSettingsRef.current?.filter || 'all';
+      const hoveredId = hoveredNodeIdRef.current;
+      const neighbors = hoveredId ? (adjacencyRef.current.get(hoveredId) || new Set<string>()) : new Set<string>();
+      const query = debouncedQuery.trim().toLowerCase();
+      const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
+      let shouldShowLabel = false;
+      if (hoveredId && (n.id === hoveredId || neighbors.has(n.id))) {
+        shouldShowLabel = true;
+      } else if (n.superseded_by) {
+        shouldShowLabel = false;
+      } else if (isFiltering) {
+        shouldShowLabel = activeTier1SetRef.current.has(n.id) || activeInScopeSetRef.current.has(n.id);
+      } else if (filter === 'always-show-memories' && n.type !== 'codemap') {
+        shouldShowLabel = true;
+      } else if (mode === 'hover-only') {
+        shouldShowLabel = false;
+      } else if (mode === 'all') {
+        shouldShowLabel = transform.k >= 0.6;
+      } else if (mode === 'dynamic') {
+        shouldShowLabel = landmarkSetRef.current.has(n.id) && transform.k >= 0.35;
+      }
+
+      if (shouldShowLabel && n.title) {
         ctx.font = '11px Inter, system-ui, sans-serif';
         ctx.fillStyle = n.type === 'codemap' ? '#38bdf8' : '#e2e8f0';
         ctx.fillText(getLabelText(n), n.x + radius + 4, n.y + 4);
@@ -605,7 +635,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     }
 
     ctx.restore();
-  }, [getTypeColor, getEdgeColor, getLabelText]);
+  }, [getTypeColor, getEdgeColor, getLabelText, debouncedQuery, selectedType, focusAnchorId]);
+
+  useEffect(() => {
+    if (isCanvasModeRef.current) {
+      drawCanvas();
+    } else {
+      applyLabelVisibility();
+    }
+  }, [labelSettings, drawCanvas, applyLabelVisibility]);
 
   // Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
   const applyActiveFilterStyling = useCallback(() => {
@@ -1445,6 +1483,20 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       const consolidatedNodeIds = new Set(
         nodesToBind.filter((n: any) => n.superseded_by).map((n: any) => n.id)
       );
+
+      if (isCanvasMode) {
+        linkGroup.selectAll('line').remove();
+        nodeGroup.selectAll('g.node-group').remove();
+        linkSelectionRef.current = null;
+        nodeSelectionRef.current = null;
+        
+        simulation.on('tick', () => {
+          if (isCanvasModeRef.current) {
+            drawCanvas();
+          }
+        });
+        return;
+      }
 
       // Data Join for Links (keyed by source->target)
       const link = linkGroup
@@ -2498,6 +2550,28 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           width: '100%',
           height: '100%',
           display: isCanvasMode ? 'block' : 'none'
+        }}
+        onMouseMove={(e) => {
+          if (!isCanvasMode) return;
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+          const [gx, gy] = transform.invert([mx, my]);
+          const found = quadtreeRef.current?.find(gx, gy, 18);
+          const newHoveredId = found ? found.id : null;
+          if (hoveredNodeIdRef.current !== newHoveredId) {
+            hoveredNodeIdRef.current = newHoveredId;
+            drawCanvas();
+          }
+        }}
+        onMouseLeave={() => {
+          if (!isCanvasMode) return;
+          if (hoveredNodeIdRef.current !== null) {
+            hoveredNodeIdRef.current = null;
+            drawCanvas();
+          }
         }}
         onClick={(e) => {
           if (!isCanvasMode) return;
