@@ -5,7 +5,9 @@ import {
   getEdgeStrength,
   getRepulsionDistanceMax,
   getCollisionRadius,
-  getMemoryChargeStrength
+  getMemoryChargeStrength,
+  getAdaptiveAlphaDecay,
+  getAdaptiveVelocityDecay
 } from './physicsHelpers';
 
 describe('Physics Helpers', () => {
@@ -41,6 +43,18 @@ describe('Physics Helpers', () => {
     expect(getCollisionRadius('concept', false, 48)).toBe(16);
     expect(getCollisionRadius('pattern', false, 48)).toBe(16);
     expect(getCollisionRadius('concept', true, 48)).toBe(4);
+  });
+
+  it('should calculate adaptive alpha decay and velocity decay rates based on node count', () => {
+    expect(getAdaptiveAlphaDecay(50)).toBe(0.045);
+    expect(getAdaptiveAlphaDecay(200)).toBe(0.045);
+    expect(getAdaptiveAlphaDecay(500)).toBe(0.065);
+    expect(getAdaptiveAlphaDecay(1200)).toBe(0.085);
+
+    expect(getAdaptiveVelocityDecay(50)).toBe(0.45);
+    expect(getAdaptiveVelocityDecay(200)).toBe(0.45);
+    expect(getAdaptiveVelocityDecay(500)).toBe(0.55);
+    expect(getAdaptiveVelocityDecay(1200)).toBe(0.65);
   });
 });
 

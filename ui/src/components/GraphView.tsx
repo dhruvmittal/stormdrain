@@ -19,7 +19,9 @@ import {
   getEdgeStrength, 
   getRepulsionDistanceMax, 
   getCollisionRadius, 
-  getMemoryChargeStrength 
+  getMemoryChargeStrength,
+  getAdaptiveAlphaDecay,
+  getAdaptiveVelocityDecay
 } from '../utils/physicsHelpers';
 
 // Physics Engine Types & Presets
@@ -796,6 +798,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const initGraph = async () => {
       const isContextSwitch = previousContextRef.current !== activeContext;
 
+      // Defer graph DOM re-binding while active dragging interaction or physics animation is in progress
+      const isAnimating = isDraggingRef.current || Boolean(simulationRef.current && simulationRef.current.alpha() > 0.05);
+      if (isAnimating && !isContextSwitch) {
+        pendingRefreshRef.current = true;
+        return;
+      }
+
       if (!configSettingsRef.current) {
         const cfg = await api.getConfig();
         if (!isMounted || runIdRef.current !== currentRunId) return;
@@ -816,12 +825,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       }
 
       if (!isMounted || runIdRef.current !== currentRunId) return;
-
-      // Defer graph DOM re-binding while active dragging interaction is in progress
-      if (isDraggingRef.current) {
-        pendingRefreshRef.current = true;
-        return;
-      }
 
       // Reset state if switching context
       if (isContextSwitch) {
@@ -855,17 +858,17 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       // Map nodes with persistent positions or proximity-based placement for new nodes
       nodes = nodes.map((n: any) => {
-        const cached = positionsCache.get(n.id);
         const live = liveNodeMap.get(n.id);
-        const source = cached || (live && live.x !== undefined ? live : null);
+        const cached = positionsCache.get(n.id);
+        const source = (live && live.x !== undefined) ? live : cached;
 
         if (source) {
           return {
             ...n,
             x: source.x,
             y: source.y,
-            vx: source.vx ?? 0,
-            vy: source.vy ?? 0,
+            vx: 0,
+            vy: 0,
             fx: source.fx ?? null,
             fy: source.fy ?? null,
           };
@@ -1270,8 +1273,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .force('collide', d3.forceCollide((d: any) => getCollisionRadius(d.type, Boolean(d.superseded_by), effectivePhysics.collisionRadius)))
           .force('moduleX', d3.forceX((d: any) => d.moduleCentroid?.x || width / 2).strength(effectivePhysics.moduleGravity))
           .force('moduleY', d3.forceY((d: any) => d.moduleCentroid?.y || height / 2).strength(effectivePhysics.moduleGravity))
-          .alphaDecay(0.045)
-          .velocityDecay(0.45);
+          .alphaDecay(getAdaptiveAlphaDecay(nodesToBind.length))
+          .velocityDecay(getAdaptiveVelocityDecay(nodesToBind.length));
 
         simulationRef.current = simulation;
       }
@@ -1509,6 +1512,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }
         recomputeLandmarks();
         applyActiveFilterStyling();
+
+        if (pendingRefreshRef.current && !isDraggingRef.current) {
+          pendingRefreshRef.current = false;
+          setRefreshTrigger(prev => prev + 1);
+        }
       });
 
       // Synchronously position elements once immediately after pre-warming
@@ -1634,7 +1642,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         });
     }
 
-    simulation.alpha(0.25).restart();
+    const nodeCount = rawGraphDataRef.current?.nodes?.length || 0;
+    simulation
+      .alphaDecay(getAdaptiveAlphaDecay(nodeCount))
+      .velocityDecay(getAdaptiveVelocityDecay(nodeCount))
+      .alpha(0.25)
+      .restart();
   }, [physics, layoutMode]);
 
   // Ego Radial Orbit Calculation & Transition

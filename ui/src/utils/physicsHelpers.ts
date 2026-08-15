@@ -48,3 +48,15 @@ export function getCollisionRadius(
 export function getMemoryChargeStrength(customMemoryCharge?: number): number {
   return customMemoryCharge ?? -140;
 }
+
+export function getAdaptiveAlphaDecay(nodeCount: number): number {
+  if (nodeCount < 350) return 0.045;
+  if (nodeCount < 1000) return 0.065;
+  return 0.085;
+}
+
+export function getAdaptiveVelocityDecay(nodeCount: number): number {
+  if (nodeCount < 350) return 0.45;
+  if (nodeCount < 1000) return 0.55;
+  return 0.65;
+}
