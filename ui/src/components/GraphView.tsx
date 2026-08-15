@@ -591,6 +591,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     // 1. Draw Links
     const hoveredId = hoveredNodeIdRef.current;
+    const consolidatedNodeIds = new Set(
+      currentNodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+    );
     for (const l of currentLinks) {
       const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
       const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
@@ -599,8 +602,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       const srcId = s.id;
       const tgtId = t.id;
       const isConnectedToHover = hoveredId && (srcId === hoveredId || tgtId === hoveredId);
+      const isConsolidated = consolidatedNodeIds.has(srcId) || consolidatedNodeIds.has(tgtId);
 
-      let linkAlpha = (s.superseded_by || t.superseded_by) ? 0.15 : 0.4;
+      let linkAlpha = isConsolidated ? 0.15 : ((s.superseded_by || t.superseded_by) ? 0.15 : 0.4);
       let lineWidth = l.type === 'imports' ? 1.2 : 1.8;
 
       if (hoveredId) {
@@ -622,7 +626,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       ctx.strokeStyle = getEdgeColor(l.type);
       ctx.lineWidth = lineWidth;
       ctx.globalAlpha = linkAlpha;
-      if (l.type === 'imports') {
+      if (isConsolidated) {
+        ctx.setLineDash([2, 2]);
+      } else if (l.type === 'imports') {
         ctx.setLineDash([4, 3]);
       } else {
         ctx.setLineDash([]);
@@ -670,10 +676,22 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         ctx.stroke();
       }
 
+      // Hovered Node Outer Highlight Ring
+      if (n.id === hoveredId) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // Labels rendering respecting labelSettings mode, hover lens, landmarks, and zoom
       const mode = labelSettingsRef.current?.mode || 'dynamic';
       const filter = labelSettingsRef.current?.filter || 'all';
-      const hoveredId = hoveredNodeIdRef.current;
+      const textBacking = labelSettingsRef.current?.textBacking ?? true;
       const neighbors = hoveredId ? (adjacencyRef.current.get(hoveredId) || new Set<string>()) : new Set<string>();
 
       let shouldShowLabel = false;
@@ -695,8 +713,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       if (shouldShowLabel && n.title) {
         ctx.font = '11px Inter, system-ui, sans-serif';
+        const labelText = getLabelText(n);
+        const lx = n.x + radius + 4;
+        const ly = n.y + 4;
+
+        if (textBacking) {
+          ctx.strokeStyle = 'rgba(15, 23, 42, 0.95)';
+          ctx.lineWidth = 3.5;
+          ctx.lineJoin = 'round';
+          ctx.strokeText(labelText, lx, ly);
+        }
+
         ctx.fillStyle = n.type === 'codemap' ? '#38bdf8' : '#e2e8f0';
-        ctx.fillText(getLabelText(n), n.x + radius + 4, n.y + 4);
+        ctx.fillText(labelText, lx, ly);
       }
     }
 
@@ -2826,6 +2855,22 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             } else if (!clicked.id.startsWith('file_')) {
               setEditingId(clicked.id);
             }
+          }
+        }}
+        onContextMenu={(e) => {
+          if (!isCanvasMode) return;
+          e.preventDefault();
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+          const [gx, gy] = transform.invert([mx, my]);
+          const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          const clicked = quadtreeRef.current?.find(gx, gy, radiusInWorld);
+          if (clicked) {
+            setFocusAnchorId(prev => (prev === clicked.id ? null : clicked.id));
+            setFocusAnchorTitle(prev => (prev === clicked.title ? null : clicked.title));
           }
         }}
       />
