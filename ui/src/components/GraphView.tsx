@@ -948,8 +948,22 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       const highlightNewestEnabled = cfg?.graph?.highlightNewest;
       const timeoutMs = (cfg?.graph?.highlightTimeout || 2) * 60 * 1000;
 
+      const parseTimestamp = (ts: any): number => {
+        if (!ts) return 0;
+        if (typeof ts === 'number') return ts;
+        let str = String(ts).trim();
+        if (!str) return 0;
+        if (!str.includes('T') && str.includes(' ')) {
+          str = str.replace(' ', 'T') + 'Z';
+        } else if (!str.endsWith('Z') && !str.includes('+') && !str.includes('-')) {
+          str = str + 'Z';
+        }
+        const time = new Date(str).getTime();
+        return isNaN(time) ? 0 : time;
+      };
+
       if (highlightNewestEnabled) {
-        const updateTimes = nodes.map((n: any) => n.updated ? new Date(n.updated).getTime() : 0).filter((t: number) => t > 0);
+        const updateTimes = nodes.map((n: any) => parseTimestamp(n.updated)).filter((t: number) => t > 0);
         maxUpdatedTimeRef.current = updateTimes.length > 0 ? Math.max(...updateTimes) : 0;
 
         if (isContextSwitch || currentNodes.length === 0) {
@@ -964,12 +978,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const timeSinceMaxUpdate = Date.now() - maxUpdatedTimeRef.current;
             if (timeSinceMaxUpdate < timeoutMs) {
               const newestTime = maxUpdatedTimeRef.current;
-              // Highlight all nodes created/updated within 10 seconds of the newest entry
+              // Highlight nodes created/updated within 10s margin of newest timestamp
               const margin = 10 * 1000;
               nodes.forEach((n: any) => {
-                const t = n.updated ? new Date(n.updated).getTime() : 0;
+                const t = parseTimestamp(n.updated);
                 if (t > 0 && (newestTime - t <= margin)) {
-                  activeHighlightNodesRef.current.add(n.id);
+                  // Only highlight codemap file vertices if their update is also fresh to Date.now()
+                  if (n.type === 'codemap') {
+                    if (Date.now() - t <= timeoutMs) {
+                      activeHighlightNodesRef.current.add(n.id);
+                    }
+                  } else {
+                    activeHighlightNodesRef.current.add(n.id);
+                  }
                 }
               });
               const remainingTime = timeoutMs - timeSinceMaxUpdate;
@@ -992,11 +1013,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           nodes.forEach((n: any) => {
             const prev = prevNodesMap.get(n.id);
             if (!prev) {
-              newHighlightNodes.add(n.id);
+              // Brand new node added in live session
+              if (n.updated) {
+                const t = parseTimestamp(n.updated);
+                if (t > 0 && (Date.now() - t <= timeoutMs)) {
+                  newHighlightNodes.add(n.id);
+                }
+              } else {
+                newHighlightNodes.add(n.id);
+              }
             } else if (n.updated && prev.updated) {
-              const nTime = new Date(n.updated).getTime();
-              const pTime = new Date(prev.updated).getTime();
-              if (!isNaN(nTime) && !isNaN(pTime) && nTime > pTime) {
+              const nTime = parseTimestamp(n.updated);
+              const pTime = parseTimestamp(prev.updated);
+              if (nTime > 0 && pTime > 0 && nTime > pTime) {
                 newHighlightNodes.add(n.id);
               }
             }
