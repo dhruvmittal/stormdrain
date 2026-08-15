@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { api, applyThemeColors, type GraphColorSettings, type StormDrainSettings } from '../api';
 import MemoryEditor from './MemoryEditor';
-import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles, Type } from 'lucide-react';
+import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles } from 'lucide-react';
 
 
 interface GraphViewProps {
@@ -590,15 +590,29 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     }
 
     // 1. Draw Links
+    const hoveredId = hoveredNodeIdRef.current;
     for (const l of currentLinks) {
       const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
       const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
       if (!s || !t || s.x == null || t.x == null) continue;
 
+      const srcId = s.id;
+      const tgtId = t.id;
+      const isConnectedToHover = hoveredId && (srcId === hoveredId || tgtId === hoveredId);
+
       let linkAlpha = (s.superseded_by || t.superseded_by) ? 0.15 : 0.4;
-      if (isFiltering) {
-        const sMatch = activeInScopeSetRef.current.has(s.id);
-        const tMatch = activeInScopeSetRef.current.has(t.id);
+      let lineWidth = l.type === 'imports' ? 1.2 : 1.8;
+
+      if (hoveredId) {
+        if (isConnectedToHover) {
+          linkAlpha = 1.0;
+          lineWidth = l.type === 'imports' ? 2.2 : 3.0;
+        } else {
+          linkAlpha = 0.05;
+        }
+      } else if (isFiltering) {
+        const sMatch = activeInScopeSetRef.current.has(srcId);
+        const tMatch = activeInScopeSetRef.current.has(tgtId);
         linkAlpha = (sMatch && tMatch) ? 0.65 : 0.03;
       }
 
@@ -606,7 +620,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
       ctx.strokeStyle = getEdgeColor(l.type);
-      ctx.lineWidth = l.type === 'imports' ? 1.2 : 1.8;
+      ctx.lineWidth = lineWidth;
       ctx.globalAlpha = linkAlpha;
       if (l.type === 'imports') {
         ctx.setLineDash([4, 3]);
@@ -1374,8 +1388,71 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
         zoomBehaviorRef.current = zoom;
         svg.call(zoom as any);
+        const canvasDrag = d3.drag<HTMLCanvasElement, unknown>()
+          .filter((event: any) => {
+            if (layoutModeRef.current === 'orbit') return false;
+            return !event.ctrlKey && !event.button;
+          })
+          .subject((event: any) => {
+            const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+            const [gx, gy] = transform.invert([event.x, event.y]);
+            const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+            const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
+            return found ? { node: found, x: event.x, y: event.y } : undefined;
+          })
+          .on('start', (event: any) => {
+            if (layoutModeRef.current === 'orbit') return;
+            const node = event.subject?.node;
+            if (!node) return;
+            draggedNodeRef.current = node;
+            isDraggingRef.current = true;
+            if (!event.active && simulationRef.current) simulationRef.current.alphaTarget(0.2).restart();
+            const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+            const [gx, gy] = transform.invert([event.x, event.y]);
+            node.fx = gx;
+            node.fy = gy;
+          })
+          .on('drag', (event: any) => {
+            if (layoutModeRef.current === 'orbit') return;
+            const node = event.subject?.node;
+            if (!node) return;
+            const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+            const [gx, gy] = transform.invert([event.x, event.y]);
+            node.fx = gx;
+            node.fy = gy;
+            node.x = gx;
+            node.y = gy;
+            if (positionsCacheRef.current && node.id) {
+              positionsCacheRef.current.set(node.id, {
+                x: gx,
+                y: gy,
+                vx: node.vx,
+                vy: node.vy,
+                fx: gx,
+                fy: gy
+              });
+            }
+            if (isCanvasModeRef.current) {
+              drawCanvas();
+            }
+          })
+          .on('end', (event: any) => {
+            if (layoutModeRef.current === 'orbit') return;
+            const node = event.subject?.node;
+            if (node) {
+              node.fx = null;
+              node.fy = null;
+            }
+            draggedNodeRef.current = null;
+            isDraggingRef.current = false;
+            if (!event.active && simulationRef.current) {
+              simulationRef.current.alphaTarget(0);
+            }
+          });
+
         if (canvasRef.current) {
           d3.select(canvasRef.current).call(zoom as any);
+          d3.select(canvasRef.current).call(canvasDrag as any);
         }
 
         if (currentZoomTransformRef.current) {
@@ -2445,27 +2522,43 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                   onChange={(e) => updatePhysics({ interModuleTensionRatio: Number(e.target.value), activePreset: 'custom' })}
                 />
               </div>
+            </div>
+          </div>
+        )}
 
-              {/* Render Engine Segmented Selector */}
-              <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px', borderTop: '1px solid rgba(148,163,184,0.15)', paddingTop: '8px' }}>
+        {/* Rendering & Display Settings Drawer (stacked above control row) */}
+        {isLabelsOpen && (
+          <div className="graph-physics-panel" style={{ width: '320px', maxWidth: 'calc(100vw - 40px)' }}>
+            <div className="graph-physics-header" style={{ marginBottom: '12px' }}>
+              <div className="graph-physics-title">
+                <Layers size={13} style={{ color: 'var(--accent-color, #38bdf8)' }} />
+                <span>Rendering & Display</span>
+              </div>
+            </div>
+
+            <div className="graph-physics-sliders-grid" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Graphics Engine Selector */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <div className="graph-slider-label-row">
-                  <span>Render Engine</span>
-                  <span className="graph-slider-val" style={{ textTransform: 'uppercase' }}>{renderMode}</span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Graphics Engine</span>
+                  <span className="graph-slider-val" style={{ textTransform: 'uppercase' }}>
+                    {renderMode === 'auto' ? `Auto (${isCanvasMode ? 'Canvas' : 'SVG'})` : renderMode}
+                  </span>
                 </div>
                 <div className="graph-scope-segmented" style={{ width: '100%', boxSizing: 'border-box' }}>
                   <button
                     className={`graph-scope-btn ${renderMode === 'auto' ? 'active' : ''}`}
                     style={{ flex: 1 }}
                     onClick={() => setRenderMode('auto')}
-                    title="Auto-switch to Canvas engine when graph exceeds 300 nodes"
+                    title="Auto-switch to Canvas engine when graph exceeds performance threshold"
                   >
-                    Auto (Hybrid)
+                    Auto
                   </button>
                   <button
                     className={`graph-scope-btn ${renderMode === 'canvas' ? 'active' : ''}`}
                     style={{ flex: 1 }}
                     onClick={() => setRenderMode('canvas')}
-                    title="Force HTML5 2D Canvas engine (ultra high performance for 1000+ nodes)"
+                    title="Force HTML5 2D Canvas engine (ultra high performance for large graphs)"
                   >
                     Canvas
                   </button>
@@ -2473,30 +2566,16 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                     className={`graph-scope-btn ${renderMode === 'svg' ? 'active' : ''}`}
                     style={{ flex: 1 }}
                     onClick={() => setRenderMode('svg')}
-                    title="Force SVG DOM engine (vector graphics for small graphs)"
+                    title="Force SVG DOM engine (vector graphics)"
                   >
                     SVG
                   </button>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* Labels Display Settings Drawer (stacked above control row) */}
-        {isLabelsOpen && (
-          <div className="graph-physics-panel" style={{ width: '320px', maxWidth: 'calc(100vw - 40px)' }}>
-            <div className="graph-physics-header" style={{ marginBottom: '12px' }}>
-              <div className="graph-physics-title">
-                <Type size={13} style={{ color: 'var(--accent-color, #38bdf8)' }} />
-                <span>Label Configuration</span>
-              </div>
-            </div>
-
-            <div className="graph-physics-sliders-grid" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               {/* Label Mode */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Display Mode</span>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Label Mode</span>
                 <select
                   value={labelSettings.mode}
                   onChange={(e) => updateLabelSettings({ mode: e.target.value as any })}
@@ -2518,7 +2597,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                 </select>
               </div>
 
-              {/* Label Filter */}
+              {/* Label Filter Scope */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Filter Scope</span>
                 <select
@@ -2609,18 +2688,20 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             <span className="graph-preset-indicator">{physics.activePreset}</span>
           </button>
 
-          {/* Labels Settings Toggle */}
+          {/* Rendering & Display Settings Toggle */}
           <button
             className={`graph-hud-icon-btn ${isLabelsOpen ? 'active' : ''}`}
             onClick={() => {
               setIsLabelsOpen(prev => !prev);
               setIsPhysicsOpen(false);
             }}
-            title="Label Display & Readability Settings"
+            title="Rendering Engine & Display Options"
           >
-            <Type size={13} />
-            <span>Labels</span>
-            <span className="graph-preset-indicator">{labelSettings.mode}</span>
+            <Layers size={13} />
+            <span>Rendering</span>
+            <span className="graph-preset-indicator">
+              {renderMode === 'auto' ? (isCanvasMode ? 'Canvas' : 'SVG') : (renderMode === 'canvas' ? 'Canvas' : 'SVG')}
+            </span>
           </button>
         </div>
       </div>
