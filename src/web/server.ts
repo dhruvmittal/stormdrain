@@ -243,17 +243,15 @@ export const startWebServer = (port: number = 3456) => {
 
   app.get('/api/graph/version', withContext(async (req, res, ctx) => {
     const memoriesRow = ctx.getDb().prepare(`
-      SELECT group_concat(id || '@' || updated) as sig 
-      FROM (SELECT id, updated FROM memories ORDER BY id)
-    `).get() as { sig: string | null };
+      SELECT COUNT(*) as count, COALESCE(MAX(updated), '') as max_updated FROM memories
+    `).get() as { count: number; max_updated: string };
 
     const relationsRow = ctx.getDb().prepare(`
-      SELECT group_concat(source_id || '->' || target_id || '->' || type) as sig 
-      FROM (SELECT source_id, target_id, type FROM relations ORDER BY source_id, target_id)
-    `).get() as { sig: string | null };
+      SELECT COUNT(*) as count FROM relations
+    `).get() as { count: number };
 
-    const memoriesSig = memoriesRow?.sig || '';
-    const relationsSig = relationsRow?.sig || '';
+    const memoriesSig = `${memoriesRow?.count || 0}:${memoriesRow?.max_updated || ''}`;
+    const relationsSig = `${relationsRow?.count || 0}`;
 
     const hash = crypto.createHash('sha256')
       .update(`${memoriesSig}||${relationsSig}`)

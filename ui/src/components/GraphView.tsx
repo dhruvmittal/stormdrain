@@ -1528,6 +1528,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .attr('y2', (d: any) => d.target.y);
 
         node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+
+        if (simulation && simulation.alpha() < 0.015) {
+          simulation.stop();
+        }
       });
 
       simulation.on('end', () => {
