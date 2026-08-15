@@ -1405,6 +1405,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .scaleExtent([0.15, 6])
           .filter((event: any) => {
             if (draggedNodeRef.current) return false;
+            if (event.type === 'mousedown' && isCanvasModeRef.current && quadtreeRef.current) {
+              const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+              const coords = d3.pointer(event, canvasRef.current || event.target);
+              const [gx, gy] = transform.invert(coords);
+              const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+              const found = quadtreeRef.current.find(gx, gy, radiusInWorld);
+              if (found) return false;
+            }
             return !event.ctrlKey && !event.button;
           })
           .on('zoom', (event) => {
@@ -1468,14 +1476,16 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .on('end', (event: any) => {
             if (layoutModeRef.current === 'orbit') return;
             const node = event.subject?.node;
-            if (node) {
-              node.fx = null;
-              node.fy = null;
-            }
+            if (!node) return;
             draggedNodeRef.current = null;
             isDraggingRef.current = false;
+            node.fx = null;
+            node.fy = null;
             if (!event.active && simulationRef.current) {
               simulationRef.current.alphaTarget(0);
+            }
+            if (isCanvasModeRef.current) {
+              drawCanvas();
             }
           });
 
@@ -2744,54 +2754,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           height: '100%',
           display: isCanvasMode ? 'block' : 'none'
         }}
-        onMouseDown={(e) => {
-          if (!isCanvasMode) return;
-          const rect = canvasRef.current?.getBoundingClientRect();
-          if (!rect) return;
-          const mx = e.clientX - rect.left;
-          const my = e.clientY - rect.top;
-          const transform = currentZoomTransformRef.current || d3.zoomIdentity;
-          const [gx, gy] = transform.invert([mx, my]);
-          const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
-          const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
-
-          if (found && layoutModeRef.current !== 'orbit') {
-            draggedNodeRef.current = found;
-            isDraggingRef.current = true;
-            found.fx = gx;
-            found.fy = gy;
-            if (simulationRef.current) {
-              simulationRef.current.alphaTarget(0.2).restart();
-            }
-          }
-        }}
         onMouseMove={(e) => {
-          if (!isCanvasMode) return;
+          if (!isCanvasMode || isDraggingRef.current) return;
           const rect = canvasRef.current?.getBoundingClientRect();
           if (!rect) return;
           const mx = e.clientX - rect.left;
           const my = e.clientY - rect.top;
           const transform = currentZoomTransformRef.current || d3.zoomIdentity;
           const [gx, gy] = transform.invert([mx, my]);
-
-          if (draggedNodeRef.current) {
-            draggedNodeRef.current.fx = gx;
-            draggedNodeRef.current.fy = gy;
-            draggedNodeRef.current.x = gx;
-            draggedNodeRef.current.y = gy;
-            if (positionsCacheRef.current && draggedNodeRef.current.id) {
-              positionsCacheRef.current.set(draggedNodeRef.current.id, {
-                x: gx,
-                y: gy,
-                vx: draggedNodeRef.current.vx,
-                vy: draggedNodeRef.current.vy,
-                fx: gx,
-                fy: gy
-              });
-            }
-            drawCanvas();
-            return;
-          }
 
           const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
           const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
@@ -2806,29 +2776,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             drawCanvas();
           }
         }}
-        onMouseUp={() => {
-          if (!isCanvasMode) return;
-          if (draggedNodeRef.current) {
-            draggedNodeRef.current.fx = null;
-            draggedNodeRef.current.fy = null;
-            draggedNodeRef.current = null;
-            isDraggingRef.current = false;
-            if (simulationRef.current) {
-              simulationRef.current.alphaTarget(0);
-            }
-          }
-        }}
         onMouseLeave={() => {
           if (!isCanvasMode) return;
-          if (draggedNodeRef.current) {
-            draggedNodeRef.current.fx = null;
-            draggedNodeRef.current.fy = null;
-            draggedNodeRef.current = null;
-            isDraggingRef.current = false;
-            if (simulationRef.current) {
-              simulationRef.current.alphaTarget(0);
-            }
-          }
           if (canvasRef.current) {
             canvasRef.current.style.cursor = 'default';
           }
@@ -2880,7 +2829,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         style={{
           width: '100%',
           height: '100%',
-          display: 'block',
+          display: isCanvasMode ? 'none' : 'block',
           pointerEvents: isCanvasMode ? 'none' : 'auto'
         }}
       ></svg>
