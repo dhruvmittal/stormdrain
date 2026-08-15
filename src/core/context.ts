@@ -506,7 +506,7 @@ export class ContextManager {
         const oldRelsKey = (existing.metadata.relations || []).map((r: any) => `${r.target}:${r.type}`).sort().join(',');
         const newRelsKey = relations.map((r: any) => `${r.target}:${r.type}`).sort().join(',');
 
-        if (oldHash && oldHash === v.hash && oldRelsKey === newRelsKey && existing.content === v.content) {
+        if (oldHash && oldHash === v.hash && oldRelsKey === newRelsKey && existing.content.trim() === v.content.trim()) {
           contentOrRelationsChanged = false;
         }
 
