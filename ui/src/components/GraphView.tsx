@@ -97,6 +97,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const previousContextRef = useRef<string>(activeContext);
   const positionsCacheRef = useRef<Map<string, { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
   const isDraggingRef = useRef<boolean>(false);
+  const draggedNodeRef = useRef<any>(null);
   const pendingRefreshRef = useRef<boolean>(false);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
@@ -555,18 +556,28 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       .y((d: any) => d.y || 0)
       .addAll(currentNodes as any);
 
+    const query = debouncedQuery.trim().toLowerCase();
+    const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+
     // 1. Draw Links
     for (const l of currentLinks) {
       const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
       const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
       if (!s || !t || s.x == null || t.x == null) continue;
 
+      let linkAlpha = (s.superseded_by || t.superseded_by) ? 0.15 : 0.4;
+      if (isFiltering) {
+        const sMatch = activeInScopeSetRef.current.has(s.id);
+        const tMatch = activeInScopeSetRef.current.has(t.id);
+        linkAlpha = (sMatch && tMatch) ? 0.65 : 0.03;
+      }
+
       ctx.beginPath();
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
       ctx.strokeStyle = getEdgeColor(l.type);
       ctx.lineWidth = l.type === 'imports' ? 1.2 : 1.8;
-      ctx.globalAlpha = (s.superseded_by || t.superseded_by) ? 0.15 : 0.5;
+      ctx.globalAlpha = linkAlpha;
       if (l.type === 'imports') {
         ctx.setLineDash([4, 3]);
       } else {
@@ -576,7 +587,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     }
 
     // 2. Draw Nodes
-    ctx.globalAlpha = 1;
     ctx.setLineDash([]);
     for (const n of currentNodes) {
       if (n.x == null || n.y == null) continue;
@@ -584,20 +594,34 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
       const color = getTypeColor(n.type);
 
+      let nodeAlpha = isSuperseded ? 0.35 : 1.0;
+      let isTier1Match = false;
+
+      if (isFiltering) {
+        if (activeTier1SetRef.current.has(n.id)) {
+          nodeAlpha = 1.0;
+          isTier1Match = true;
+        } else if (activeInScopeSetRef.current.has(n.id)) {
+          nodeAlpha = 0.6;
+        } else {
+          nodeAlpha = 0.08;
+        }
+      }
+
       ctx.beginPath();
       ctx.arc(n.x, n.y, radius, 0, 2 * Math.PI);
       ctx.fillStyle = color;
-      ctx.globalAlpha = isSuperseded ? 0.35 : 1.0;
+      ctx.globalAlpha = nodeAlpha;
       ctx.fill();
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = '#0f172a';
       ctx.stroke();
 
       // Recency / Search Highlight Ring
-      if (activeHighlightNodesRef.current.has(n.id)) {
+      if (isTier1Match || activeHighlightNodesRef.current.has(n.id)) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
-        ctx.strokeStyle = '#38bdf8';
+        ctx.strokeStyle = isTier1Match ? '#fbbf24' : '#38bdf8';
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -607,8 +631,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       const filter = labelSettingsRef.current?.filter || 'all';
       const hoveredId = hoveredNodeIdRef.current;
       const neighbors = hoveredId ? (adjacencyRef.current.get(hoveredId) || new Set<string>()) : new Set<string>();
-      const query = debouncedQuery.trim().toLowerCase();
-      const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
 
       let shouldShowLabel = false;
       if (hoveredId && (n.id === hoveredId || neighbors.has(n.id))) {
@@ -647,8 +669,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
   // Multi-Hop Visual Filter & Spotlight Overlay (Non-Destructive Styling)
   const applyActiveFilterStyling = useCallback(() => {
-    if (!nodeSelectionRef.current || !linkSelectionRef.current) return;
-
     const { nodes } = rawGraphDataRef.current;
     if (!nodes || nodes.length === 0) return;
 
@@ -741,6 +761,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         hasNoMatches,
       };
     });
+
+    if (isCanvasModeRef.current) {
+      drawCanvas();
+      return;
+    }
+
+    if (!nodeSelectionRef.current || !linkSelectionRef.current) return;
 
     // Interrupt any ongoing style transitions
     nodeSelectionRef.current.interrupt('style');
@@ -1301,8 +1328,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         container = svg.append('g').attr('class', 'zoom-container');
         containerRef.current = container;
 
-        const zoom = d3.zoom<SVGSVGElement, unknown>()
+        const zoom = d3.zoom<any, unknown>()
           .scaleExtent([0.15, 6])
+          .filter((event: any) => {
+            if (draggedNodeRef.current) return false;
+            return !event.ctrlKey && !event.button;
+          })
           .on('zoom', (event) => {
             currentZoomTransformRef.current = event.transform;
             if (container) container.attr('transform', event.transform);
@@ -1313,9 +1344,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
         zoomBehaviorRef.current = zoom;
         svg.call(zoom as any);
+        if (canvasRef.current) {
+          d3.select(canvasRef.current).call(zoom as any);
+        }
 
         if (currentZoomTransformRef.current) {
           svg.call(zoom.transform as any, currentZoomTransformRef.current);
+          if (canvasRef.current) {
+            d3.select(canvasRef.current).call(zoom.transform as any, currentZoomTransformRef.current);
+          }
         }
       }
 
@@ -2551,6 +2588,27 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           height: '100%',
           display: isCanvasMode ? 'block' : 'none'
         }}
+        onMouseDown={(e) => {
+          if (!isCanvasMode) return;
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const transform = currentZoomTransformRef.current || d3.zoomIdentity;
+          const [gx, gy] = transform.invert([mx, my]);
+          const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
+
+          if (found && layoutModeRef.current !== 'orbit') {
+            draggedNodeRef.current = found;
+            isDraggingRef.current = true;
+            found.fx = gx;
+            found.fy = gy;
+            if (simulationRef.current) {
+              simulationRef.current.alphaTarget(0.2).restart();
+            }
+          }
+        }}
         onMouseMove={(e) => {
           if (!isCanvasMode) return;
           const rect = canvasRef.current?.getBoundingClientRect();
@@ -2559,15 +2617,65 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           const my = e.clientY - rect.top;
           const transform = currentZoomTransformRef.current || d3.zoomIdentity;
           const [gx, gy] = transform.invert([mx, my]);
-          const found = quadtreeRef.current?.find(gx, gy, 18);
+
+          if (draggedNodeRef.current) {
+            draggedNodeRef.current.fx = gx;
+            draggedNodeRef.current.fy = gy;
+            draggedNodeRef.current.x = gx;
+            draggedNodeRef.current.y = gy;
+            if (positionsCacheRef.current && draggedNodeRef.current.id) {
+              positionsCacheRef.current.set(draggedNodeRef.current.id, {
+                x: gx,
+                y: gy,
+                vx: draggedNodeRef.current.vx,
+                vy: draggedNodeRef.current.vy,
+                fx: gx,
+                fy: gy
+              });
+            }
+            drawCanvas();
+            return;
+          }
+
+          const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
           const newHoveredId = found ? found.id : null;
+          
+          if (canvasRef.current) {
+            canvasRef.current.style.cursor = found ? 'pointer' : 'grab';
+          }
+
           if (hoveredNodeIdRef.current !== newHoveredId) {
             hoveredNodeIdRef.current = newHoveredId;
             drawCanvas();
           }
         }}
+        onMouseUp={() => {
+          if (!isCanvasMode) return;
+          if (draggedNodeRef.current) {
+            draggedNodeRef.current.fx = null;
+            draggedNodeRef.current.fy = null;
+            draggedNodeRef.current = null;
+            isDraggingRef.current = false;
+            if (simulationRef.current) {
+              simulationRef.current.alphaTarget(0);
+            }
+          }
+        }}
         onMouseLeave={() => {
           if (!isCanvasMode) return;
+          if (draggedNodeRef.current) {
+            draggedNodeRef.current.fx = null;
+            draggedNodeRef.current.fy = null;
+            draggedNodeRef.current = null;
+            isDraggingRef.current = false;
+            if (simulationRef.current) {
+              simulationRef.current.alphaTarget(0);
+            }
+          }
+          if (canvasRef.current) {
+            canvasRef.current.style.cursor = 'default';
+          }
           if (hoveredNodeIdRef.current !== null) {
             hoveredNodeIdRef.current = null;
             drawCanvas();
@@ -2575,13 +2683,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         }}
         onClick={(e) => {
           if (!isCanvasMode) return;
+          if (isDraggingRef.current) return;
           const rect = canvasRef.current?.getBoundingClientRect();
           if (!rect) return;
           const mx = e.clientX - rect.left;
           const my = e.clientY - rect.top;
           const transform = currentZoomTransformRef.current || d3.zoomIdentity;
           const [gx, gy] = transform.invert([mx, my]);
-          const clicked = quadtreeRef.current?.find(gx, gy, 18);
+          const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          const clicked = quadtreeRef.current?.find(gx, gy, radiusInWorld);
           if (clicked) {
             if (layoutModeRef.current === 'orbit') {
               setFocusAnchorId(clicked.id);
