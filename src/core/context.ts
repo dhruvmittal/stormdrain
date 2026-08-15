@@ -493,9 +493,23 @@ export class ContextManager {
 
     for (const v of vertices) {
       const existing = this.getMemory(v.id);
+      let contentOrRelationsChanged = true;
+
+      const relations = v.imports.map(impPath => ({
+        target: makeFileVertexId(impPath),
+        type: 'imports'
+      }));
+
       if (existing) {
         const hashMatch = existing.content.match(/Hash: `([^`]+)`/);
         const oldHash = hashMatch ? hashMatch[1] : '';
+        const oldRelsKey = (existing.metadata.relations || []).map((r: any) => `${r.target}:${r.type}`).sort().join(',');
+        const newRelsKey = relations.map((r: any) => `${r.target}:${r.type}`).sort().join(',');
+
+        if (oldHash && oldHash === v.hash && oldRelsKey === newRelsKey && existing.content === v.content) {
+          contentOrRelationsChanged = false;
+        }
+
         if (oldHash && oldHash !== v.hash) {
           // File content changed! Find all memories attached to this file vertex
           const attachedRelations = this.db.prepare(`
@@ -518,18 +532,18 @@ export class ContextManager {
         }
       }
 
-      const relations = v.imports.map(impPath => ({
-        target: makeFileVertexId(impPath),
-        type: 'imports'
-      }));
+      if (contentOrRelationsChanged) {
+        const memory: Memory = {
+          metadata: {
+            ...createMemoryMetadata(v.id, 'codemap', v.title, this.name, v.tags, relations, 'auto-scan'),
+            created: existing ? existing.metadata.created : new Date().toISOString()
+          },
+          content: v.content
+        };
 
-      const memory: Memory = {
-        metadata: createMemoryMetadata(v.id, 'codemap', v.title, this.name, v.tags, relations, 'auto-scan'),
-        content: v.content
-      };
-
-      this.saveMemory(memory, `[stormdrain] sync: file vertex "${v.relativePath}"`);
-      createdCount++;
+        this.saveMemory(memory, `[stormdrain] sync: file vertex "${v.relativePath}"`);
+        createdCount++;
+      }
     }
 
     return { createdCount, decayedCount };
