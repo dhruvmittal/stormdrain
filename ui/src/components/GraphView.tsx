@@ -94,6 +94,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const isInitializedRef = useRef<boolean>(false);
   const previousContextRef = useRef<string>(activeContext);
   const positionsCacheRef = useRef<Map<string, { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null }>>(new Map());
+  const isDraggingRef = useRef<boolean>(false);
+  const pendingRefreshRef = useRef<boolean>(false);
+  const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
   const currentZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const activeTier1SetRef = useRef<Set<string>>(new Set());
   const activeInScopeSetRef = useRef<Set<string>>(new Set());
@@ -814,6 +817,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       if (!isMounted || runIdRef.current !== currentRunId) return;
 
+      // Defer graph DOM re-binding while active dragging interaction is in progress
+      if (isDraggingRef.current) {
+        pendingRefreshRef.current = true;
+        return;
+      }
+
       // Reset state if switching context
       if (isContextSwitch) {
         previousContextRef.current = activeContext;
@@ -841,19 +850,24 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
 
       const positionsCache = positionsCacheRef.current;
+      const liveNodes = simulationRef.current?.nodes() || rawGraphDataRef.current?.nodes || [];
+      const liveNodeMap = new Map(liveNodes.map((n: any) => [n.id, n]));
 
       // Map nodes with persistent positions or proximity-based placement for new nodes
       nodes = nodes.map((n: any) => {
         const cached = positionsCache.get(n.id);
-        if (cached) {
+        const live = liveNodeMap.get(n.id);
+        const source = cached || (live && live.x !== undefined ? live : null);
+
+        if (source) {
           return {
             ...n,
-            x: cached.x,
-            y: cached.y,
-            vx: cached.vx ?? 0,
-            vy: cached.vy ?? 0,
-            fx: cached.fx ?? null,
-            fy: cached.fy ?? null,
+            x: source.x,
+            y: source.y,
+            vx: source.vx ?? 0,
+            vy: source.vy ?? 0,
+            fx: source.fx ?? null,
+            fy: source.fy ?? null,
           };
         }
 
@@ -1511,6 +1525,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       function dragstarted(event: any, d: any) {
         if (layoutModeRef.current === 'orbit') return;
+        isDraggingRef.current = true;
         if (!event.active) simulation!.alphaTarget(0.2).restart();
         d.fx = d.x;
         d.fy = d.y;
@@ -1520,6 +1535,18 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (layoutModeRef.current === 'orbit') return;
         d.fx = event.x;
         d.fy = event.y;
+        d.x = event.x;
+        d.y = event.y;
+        if (d.x !== undefined && d.y !== undefined) {
+          positionsCacheRef.current.set(d.id, {
+            x: event.x,
+            y: event.y,
+            vx: d.vx,
+            vy: d.vy,
+            fx: d.fx,
+            fy: d.fy,
+          });
+        }
       }
       
       function dragended(event: any, d: any) {
@@ -1527,6 +1554,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         if (!event.active) simulation!.alphaTarget(0);
         d.fx = null;
         d.fy = null;
+        isDraggingRef.current = false;
         if (d.x !== undefined && d.y !== undefined) {
           positionsCacheRef.current.set(d.id, {
             x: d.x,
@@ -1536,6 +1564,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             fx: d.fx,
             fy: d.fy,
           });
+        }
+
+        if (pendingRefreshRef.current) {
+          pendingRefreshRef.current = false;
+          setRefreshTrigger(prev => prev + 1);
         }
       }
 
@@ -1548,7 +1581,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     return () => {
       isMounted = false;
     };
-  }, [activeContext, effectiveVersion, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth, showConsolidated]);
+  }, [activeContext, effectiveVersion, refreshTrigger, getTypeColor, debouncedQuery, selectedType, focusAnchorId, labelSettings.focusMode, scopeDepth, showConsolidated]);
 
   // Live Physics Updates (when sliders move or preset changes)
   useEffect(() => {
