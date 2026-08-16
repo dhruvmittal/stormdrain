@@ -27,8 +27,12 @@ describe('MCP Server Resilience & Failure Case Tests', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    fs.rmSync(homeDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch {
+      // Ignore transient cleanup locks
+    }
   });
 
   async function callTool(name: string, args: any = {}) {

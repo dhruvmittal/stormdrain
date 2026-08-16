@@ -16,20 +16,34 @@ const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'w
 const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersion = 0 }) => {
   const [memories, setMemories] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
   const [sortField, setSortField] = useState<SortField>('updated');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const fetchMemories = async (query = searchQuery) => {
+  // Debounce search input by 200ms to eliminate un-debounced HTTP API spam on fast typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const fetchMemories = async (query = debouncedSearchQuery) => {
     if (!activeContext) return;
     const data = await api.getMemories(activeContext, query);
-    setMemories(data);
+    const augmented = (data || []).map((m: any) => ({
+      ...m,
+      _updatedTs: m.updated ? (Date.parse(m.updated) || 0) : 0,
+      _accessedTs: m.accessed ? (Date.parse(m.accessed) || 0) : 0,
+    }));
+    setMemories(augmented);
   };
 
   useEffect(() => {
-    fetchMemories(searchQuery);
-  }, [activeContext, searchQuery, dataVersion]);
+    fetchMemories(debouncedSearchQuery);
+  }, [activeContext, debouncedSearchQuery, dataVersion]);
 
 
   // Compute type counts dynamically across current context
@@ -41,7 +55,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
     return counts;
   }, [memories]);
 
-  // Filter by selected type and apply client-side sorting
+  // Filter by selected type and apply fast numeric client-side sorting
   const processedMemories = useMemo(() => {
     let list = memories;
 
@@ -50,17 +64,17 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
       list = list.filter(m => m.type === selectedType);
     }
 
-    // 2. Sorting
+    // 2. Fast Primitive Sorting (Pre-computed numeric timestamps)
     return [...list].sort((a, b) => {
       let valA: any = a[sortField];
       let valB: any = b[sortField];
 
       if (sortField === 'accessed') {
-        valA = a.accessed ? new Date(a.accessed).getTime() : 0;
-        valB = b.accessed ? new Date(b.accessed).getTime() : 0;
+        valA = a._accessedTs ?? 0;
+        valB = b._accessedTs ?? 0;
       } else if (sortField === 'updated') {
-        valA = a.updated ? new Date(a.updated).getTime() : 0;
-        valB = b.updated ? new Date(b.updated).getTime() : 0;
+        valA = a._updatedTs ?? 0;
+        valB = b._updatedTs ?? 0;
       } else if (sortField === 'confidence') {
         valA = a.confidence ?? 1.0;
         valB = b.confidence ?? 1.0;

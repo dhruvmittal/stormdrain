@@ -518,6 +518,33 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     isCanvasModeRef.current = isCanvasMode;
   }, [isCanvasMode]);
 
+  const canvasDimensionsRef = useRef<{ width: number; height: number }>({ width: 800, height: 600 });
+  const consolidatedNodeIdsRef = useRef<Set<string>>(new Set());
+
+  // Attach ResizeObserver to canvas container to eliminate getBoundingClientRect reflows during 60FPS drawCanvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const updateDimensions = () => {
+      const rect = canvas.getBoundingClientRect();
+      canvasDimensionsRef.current = {
+        width: rect.width || canvas.clientWidth || 800,
+        height: rect.height || canvas.clientHeight || 600,
+      };
+    };
+    updateDimensions();
+
+    const observer = new ResizeObserver(() => {
+      updateDimensions();
+      if (isCanvasModeRef.current) {
+        drawCanvas();
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -525,9 +552,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const width = rect.width || canvas.clientWidth || 800;
-    const height = rect.height || canvas.clientHeight || 600;
+    const { width, height } = canvasDimensionsRef.current;
 
     if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
       canvas.width = width * dpr;
@@ -550,12 +575,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     for (const n of currentNodes) {
       nodeMap.set(n.id, n);
     }
-
-    // Build spatial quadtree for O(log N) hit testing
-    quadtreeRef.current = d3.quadtree<any>()
-      .x((d: any) => d.x || 0)
-      .y((d: any) => d.y || 0)
-      .addAll(currentNodes as any);
 
     const query = debouncedQuery.trim().toLowerCase();
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
@@ -591,9 +610,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     // 1. Draw Links
     const hoveredId = hoveredNodeIdRef.current;
-    const consolidatedNodeIds = new Set(
-      currentNodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
-    );
+    const consolidatedNodeIds = consolidatedNodeIdsRef.current;
     for (const l of currentLinks) {
       const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
       const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
@@ -1317,6 +1334,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       }
 
       rawGraphDataRef.current = { nodes, links };
+      consolidatedNodeIdsRef.current = new Set(
+        nodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+      );
 
       // Compute type distributions
       const counts: Record<string, number> = { all: nodes.length };
@@ -1868,6 +1888,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodeSelectionRef.current = node as any;
 
       simulation.on('tick', () => {
+        // Build quadtree on tick for O(log N) hit testing without rebuilding inside drawCanvas
+        quadtreeRef.current = d3.quadtree<any>()
+          .x((d: any) => d.x || 0)
+          .y((d: any) => d.y || 0)
+          .addAll(nodesToBind as any);
+
         if (isCanvasModeRef.current) {
           drawCanvas();
         } else {
