@@ -493,6 +493,19 @@ tr:hover td {
   color: #fff;
 }
 
+.filter-pill.excluded {
+  background: rgba(244, 63, 94, 0.15) !important;
+  color: #fecdd3 !important;
+  border-color: rgba(244, 63, 94, 0.6) !important;
+  text-decoration: line-through;
+}
+
+.filter-pill.excluded .filter-pill-count {
+  background: rgba(244, 63, 94, 0.35) !important;
+  color: #ffe4e6 !important;
+  text-decoration: none;
+}
+
 /* Table Toolbar Row & Search Box */
 .table-toolbar-row {
   padding: 20px 30px 0 30px;

@@ -24,6 +24,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
   const [sortField, setSortField] = useState<SortField>('updated');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [excludedTypes, setExcludedTypes] = useState<string[]>([]);
 
   // Virtualized Scroll State
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -97,7 +98,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
       containerRef.current.scrollTop = 0;
       setScrollTop(0);
     }
-  }, [selectedType, debouncedSearchQuery, activeContext, sortField, sortDirection]);
+  }, [selectedType, excludedTypes, debouncedSearchQuery, activeContext, sortField, sortDirection]);
 
   // Compute type counts dynamically across current context
   const typeCounts = useMemo(() => {
@@ -112,12 +113,17 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
   const processedMemories = useMemo(() => {
     let list = memories;
 
-    // 1. Type Filter
+    // 1. Type Inclusion Filter
     if (selectedType !== 'all') {
       list = list.filter(m => m.type === selectedType);
     }
 
-    // 2. Fast Primitive Sorting (Pre-computed numeric timestamps)
+    // 2. Type Exclusion Filter (Right-Click Negation)
+    if (excludedTypes.length > 0) {
+      list = list.filter(m => !excludedTypes.includes(m.type));
+    }
+
+    // 3. Fast Primitive Sorting (Pre-computed numeric timestamps)
     return [...list].sort((a, b) => {
       let valA: any = a[sortField];
       let valB: any = b[sortField];
@@ -140,7 +146,36 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
       if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [memories, selectedType, sortField, sortDirection]);
+  }, [memories, selectedType, excludedTypes, sortField, sortDirection]);
+
+  const handlePillClick = (type: string) => {
+    if (type === 'all') {
+      setSelectedType('all');
+      setExcludedTypes([]);
+    } else {
+      setSelectedType(type);
+      setExcludedTypes(prev => prev.filter(t => t !== type));
+    }
+  };
+
+  const handlePillContextMenu = (e: React.MouseEvent, type: string) => {
+    e.preventDefault();
+    if (type === 'all') {
+      setSelectedType('all');
+      setExcludedTypes([]);
+      return;
+    }
+    setExcludedTypes(prev => {
+      if (prev.includes(type)) {
+        return prev.filter(t => t !== type);
+      } else {
+        if (selectedType === type) {
+          setSelectedType('all');
+        }
+        return [...prev, type];
+      }
+    });
+  };
 
   // Calculate virtual window bounds
   const totalCount = processedMemories.length;
@@ -196,17 +231,26 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
           {MEMORY_TYPES.map(type => {
             const count = typeCounts[type] || 0;
             const isActive = selectedType === type;
+            const isExcluded = excludedTypes.includes(type);
             return (
               <button
                 key={type}
-                className={`filter-pill ${isActive ? 'active' : ''}`}
-                onClick={() => setSelectedType(type)}
+                className={`filter-pill ${isActive ? 'active' : ''} ${isExcluded ? 'excluded' : ''}`}
+                onClick={() => handlePillClick(type)}
+                onContextMenu={(e) => handlePillContextMenu(e, type)}
+                title={
+                  type === 'all'
+                    ? 'Click to reset all filters'
+                    : isExcluded
+                    ? 'Right-click to UN-EXCLUDE this type'
+                    : 'Left-click: show ONLY this type | Right-click: EXCLUDE this type'
+                }
                 style={{
                   border: isActive ? '1px solid var(--accent-color)' : undefined,
                   textTransform: type === 'all' ? 'capitalize' : 'uppercase'
                 }}
               >
-                <span>{type}</span>
+                <span>{isExcluded ? `- ${type}` : type}</span>
                 <span className="filter-pill-count">{count}</span>
               </button>
             );

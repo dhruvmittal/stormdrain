@@ -117,6 +117,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedQuery, setDebouncedQuery] = useState<string>('');
   const [selectedType, setSelectedType] = useState<string>('all');
+  const [excludedTypes, setExcludedTypes] = useState<string[]>([]);
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
   const [focusAnchorTitle, setFocusAnchorTitle] = useState<string | null>(null);
@@ -763,8 +764,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!nodes || nodes.length === 0) return;
 
     const query = debouncedQuery.trim().toLowerCase();
-    const hasActiveFilter = Boolean(query || selectedType !== 'all');
-    const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+    const hasActiveFilter = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0);
+    const isFiltering = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0 || focusAnchorId);
 
     const highlightColor = configSettingsRef.current?.colors?.highlight || '#fbbf24';
 
@@ -773,7 +774,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     
     // Helper to check if a node matches the active type/query filter
     const matchesFilter = (n: any) => {
-      const matchesType = selectedType === 'all' || n.type === selectedType;
+      const matchesType = (selectedType === 'all' || n.type === selectedType) && !excludedTypes.includes(n.type);
       const matchesQuery = !query || 
         n.title?.toLowerCase().includes(query) || 
         n.content?.toLowerCase().includes(query) ||
@@ -1034,7 +1035,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return d.type === 'imports' ? '4 2' : 'none';
       });
 
-  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
+  }, [debouncedQuery, selectedType, excludedTypes, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
 
   const applyActiveFilterStylingRef = useRef(applyActiveFilterStyling);
   useEffect(() => {
@@ -1540,11 +1541,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       // Compute matching subsets for Focus Mode if active
       const query = debouncedQuery.trim().toLowerCase();
-      const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+      const isFiltering = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0 || focusAnchorId);
 
       const tier1Set = new Set<string>();
       const matchesFilter = (n: any) => {
-        const matchesType = selectedType === 'all' || n.type === selectedType;
+        const matchesType = (selectedType === 'all' || n.type === selectedType) && !excludedTypes.includes(n.type);
         const matchesQuery = !query || 
           n.title?.toLowerCase().includes(query) || 
           n.content?.toLowerCase().includes(query) ||
@@ -1552,7 +1553,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return matchesType && matchesQuery;
       };
 
-      const hasActiveFilter = Boolean(query || selectedType !== 'all');
+      const hasActiveFilter = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0);
       if (hasActiveFilter) {
         for (const n of nodes) {
           if (matchesFilter(n)) {
@@ -2281,12 +2282,13 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   // Trigger filter updates on filter state changes
   useEffect(() => {
     applyActiveFilterStyling();
-  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, applyActiveFilterStyling]);
+  }, [debouncedQuery, selectedType, excludedTypes, scopeDepth, focusAnchorId, applyActiveFilterStyling]);
 
   const clearAllFilters = () => {
     setSearchQuery('');
     setDebouncedQuery('');
     setSelectedType('all');
+    setExcludedTypes([]);
     setFocusAnchorId(null);
     setFocusAnchorTitle(null);
   };
@@ -2390,13 +2392,47 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             {MEMORY_TYPES.map((type) => {
               const count = typeCounts[type] || 0;
               const isActive = selectedType === type;
-              const typeColor = type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
+              const isExcluded = excludedTypes.includes(type);
+              const typeColor = isExcluded ? '#f43f5e' : type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
               const label = type === 'codemap' ? 'File (codemap)' : type;
               return (
                 <button
                   key={type}
-                  className={`graph-type-pill ${isActive ? 'active' : ''}`}
-                  onClick={() => setSelectedType(type)}
+                  className={`graph-type-pill ${isActive ? 'active' : ''} ${isExcluded ? 'excluded' : ''}`}
+                  onClick={() => {
+                    if (type === 'all') {
+                      setSelectedType('all');
+                      setExcludedTypes([]);
+                    } else {
+                      setSelectedType(type);
+                      setExcludedTypes(prev => prev.filter(t => t !== type));
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (type === 'all') {
+                      setSelectedType('all');
+                      setExcludedTypes([]);
+                      return;
+                    }
+                    setExcludedTypes(prev => {
+                      if (prev.includes(type)) {
+                        return prev.filter(t => t !== type);
+                      } else {
+                        if (selectedType === type) {
+                          setSelectedType('all');
+                        }
+                        return [...prev, type];
+                      }
+                    });
+                  }}
+                  title={
+                    type === 'all'
+                      ? 'Click to reset all filters'
+                      : isExcluded
+                      ? 'Right-click to UN-EXCLUDE this type'
+                      : 'Left-click: show ONLY this type | Right-click: EXCLUDE this type'
+                  }
                 >
                   <span
                     className="graph-type-pill-dot"
@@ -2405,7 +2441,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                       boxShadow: isActive ? `0 0 6px ${typeColor}` : 'none'
                     }}
                   />
-                  <span style={{ textTransform: 'capitalize' }}>{label}</span>
+                  <span style={{ textTransform: 'capitalize', textDecoration: isExcluded ? 'line-through' : 'none' }}>
+                    {isExcluded ? `- ${label}` : label}
+                  </span>
                   <span style={{ opacity: 0.7, fontSize: '0.68rem', marginLeft: 2 }}>({count})</span>
                 </button>
               );
