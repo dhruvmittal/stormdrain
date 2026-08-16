@@ -15,7 +15,7 @@ export type RelationType =
 
 export interface MemoryRelation {
   target: string; // id of the target memory or file vertex
-  type: RelationType | string;
+  type: RelationType;
 }
 
 export interface MemoryMetadata {
@@ -46,10 +46,6 @@ export interface ContextConfig {
   parent: string | null;
 }
 
-export interface GlobalConfig {
-  contexts: Record<string, ContextConfig>;
-  activeContext: string; // The currently active context
-}
 
 export interface MultiHopMemoryResult {
   id: string;
@@ -204,4 +200,7 @@ export interface ConsolidationOptions {
   memory_ids?: string[];
   context?: string;
 }
+
+export * from './db/types';
+
 

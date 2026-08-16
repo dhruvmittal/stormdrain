@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { getGitTrackedFiles, getSubmodules, summarizeSubmodule, SubmoduleInfo } from './gitUtils';
+import { getParserForFile } from './parsers';
 
 export interface FileVertexMemory {
   id: string;
@@ -16,13 +17,13 @@ export interface FileVertexMemory {
 }
 
 const SUPPORTED_EXTENSIONS = new Set([
-  '.cpp', '.hpp', '.cc', '.cxx', '.c', '.h',
+  '.cpp', '.hpp', '.cc', '.cxx', '.c', '.h', '.hh',
   '.m',
   '.py',
   '.ts', '.tsx', '.js', '.jsx',
   '.rs',
   '.go',
-  '.java'
+  '.java', '.cs', '.vb'
 ]);
 
 const IGNORED_DIRS = new Set([
@@ -126,69 +127,13 @@ export function parseFileImports(workspaceDir: string, relativeFilePath: string,
   }
 
   const fileDir = path.dirname(relativeFilePath);
-  const ext = path.extname(relativeFilePath).toLowerCase();
-  const importedFiles = new Set<string>();
-
-  const lines = content.split('\n');
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // C / C++ includes: #include "utils.h" or #include <utils.h>
-    if (ext === '.cpp' || ext === '.hpp' || ext === '.cc' || ext === '.cxx' || ext === '.c' || ext === '.h') {
-      const match = trimmed.match(/^#include\s+["<]([^">]+)[">]/);
-      if (match) {
-        const inc = match[1];
-        resolveCandidateImport(inc, fileDir, allFiles, importedFiles);
-      }
-    }
-
-    // MATLAB: addpath, import, or function calls
-    if (ext === '.m') {
-      const matchImport = trimmed.match(/^import\s+([a-zA-Z0-9_\.]+)/);
-      if (matchImport) {
-        resolveCandidateImport(matchImport[1], fileDir, allFiles, importedFiles);
-      }
-      // MATLAB includes/scripts or function call references to sibling .m files
-      const matchFunc = trimmed.match(/([a-zA-Z0-9_]+)\s*\(/);
-      if (matchFunc) {
-        const funcName = matchFunc[1];
-        resolveCandidateImport(funcName, fileDir, allFiles, importedFiles);
-      }
-    }
-
-    // Python: import foo, from foo import bar, from . import foo
-    if (ext === '.py') {
-      const matchFrom = trimmed.match(/^from\s+(\.?\.?[a-zA-Z0-9_\.]+)\s+import/);
-      const matchImp = trimmed.match(/^import\s+([a-zA-Z0-9_\.]+)/);
-      if (matchFrom) {
-        resolveCandidateImport(matchFrom[1], fileDir, allFiles, importedFiles);
-      } else if (matchImp) {
-        resolveCandidateImport(matchImp[1], fileDir, allFiles, importedFiles);
-      }
-    }
-
-    // JS / TS: import ... from './foo', require('./foo')
-    if (ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.jsx') {
-      const matchImport = trimmed.match(/(?:import|export)\s+.*?\s+from\s+['"]([^'"]+)['"]/);
-      const matchRequire = trimmed.match(/require\(['"]([^'"]+)['"]\)/);
-      const target = matchImport ? matchImport[1] : (matchRequire ? matchRequire[1] : null);
-      if (target) {
-        resolveCandidateImport(target, fileDir, allFiles, importedFiles);
-      }
-    }
-
-    // Rust: mod foo; or use crate::foo;
-    if (ext === '.rs') {
-      const matchMod = trimmed.match(/^mod\s+([a-zA-Z0-9_]+);/);
-      const matchUse = trimmed.match(/^use\s+([a-zA-Z0-9_:]+);/);
-      if (matchMod) resolveCandidateImport(matchMod[1], fileDir, allFiles, importedFiles);
-      if (matchUse) resolveCandidateImport(matchUse[1], fileDir, allFiles, importedFiles);
-    }
-  }
-
-  importedFiles.delete(relativeFilePath);
-  return Array.from(importedFiles);
+  const parser = getParserForFile(relativeFilePath);
+  return parser.parseImports(relativeFilePath, content, {
+    fileDir,
+    relativeFilePath,
+    workspaceDir,
+    allFiles
+  });
 }
 
 function resolveCandidateImport(rawImport: string, fileDir: string, allFiles: Set<string>, outSet: Set<string>) {

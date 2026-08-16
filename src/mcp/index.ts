@@ -19,6 +19,7 @@ export class StormDrainMcpServer {
   private server: Server;
   private config: ConfigManager;
   private reader: FileReader;
+  private contextCache: Map<string, ContextManager> = new Map();
 
   constructor() {
     this.config = new ConfigManager();
@@ -40,22 +41,34 @@ export class StormDrainMcpServer {
     this.setupHandlers();
   }
 
+  private getContext(explicitContext?: string): { ctx: ContextManager; targetContext: string } {
+    const targetContext = this.config.resolveContext(explicitContext, process.cwd());
+    let ctx = this.contextCache.get(targetContext);
+    if (!ctx) {
+      ctx = new ContextManager(targetContext);
+      this.contextCache.set(targetContext, ctx);
+    }
+    return { ctx, targetContext };
+  }
+
+  public async close(): Promise<void> {
+    for (const ctx of this.contextCache.values()) {
+      await ctx.close();
+    }
+    this.contextCache.clear();
+  }
+
   private setupHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      const active = this.config.resolveContext();
-      const ctx = new ContextManager(active);
+      const { ctx } = this.getContext();
       const settings = this.config.getSettings();
       
       let injectedMemory = 'No top memories found.';
-      try {
-        const topMemories = ctx.recallTopMemories(5) as Array<{ type: string; title: string; id: string; content_snippet?: string }>;
-        if (topMemories.length > 0) {
-          injectedMemory = topMemories.map((m) => 
-            `- [${m.type.toUpperCase()}] ${m.title} (ID: ${m.id})\n  ${m.content_snippet ? m.content_snippet.substring(0, 100) : ''}...`
-          ).join('\n\n');
-        }
-      } finally {
-        await ctx.close();
+      const topMemories = ctx.recallTopMemories(5) as Array<{ type: string; title: string; id: string; content_snippet?: string }>;
+      if (topMemories.length > 0) {
+        injectedMemory = topMemories.map((m) => 
+          `- [${m.type.toUpperCase()}] ${m.title} (ID: ${m.id})\n  ${m.content_snippet ? m.content_snippet.substring(0, 100) : ''}...`
+        ).join('\n\n');
       }
 
       const contextProp = {
@@ -372,8 +385,7 @@ export class StormDrainMcpServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const explicitContext = request.params.arguments?.context as string | undefined;
-      const targetContext = this.config.resolveContext(explicitContext, process.cwd());
-      const ctx = new ContextManager(targetContext);
+      const { ctx, targetContext } = this.getContext(explicitContext);
 
       try {
         if (request.params.name === 'sd_read') {
@@ -588,8 +600,8 @@ export class StormDrainMcpServer {
             tags?: string[];
             target_file?: string;
             targets?: string[] | string;
-            relations?: Array<{ target: string; type?: string }>;
-            relation_type?: string;
+            relations?: Array<{ target: string; type?: RelationType }>;
+            relation_type?: RelationType;
           };
           const targets = args.targets || args.target_file;
           const id = ctx.addMemory(
@@ -601,7 +613,7 @@ export class StormDrainMcpServer {
             undefined,
             targets,
             args.relation_type || 'affects',
-            args.relations as any
+            args.relations
           );
           const mem = ctx.getMemory(id);
           let linkMsg = '';
@@ -620,12 +632,12 @@ export class StormDrainMcpServer {
             content?: string;
             tags?: string[];
             type?: MemoryType;
-            relations?: Array<{ target: string; type?: string }>;
+            relations?: Array<{ target: string; type: RelationType }>;
             add_targets?: string[] | string;
             remove_targets?: string[] | string;
           };
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
-            relations: args.relations as any,
+            relations: args.relations,
             addTargets: args.add_targets,
             removeTargets: args.remove_targets
           });
@@ -700,15 +712,11 @@ export class StormDrainMcpServer {
 
           scaffoldAgentsMd(dir);
 
-          const targetCtx = new ContextManager(name);
-          try {
-            const submodulePolicy = (request.params.arguments?.submodule_policy as string) || 'sum';
-            const scanOptions = { submodulePolicies: submodulePolicy as 'dive' | 'sum' };
-            const { createdCount } = targetCtx.syncFileGraph(dir, scanOptions);
-            return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", scaffolded AGENTS.md, and created ${createdCount} file vertices in DAG skeleton.` }] };
-          } finally {
-            await targetCtx.close();
-          }
+          const { ctx: targetCtx } = this.getContext(name);
+          const submodulePolicy = (request.params.arguments?.submodule_policy as string) || 'sum';
+          const scanOptions = { submodulePolicies: submodulePolicy as 'dive' | 'sum' };
+          const { createdCount } = targetCtx.syncFileGraph(dir, scanOptions);
+          return { content: [{ type: 'text', text: `Successfully initialized context "${name}", bound path "${dir}", scaffolded AGENTS.md, and created ${createdCount} file vertices in DAG skeleton.` }] };
         }
 
         if (request.params.name === 'sd_consolidate') {
@@ -745,8 +753,6 @@ export class StormDrainMcpServer {
           content: [{ type: 'text', text: `Error: ${err.message}` }],
           isError: true,
         };
-      } finally {
-        await ctx.close();
       }
     });
 
@@ -785,40 +791,27 @@ export class StormDrainMcpServer {
       }
 
       let rawContext = (args?.context as string | undefined)?.trim();
-      let targetContext: string;
-      if (rawContext === 'global' || rawContext === '_global') {
-        targetContext = '_global';
-      } else if (rawContext) {
-        targetContext = rawContext;
-      } else {
-        targetContext = this.config.resolveContext();
-      }
+      const { ctx } = this.getContext(rawContext);
+      const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
+      const target = (args?.target as string | undefined)?.trim();
 
-      const ctx = new ContextManager(targetContext);
-      try {
-        const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
-        const target = (args?.target as string | undefined)?.trim();
+      const curateResult = await generateCuratePrompt(ctx, {
+        target: target || undefined,
+        threshold: isNaN(threshold) ? 3 : threshold,
+      });
 
-        const curateResult = await generateCuratePrompt(ctx, {
-          target: target || undefined,
-          threshold: isNaN(threshold) ? 3 : threshold,
-        });
-
-        return {
-          description: curateResult.description,
-          messages: [
-            {
-              role: 'user' as const,
-              content: {
-                type: 'text' as const,
-                text: curateResult.promptText,
-              },
+      return {
+        description: curateResult.description,
+        messages: [
+          {
+            role: 'user' as const,
+            content: {
+              type: 'text' as const,
+              text: curateResult.promptText,
             },
-          ],
-        };
-      } finally {
-        await ctx.close();
-      }
+          },
+        ],
+      };
     });
   }
 

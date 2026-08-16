@@ -133,7 +133,7 @@ export class ConfigManager {
       if (!isNaN(parsed) && parsed > 0) merged.readTool.tokenBudget = parsed;
     }
     if (process.env.STORMDRAIN_READ_MODE) {
-      const mode = process.env.STORMDRAIN_READ_MODE as any;
+      const mode = process.env.STORMDRAIN_READ_MODE as StormDrainSettings['readTool']['mode'];
       if (['auto', 'tokensave', 'standalone', 'disabled'].includes(mode)) {
         merged.readTool.mode = mode;
       }
