@@ -117,22 +117,16 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
   };
 
   return (
-    <div>
-      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h2>Memory Browser</h2>
-          <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
-            Showing {processedMemories.length} of {memories.length} memories in <strong>{activeContext}</strong>
-          </p>
-        </div>
-        <button 
-          className="btn-primary" 
-          onClick={() => setEditingId('new')}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: '6px', background: 'var(--accent-color)', color: '#fff', border: 'none', cursor: 'pointer' }}
-        >
-          <Plus size={16} /> New Memory
-        </button>
-      </div>
+    <div style={{ paddingBottom: '90px' }}>
+      {/* Floating Glass FAB Action Button (Bottom-Right) */}
+      <button 
+        className="floating-glass-action-fab"
+        onClick={() => setEditingId('new')}
+        title="Create a new memory in active context"
+      >
+        <Plus size={18} />
+        <span>New Memory</span>
+      </button>
 
       <div className="table-toolbar-row">
         {/* Segmented Type Filter Pills */}

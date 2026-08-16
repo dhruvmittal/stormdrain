@@ -8,7 +8,6 @@ import {
   AlertTriangle, 
   Cpu, 
   ShieldAlert,
-  SlidersHorizontal,
   Palette,
   Sparkles
 } from 'lucide-react';
@@ -368,36 +367,25 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
         </div>
       )}
 
-      {/* Header */}
-      <div className="config-header">
-        <div>
-          <h2>
-            <SlidersHorizontal size={22} style={{ color: 'var(--accent-color)' }} />
-            System Configuration
-          </h2>
-          <p className="config-subtitle">
-            Tune reader behavior, token budgets, graph traversal heuristics, and memory decay policies.
-          </p>
-        </div>
-        <div className="config-header-actions">
-          <button 
-            className="btn-secondary config-btn" 
-            onClick={handleReset} 
-            disabled={saving}
-            title="Reset to factory defaults"
-          >
-            <RotateCcw size={16} />
-            <span>Reset Defaults</span>
-          </button>
-          <button 
-            className="btn-primary config-btn" 
-            onClick={handleSave} 
-            disabled={saving}
-          >
-            <Save size={16} />
-            <span>{saving ? 'Saving...' : 'Save Changes'}</span>
-          </button>
-        </div>
+      {/* Floating Glass Action Bar (Bottom-Right) */}
+      <div className="floating-glass-bar">
+        <button 
+          className="floating-glass-btn secondary" 
+          onClick={handleReset} 
+          disabled={saving}
+          title="Reset to factory defaults"
+        >
+          <RotateCcw size={15} />
+          <span>Reset Defaults</span>
+        </button>
+        <button 
+          className="floating-glass-btn primary" 
+          onClick={handleSave} 
+          disabled={saving}
+        >
+          <Save size={15} />
+          <span>{saving ? 'Saving...' : 'Save Changes'}</span>
+        </button>
       </div>
 
       <div className="config-cards-grid">
