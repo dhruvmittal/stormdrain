@@ -13,6 +13,9 @@ type SortDirection = 'asc' | 'desc';
 
 const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
+const ROW_HEIGHT = 48;
+const OVERSCAN = 5;
+
 const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersion = 0 }) => {
   const [memories, setMemories] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -22,6 +25,11 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // Virtualized Scroll State
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(600);
+
   // Debounce search input by 200ms to eliminate un-debounced HTTP API spam on fast typing
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -30,6 +38,12 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  const formatDateHelper = (isoStr?: string) => {
+    if (!isoStr) return '';
+    const d = new Date(isoStr);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   const fetchMemories = async (query = debouncedSearchQuery) => {
     if (!activeContext) return;
     const data = await api.getMemories(activeContext, query);
@@ -37,6 +51,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
       ...m,
       _updatedTs: m.updated ? (Date.parse(m.updated) || 0) : 0,
       _accessedTs: m.accessed ? (Date.parse(m.accessed) || 0) : 0,
+      _formattedUpdated: formatDateHelper(m.updated),
+      _formattedAccessed: formatDateHelper(m.accessed),
     }));
     setMemories(augmented);
   };
@@ -45,6 +61,43 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
     fetchMemories(debouncedSearchQuery);
   }, [activeContext, debouncedSearchQuery, dataVersion]);
 
+  // Track viewport height with ResizeObserver & scroll position with rAF
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.height > 0) {
+          setViewportHeight(entry.contentRect.height);
+        }
+      }
+    });
+    ro.observe(el);
+
+    let rafId: number;
+    const handleScroll = () => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        setScrollTop(el.scrollTop);
+      });
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      ro.disconnect();
+      cancelAnimationFrame(rafId);
+    };
+  }, []);
+
+  // Reset scroll position on filter/search/sort change
+  useEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = 0;
+      setScrollTop(0);
+    }
+  }, [selectedType, debouncedSearchQuery, activeContext, sortField, sortDirection]);
 
   // Compute type counts dynamically across current context
   const typeCounts = useMemo(() => {
@@ -89,12 +142,27 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
     });
   }, [memories, selectedType, sortField, sortDirection]);
 
+  // Calculate virtual window bounds
+  const totalCount = processedMemories.length;
+  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIndex = Math.min(totalCount - 1, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
+
+  const visibleMemories = useMemo(() => {
+    if (totalCount === 0) return [];
+    return processedMemories.slice(startIndex, endIndex + 1).map((m, idx) => ({
+      item: m,
+      index: startIndex + idx,
+    }));
+  }, [processedMemories, startIndex, endIndex, totalCount]);
+
+  const paddingTop = startIndex * ROW_HEIGHT;
+  const paddingBottom = Math.max(0, (totalCount - 1 - endIndex) * ROW_HEIGHT);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortField(field);
-      // Sensible defaults: text asc first, dates & numbers desc first
       setSortDirection(field === 'title' || field === 'type' ? 'asc' : 'desc');
     }
   };
@@ -110,14 +178,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
     );
   };
 
-  const formatDate = (isoStr?: string) => {
-    if (!isoStr) return '';
-    const d = new Date(isoStr);
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
   return (
-    <div style={{ paddingBottom: '90px' }}>
+    <div className="memory-browser-view">
       {/* Floating Glass FAB Action Button (Bottom-Right) */}
       <button 
         className="floating-glass-action-fab"
@@ -172,80 +234,99 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
         </div>
       </div>
 
-      <div className="table-container" style={{ paddingTop: '15px' }}>
-        <table>
-          <thead>
-            <tr>
-              <th className={`sortable-th ${sortField === 'type' ? 'sorted' : ''}`} onClick={() => handleSort('type')}>
-                <span className="th-content">Type {renderSortIcon('type')}</span>
-              </th>
-              <th className={`sortable-th ${sortField === 'title' ? 'sorted' : ''}`} onClick={() => handleSort('title')}>
-                <span className="th-content">Title {renderSortIcon('title')}</span>
-              </th>
-              <th className={`sortable-th ${sortField === 'confidence' ? 'sorted' : ''}`} onClick={() => handleSort('confidence')}>
-                <span className="th-content">Confidence {renderSortIcon('confidence')}</span>
-              </th>
-              <th className={`sortable-th ${sortField === 'updated' ? 'sorted' : ''}`} onClick={() => handleSort('updated')}>
-                <span className="th-content">Last Updated {renderSortIcon('updated')}</span>
-              </th>
-              <th className={`sortable-th ${sortField === 'accessed' ? 'sorted' : ''}`} onClick={() => handleSort('accessed')}>
-                <span className="th-content">Last Accessed {renderSortIcon('accessed')}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {processedMemories.map(m => (
-              <tr key={m.id} style={{ cursor: 'pointer' }} onClick={() => setEditingId(m.id)}>
-                <td>
-                  <span className={`badge badge-${m.type}`}>{m.type}</span>
-                </td>
-                <td style={{ fontWeight: 500 }}>{m.title}</td>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: '80px', backgroundColor: 'var(--bg-surface-hover)', borderRadius: '4px', height: '6px' }}>
-                      <div style={{ width: `${(m.confidence || 1.0) * 100}%`, backgroundColor: m.confidence < 0.8 ? 'var(--color-warning)' : 'var(--accent-color)', height: '100%', borderRadius: '4px' }}></div>
-                    </div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{Math.round((m.confidence || 1.0) * 100)}%</span>
-                  </div>
-                </td>
-                <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{formatDate(m.updated)}</td>
-                <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                  {m.accessed ? (
-                    <div>
-                      {formatDate(m.accessed)}
-                      {m.access_count > 0 && (
-                        <span style={{ marginLeft: 6, fontSize: '0.78rem', color: 'var(--accent-color)', background: 'rgba(59, 130, 246, 0.12)', padding: '2px 6px', borderRadius: '4px' }}>
-                          {m.access_count} {m.access_count === 1 ? 'read' : 'reads'}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <span style={{ color: 'var(--border-color)' }}>—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {processedMemories.length === 0 && (
+      <div className="table-container">
+        <div className="table-scroll-viewport" ref={containerRef}>
+          <table>
+            <colgroup>
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '42%' }} />
+              <col style={{ width: '18%' }} />
+              <col style={{ width: '14%' }} />
+              <col style={{ width: '14%' }} />
+            </colgroup>
+            <thead>
               <tr>
-                <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px' }}>
-                  <div>No memories match your current filters.</div>
-                  {(selectedType !== 'all' || searchQuery) && (
-                    <button
-                      className="btn-secondary"
-                      onClick={() => {
-                        setSelectedType('all');
-                        setSearchQuery('');
-                      }}
-                      style={{ marginTop: 12, padding: '6px 14px', borderRadius: '6px', cursor: 'pointer' }}
-                    >
-                      Clear Filters
-                    </button>
-                  )}
-                </td>
+                <th className={`sortable-th ${sortField === 'type' ? 'sorted' : ''}`} onClick={() => handleSort('type')}>
+                  <span className="th-content">Type {renderSortIcon('type')}</span>
+                </th>
+                <th className={`sortable-th ${sortField === 'title' ? 'sorted' : ''}`} onClick={() => handleSort('title')}>
+                  <span className="th-content">Title {renderSortIcon('title')}</span>
+                </th>
+                <th className={`sortable-th ${sortField === 'confidence' ? 'sorted' : ''}`} onClick={() => handleSort('confidence')}>
+                  <span className="th-content">Confidence {renderSortIcon('confidence')}</span>
+                </th>
+                <th className={`sortable-th ${sortField === 'updated' ? 'sorted' : ''}`} onClick={() => handleSort('updated')}>
+                  <span className="th-content">Last Updated {renderSortIcon('updated')}</span>
+                </th>
+                <th className={`sortable-th ${sortField === 'accessed' ? 'sorted' : ''}`} onClick={() => handleSort('accessed')}>
+                  <span className="th-content">Last Accessed {renderSortIcon('accessed')}</span>
+                </th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {paddingTop > 0 && (
+                <tr style={{ height: `${paddingTop}px` }}>
+                  <td colSpan={5} style={{ padding: 0, border: 'none' }} />
+                </tr>
+              )}
+              {visibleMemories.map(({ item: m }) => (
+                <tr key={m.id} style={{ cursor: 'pointer', height: `${ROW_HEIGHT}px` }} onClick={() => setEditingId(m.id)}>
+                  <td>
+                    <span className={`badge badge-${m.type}`}>{m.type}</span>
+                  </td>
+                  <td className="table-title-cell">{m.title}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ width: '80px', backgroundColor: 'var(--bg-surface-hover)', borderRadius: '4px', height: '6px' }}>
+                        <div style={{ width: `${(m.confidence || 1.0) * 100}%`, backgroundColor: m.confidence < 0.8 ? 'var(--color-warning)' : 'var(--accent-color)', height: '100%', borderRadius: '4px' }}></div>
+                      </div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{Math.round((m.confidence || 1.0) * 100)}%</span>
+                    </div>
+                  </td>
+                  <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{m._formattedUpdated}</td>
+                  <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                    {m.accessed ? (
+                      <div>
+                        {m._formattedAccessed}
+                        {m.access_count > 0 && (
+                          <span style={{ marginLeft: 6, fontSize: '0.78rem', color: 'var(--accent-color)', background: 'rgba(59, 130, 246, 0.12)', padding: '2px 6px', borderRadius: '4px' }}>
+                            {m.access_count} {m.access_count === 1 ? 'read' : 'reads'}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span style={{ color: 'var(--border-color)' }}>—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {paddingBottom > 0 && (
+                <tr style={{ height: `${paddingBottom}px` }}>
+                  <td colSpan={5} style={{ padding: 0, border: 'none' }} />
+                </tr>
+              )}
+              {processedMemories.length === 0 && (
+                <tr>
+                  <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px' }}>
+                    <div>No memories match your current filters.</div>
+                    {(selectedType !== 'all' || searchQuery) && (
+                      <button
+                        className="btn-secondary"
+                        onClick={() => {
+                          setSelectedType('all');
+                          setSearchQuery('');
+                        }}
+                        style={{ marginTop: 12, padding: '6px 14px', borderRadius: '6px', cursor: 'pointer' }}
+                      >
+                        Clear Filters
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {editingId && (
