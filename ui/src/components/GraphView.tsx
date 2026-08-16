@@ -2292,12 +2292,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   };
 
   return (
-    <div className="graph-container" style={{ width: '100%', height: 'calc(100vh - 40px)', position: 'relative', overflow: 'hidden' }}>
-      {/* Top Header Title */}
-      <div className="page-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(10px)', padding: '15px 30px' }}>
-        <h2>Graph View ({activeContext})</h2>
-      </div>
-
+    <div className="graph-container" style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
       {/* Floating Glassmorphic Query & Filter HUD (Top-Right) */}
       {isToolbarCollapsed ? (
         <button
