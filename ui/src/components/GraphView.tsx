@@ -117,6 +117,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedQuery, setDebouncedQuery] = useState<string>('');
   const [selectedType, setSelectedType] = useState<string>('all');
+  const [excludedTypes, setExcludedTypes] = useState<string[]>([]);
   const [scopeDepth, setScopeDepth] = useState<ScopeDepth>(1);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(null);
   const [focusAnchorTitle, setFocusAnchorTitle] = useState<string | null>(null);
@@ -518,6 +519,33 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     isCanvasModeRef.current = isCanvasMode;
   }, [isCanvasMode]);
 
+  const canvasDimensionsRef = useRef<{ width: number; height: number }>({ width: 800, height: 600 });
+  const consolidatedNodeIdsRef = useRef<Set<string>>(new Set());
+
+  // Attach ResizeObserver to canvas container to eliminate getBoundingClientRect reflows during 60FPS drawCanvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const updateDimensions = () => {
+      const rect = canvas.getBoundingClientRect();
+      canvasDimensionsRef.current = {
+        width: rect.width || canvas.clientWidth || 800,
+        height: rect.height || canvas.clientHeight || 600,
+      };
+    };
+    updateDimensions();
+
+    const observer = new ResizeObserver(() => {
+      updateDimensions();
+      if (isCanvasModeRef.current) {
+        drawCanvas();
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -525,9 +553,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const width = rect.width || canvas.clientWidth || 800;
-    const height = rect.height || canvas.clientHeight || 600;
+    const { width, height } = canvasDimensionsRef.current;
 
     if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
       canvas.width = width * dpr;
@@ -550,12 +576,6 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     for (const n of currentNodes) {
       nodeMap.set(n.id, n);
     }
-
-    // Build spatial quadtree for O(log N) hit testing
-    quadtreeRef.current = d3.quadtree<any>()
-      .x((d: any) => d.x || 0)
-      .y((d: any) => d.y || 0)
-      .addAll(currentNodes as any);
 
     const query = debouncedQuery.trim().toLowerCase();
     const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
@@ -591,9 +611,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     // 1. Draw Links
     const hoveredId = hoveredNodeIdRef.current;
-    const consolidatedNodeIds = new Set(
-      currentNodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
-    );
+    const consolidatedNodeIds = consolidatedNodeIdsRef.current;
     for (const l of currentLinks) {
       const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
       const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
@@ -746,8 +764,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     if (!nodes || nodes.length === 0) return;
 
     const query = debouncedQuery.trim().toLowerCase();
-    const hasActiveFilter = Boolean(query || selectedType !== 'all');
-    const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+    const hasActiveFilter = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0);
+    const isFiltering = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0 || focusAnchorId);
 
     const highlightColor = configSettingsRef.current?.colors?.highlight || '#fbbf24';
 
@@ -756,7 +774,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     
     // Helper to check if a node matches the active type/query filter
     const matchesFilter = (n: any) => {
-      const matchesType = selectedType === 'all' || n.type === selectedType;
+      const matchesType = (selectedType === 'all' || n.type === selectedType) && !excludedTypes.includes(n.type);
       const matchesQuery = !query || 
         n.title?.toLowerCase().includes(query) || 
         n.content?.toLowerCase().includes(query) ||
@@ -1017,7 +1035,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return d.type === 'imports' ? '4 2' : 'none';
       });
 
-  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
+  }, [debouncedQuery, selectedType, excludedTypes, scopeDepth, focusAnchorId, isNodeHighlighted, isLinkHighlighted, getLabelText, colorSettings]);
 
   const applyActiveFilterStylingRef = useRef(applyActiveFilterStyling);
   useEffect(() => {
@@ -1317,6 +1335,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       }
 
       rawGraphDataRef.current = { nodes, links };
+      consolidatedNodeIdsRef.current = new Set(
+        nodes.filter((n: any) => n.superseded_by).map((n: any) => n.id)
+      );
 
       // Compute type distributions
       const counts: Record<string, number> = { all: nodes.length };
@@ -1520,11 +1541,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       // Compute matching subsets for Focus Mode if active
       const query = debouncedQuery.trim().toLowerCase();
-      const isFiltering = Boolean(query || selectedType !== 'all' || focusAnchorId);
+      const isFiltering = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0 || focusAnchorId);
 
       const tier1Set = new Set<string>();
       const matchesFilter = (n: any) => {
-        const matchesType = selectedType === 'all' || n.type === selectedType;
+        const matchesType = (selectedType === 'all' || n.type === selectedType) && !excludedTypes.includes(n.type);
         const matchesQuery = !query || 
           n.title?.toLowerCase().includes(query) || 
           n.content?.toLowerCase().includes(query) ||
@@ -1532,7 +1553,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         return matchesType && matchesQuery;
       };
 
-      const hasActiveFilter = Boolean(query || selectedType !== 'all');
+      const hasActiveFilter = Boolean(query || selectedType !== 'all' || excludedTypes.length > 0);
       if (hasActiveFilter) {
         for (const n of nodes) {
           if (matchesFilter(n)) {
@@ -1868,6 +1889,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodeSelectionRef.current = node as any;
 
       simulation.on('tick', () => {
+        // Build quadtree on tick for O(log N) hit testing without rebuilding inside drawCanvas
+        quadtreeRef.current = d3.quadtree<any>()
+          .x((d: any) => d.x || 0)
+          .y((d: any) => d.y || 0)
+          .addAll(nodesToBind as any);
+
         if (isCanvasModeRef.current) {
           drawCanvas();
         } else {
@@ -2255,23 +2282,19 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   // Trigger filter updates on filter state changes
   useEffect(() => {
     applyActiveFilterStyling();
-  }, [debouncedQuery, selectedType, scopeDepth, focusAnchorId, applyActiveFilterStyling]);
+  }, [debouncedQuery, selectedType, excludedTypes, scopeDepth, focusAnchorId, applyActiveFilterStyling]);
 
   const clearAllFilters = () => {
     setSearchQuery('');
     setDebouncedQuery('');
     setSelectedType('all');
+    setExcludedTypes([]);
     setFocusAnchorId(null);
     setFocusAnchorTitle(null);
   };
 
   return (
-    <div className="graph-container" style={{ width: '100%', height: 'calc(100vh - 40px)', position: 'relative', overflow: 'hidden' }}>
-      {/* Top Header Title */}
-      <div className="page-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(10px)', padding: '15px 30px' }}>
-        <h2>Graph View ({activeContext})</h2>
-      </div>
-
+    <div className="graph-container" style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
       {/* Floating Glassmorphic Query & Filter HUD (Top-Right) */}
       {isToolbarCollapsed ? (
         <button
@@ -2369,13 +2392,47 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             {MEMORY_TYPES.map((type) => {
               const count = typeCounts[type] || 0;
               const isActive = selectedType === type;
-              const typeColor = type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
+              const isExcluded = excludedTypes.includes(type);
+              const typeColor = isExcluded ? '#f43f5e' : type === 'all' ? 'var(--text-muted)' : getTypeColor(type);
               const label = type === 'codemap' ? 'File (codemap)' : type;
               return (
                 <button
                   key={type}
-                  className={`graph-type-pill ${isActive ? 'active' : ''}`}
-                  onClick={() => setSelectedType(type)}
+                  className={`graph-type-pill ${isActive ? 'active' : ''} ${isExcluded ? 'excluded' : ''}`}
+                  onClick={() => {
+                    if (type === 'all') {
+                      setSelectedType('all');
+                      setExcludedTypes([]);
+                    } else {
+                      setSelectedType(type);
+                      setExcludedTypes(prev => prev.filter(t => t !== type));
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (type === 'all') {
+                      setSelectedType('all');
+                      setExcludedTypes([]);
+                      return;
+                    }
+                    setExcludedTypes(prev => {
+                      if (prev.includes(type)) {
+                        return prev.filter(t => t !== type);
+                      } else {
+                        if (selectedType === type) {
+                          setSelectedType('all');
+                        }
+                        return [...prev, type];
+                      }
+                    });
+                  }}
+                  title={
+                    type === 'all'
+                      ? 'Click to reset all filters'
+                      : isExcluded
+                      ? 'Right-click to UN-EXCLUDE this type'
+                      : 'Left-click: show ONLY this type | Right-click: EXCLUDE this type'
+                  }
                 >
                   <span
                     className="graph-type-pill-dot"
@@ -2384,7 +2441,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
                       boxShadow: isActive ? `0 0 6px ${typeColor}` : 'none'
                     }}
                   />
-                  <span style={{ textTransform: 'capitalize' }}>{label}</span>
+                  <span style={{ textTransform: 'capitalize', textDecoration: isExcluded ? 'line-through' : 'none' }}>
+                    {isExcluded ? `- ${label}` : label}
+                  </span>
                   <span style={{ opacity: 0.7, fontSize: '0.68rem', marginLeft: 2 }}>({count})</span>
                 </button>
               );

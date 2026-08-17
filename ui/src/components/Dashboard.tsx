@@ -41,11 +41,6 @@ const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0 })
 
   return (
     <div>
-      <div className="page-header">
-        <h2>Dashboard</h2>
-        <p style={{ color: 'var(--text-muted)' }}>Overview of <strong>{activeContext}</strong></p>
-      </div>
-
       <div className="dashboard-grid">
         <div className="card">
           <h3>Total Memories</h3>

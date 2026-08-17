@@ -418,7 +418,7 @@ program
       }
       const tags = options.tags ? (Array.isArray(options.tags) ? options.tags : options.tags.split(',')) : [];
       const id = ctx.addMemory(
-        type as any,
+        type as MemoryType,
         title,
         content,
         tags,
@@ -687,13 +687,13 @@ program
       if (options.target) {
         const results = ctx.recallGraph(options.target, 2);
         console.log(`Graph memories for target "${options.target}" in context "${targetCtxName}":`);
-        for (const r of results as any[]) {
+        for (const r of results) {
           console.log(`- [Depth ${r.depth}] [${r.type}] ${r.title} (${r.id})`);
         }
       } else {
         const results = ctx.recallTopMemories(5);
         console.log(`Top memories for context "${targetCtxName}":`);
-        for (const r of results as any[]) {
+        for (const r of results) {
           console.log(`- [${r.type}] ${r.title} (Confidence: ${r.confidence})`);
         }
       }

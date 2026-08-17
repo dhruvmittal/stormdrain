@@ -7,10 +7,11 @@ import { initDb } from '../db/schema';
 import { syncMemoryToDb, deleteMemoryFromDb } from '../db/sync';
 import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
-import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate } from '../types';
+import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
+import { asyncDiskQueue } from '../utils/asyncDiskQueue';
 
 export class ContextManager {
   public readonly name: string;
@@ -67,20 +68,20 @@ export class ContextManager {
     source: Memory['metadata']['source'] = 'manual',
     customId?: string,
     targetOrTargets?: string | string[],
-    relationType: string = 'affects',
-    explicitRelations?: MemoryRelation[]
+    relationType: RelationType = 'affects',
+    explicitRelations?: Array<{ target: string; type?: RelationType }>
   ): string {
     const id = customId || `mem_${crypto.randomBytes(6).toString('hex')}`;
     const relations: MemoryRelation[] = [];
     const relationKeys = new Set<string>();
 
-    const addRel = (target: string, relType: string) => {
+    const addRel = (target: string, relType: RelationType) => {
       const resolvedTarget = this.resolveTargetId(target);
       if (!resolvedTarget) return;
       const key = `${resolvedTarget}:${relType}`;
       if (!relationKeys.has(key)) {
         relationKeys.add(key);
-        relations.push({ target: resolvedTarget, type: relType as any });
+        relations.push({ target: resolvedTarget, type: relType });
       }
     };
 
@@ -250,12 +251,18 @@ export class ContextManager {
     };
   }
 
-
   public getMemory(id: string): Memory | null {
     const memPath = this.getSafeMemPath(id);
     if (!fs.existsSync(memPath)) return null;
 
     const content = fs.readFileSync(memPath, 'utf8');
+    return parseMemory(content);
+  }
+
+  public async getMemoryAsync(id: string): Promise<Memory | null> {
+    const memPath = this.getSafeMemPath(id);
+    const content = await asyncDiskQueue.readFile(memPath);
+    if (!content) return null;
     return parseMemory(content);
   }
 
@@ -291,7 +298,7 @@ export class ContextManager {
           source: row.source || 'manual',
           expires: row.expires || null,
           superseded_by: row.superseded_by || null,
-          relations: relRows.map(r => ({ target: r.target, type: r.type as any }))
+          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType }))
         },
         content: row.content || ''
       });
@@ -322,12 +329,12 @@ export class ContextManager {
 
     // If still not found on disk, check if it exists in DB
     if (!mem) {
-      const dbRow = this.db.prepare('SELECT * FROM memories WHERE id = ? OR id = ?').get(targetId, trimmed) as any;
+      const dbRow = this.db.prepare('SELECT * FROM memories WHERE id = ? OR id = ?').get(targetId, trimmed) as MemoryDbRow | undefined;
       if (dbRow) {
         effectiveId = dbRow.id;
-        const ftsRow = this.db.prepare('SELECT content FROM memories_fts WHERE id = ?').get(effectiveId) as any;
+        const ftsRow = this.db.prepare('SELECT content FROM memories_fts WHERE id = ?').get(effectiveId) as { content: string } | undefined;
         const tagRows = this.db.prepare('SELECT tag FROM tags WHERE memory_id = ?').all(effectiveId) as Array<{ tag: string }>;
-        const relRows = this.db.prepare('SELECT target_id as target, type FROM relations WHERE source_id = ?').all(effectiveId) as Array<{ target: string; type: string }>;
+        const relRows = this.db.prepare('SELECT target_id as target, type FROM relations WHERE source_id = ?').all(effectiveId) as Array<{ target: string; type: RelationType }>;
         mem = {
           metadata: {
             id: effectiveId,
@@ -497,9 +504,33 @@ export class ContextManager {
     this.git.scheduleCommit(`[stormdrain] delete: memory ${id} "${memory?.metadata.title || ''}"`);
   }
 
+  public async deleteMemoryAsync(id: string): Promise<void> {
+    const memory = await this.getMemoryAsync(id);
+    const memPath = this.getSafeMemPath(id);
+    await asyncDiskQueue.unlinkFile(memPath);
+
+    const incomingReferrers = this.db.prepare('SELECT source_id FROM relations WHERE target_id = ?').all(id) as Array<{ source_id: string }>;
+    for (const ref of incomingReferrers) {
+      const refMem = await this.getMemoryAsync(ref.source_id);
+      if (refMem) {
+        refMem.metadata.relations = refMem.metadata.relations.filter(r => r.target !== id);
+        await this.saveMemoryAsync(refMem, `[stormdrain] cascade delete: remove link to deleted memory ${id}`);
+      }
+    }
+    deleteMemoryFromDb(this.db, id);
+    this.git.scheduleCommit(`[stormdrain] delete: memory ${id} "${memory?.metadata.title || ''}"`);
+  }
+
   private saveMemory(memory: Memory, commitMsg: string) {
     const memPath = this.getSafeMemPath(memory.metadata.id);
     fs.writeFileSync(memPath, serializeMemory(memory));
+    syncMemoryToDb(this.db, memory);
+    this.git.scheduleCommit(commitMsg);
+  }
+
+  public async saveMemoryAsync(memory: Memory, commitMsg: string): Promise<void> {
+    const memPath = this.getSafeMemPath(memory.metadata.id);
+    await asyncDiskQueue.writeFile(memPath, serializeMemory(memory));
     syncMemoryToDb(this.db, memory);
     this.git.scheduleCommit(commitMsg);
   }
@@ -726,7 +757,7 @@ export class ContextManager {
           // Add relation pointing to consolidation guide
           const alreadyExists = srcMem.metadata.relations.some(r => r.target === consolidatedId && r.type === inc.type);
           if (!alreadyExists) {
-            srcMem.metadata.relations.push({ target: consolidatedId, type: inc.type as any });
+            srcMem.metadata.relations.push({ target: consolidatedId, type: inc.type as RelationType });
           }
           srcMem.metadata.updated = new Date().toISOString();
           this.saveMemory(srcMem, `[stormdrain] transfer relation: update incoming link from ${inc.source_id} to point to consolidation guide ${consolidatedId}`);
@@ -781,10 +812,21 @@ export class ContextManager {
     const includeCodemaps = options.includeCodemaps ?? false;
 
     try {
-      // 1. Fetch file vertices and relation edges from DB
+      // 1. Fetch file vertices and relation edges for target neighborhood via SQLite Recursive CTE
       const allRelations = this.db.prepare(`
-        SELECT source_id, target_id, type FROM relations
-      `).all() as Array<{ source_id: string; target_id: string; type: string }>;
+        WITH RECURSIVE frontier(node_id, depth) AS (
+          SELECT ? AS node_id, 0 AS depth
+          UNION ALL
+          SELECT CASE WHEN r.source_id = f.node_id THEN r.target_id ELSE r.source_id END, f.depth + 1
+          FROM relations r
+          JOIN frontier f ON (r.source_id = f.node_id OR r.target_id = f.node_id)
+          WHERE r.type = 'imports' AND f.depth < ?
+        )
+        SELECT r.source_id, r.target_id, r.type
+        FROM relations r
+        WHERE r.type = 'imports'
+          AND (r.source_id IN (SELECT node_id FROM frontier) OR r.target_id IN (SELECT node_id FROM frontier))
+      `).all(startNodeId, maxDepth + 1) as Array<{ source_id: string; target_id: string; type: string }>;
 
       // Build adjacency list for file nodes
       const outNeighbors = new Map<string, Array<{ target: string; weight: number; direction: 'imports' | 'imported_by' }>>();
@@ -1066,7 +1108,7 @@ export class ContextManager {
           FROM memories m
           LEFT JOIN memories_fts fts ON fts.id = m.id
           WHERE m.id = ?
-        `).get(fileOrMemoryId) as any;
+        `).get(fileOrMemoryId) as (MemoryDbRow & { content_snippet?: string; tags_str?: string }) | undefined;
 
         if (directMem && !finalMemories.some(fm => fm.id === directMem.id)) {
           finalMemories.unshift({
@@ -1090,7 +1132,7 @@ export class ContextManager {
           JOIN memories m ON (m.id = r.target_id AND r.source_id = ?) OR (m.id = r.source_id AND r.target_id = ?)
           LEFT JOIN memories_fts fts ON fts.id = m.id
           WHERE m.type != 'codemap' AND m.id != ?
-        `).all(fileOrMemoryId, fileOrMemoryId, fileOrMemoryId) as Array<any>;
+        `).all(fileOrMemoryId, fileOrMemoryId, fileOrMemoryId) as Array<MemoryDbRow & { content_snippet?: string; tags_str?: string; rel_type: string }>;
 
         for (const conn of relatedToQuery) {
           if (finalMemories.some(fm => fm.id === conn.id)) continue;
@@ -1133,7 +1175,7 @@ export class ContextManager {
     return res.all;
   }
 
-  public searchMemories(query: string, includeGlobal: boolean = true): Array<any> {
+  public searchMemories(query: string, includeGlobal: boolean = true): Array<MemoryDbRow & { content_snippet: string; context?: string }> {
     const safeQuery = query
       .split(/\s+/)
       .map(term => term.replace(/[^a-zA-Z0-9_\-\u00C0-\u024F]/g, ''))
@@ -1153,7 +1195,7 @@ export class ContextManager {
           ORDER BY rank
           LIMIT 20
         `);
-        const rows = stmt.all(safeQuery) as any[];
+        const rows = stmt.all(safeQuery) as Array<MemoryDbRow & { content_snippet: string }>;
         return rows.map(r => ({ ...r, context: ctxName }));
       } catch {
         return [];
