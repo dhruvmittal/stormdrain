@@ -354,9 +354,60 @@ export const startWebServer = (port: number = 3456) => {
     res.json({ version: hash });
   }));
 
+function computeNodeModules(nodes: any[], links: any[]): void {
+  const fileToModuleMap = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.type === 'codemap' || n.id?.startsWith('file_')) {
+      const path = n.title || '';
+      const segments = path.split('/');
+      let mod = '_root';
+      if (segments.length >= 3) mod = segments.slice(0, 2).join('/');
+      else if (segments.length >= 2) mod = segments[0];
+      n.module = mod;
+      fileToModuleMap.set(n.id, mod);
+    }
+  }
+
+  const adj = new Map<string, Set<string>>();
+  for (const n of nodes) adj.set(n.id, new Set());
+  for (const l of links) {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    if (!adj.has(src)) adj.set(src, new Set());
+    if (!adj.has(tgt)) adj.set(tgt, new Set());
+    adj.get(src)!.add(tgt);
+    adj.get(tgt)!.add(src);
+  }
+
+  for (const n of nodes) {
+    if (n.module) continue;
+    let targetModule = '';
+    const visited = new Set<string>([n.id]);
+    const queue = [n.id];
+    while (queue.length > 0) {
+      const currId = queue.shift()!;
+      if (fileToModuleMap.has(currId)) {
+        targetModule = fileToModuleMap.get(currId)!;
+        break;
+      }
+      const neighbors = adj.get(currId);
+      if (neighbors) {
+        for (const neighbor of neighbors) {
+          if (!visited.has(neighbor)) {
+            visited.add(neighbor);
+            queue.push(neighbor);
+          }
+        }
+      }
+    }
+    n.module = targetModule || (n.context === '_global' ? '_global' : '_memories');
+  }
+}
+
   app.get('/api/graph', withContext(async (req, res, ctx) => {
     const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all();
     const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all();
+    computeNodeModules(memories, relations);
     res.json({ nodes: memories, links: relations });
   }));
 

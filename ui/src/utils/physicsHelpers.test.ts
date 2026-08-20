@@ -7,7 +7,10 @@ import {
   getCollisionRadius,
   getMemoryChargeStrength,
   getAdaptiveAlphaDecay,
-  getAdaptiveVelocityDecay
+  getAdaptiveVelocityDecay,
+  computeViewportBounds,
+  isNodeInViewport,
+  groupLinksByRenderStyle
 } from './physicsHelpers';
 
 describe('Physics Helpers', () => {
@@ -55,6 +58,48 @@ describe('Physics Helpers', () => {
     expect(getAdaptiveVelocityDecay(200)).toBe(0.45);
     expect(getAdaptiveVelocityDecay(500)).toBe(0.55);
     expect(getAdaptiveVelocityDecay(1200)).toBe(0.65);
+  });
+
+  it('should correctly compute viewport bounds and frustum culling membership', () => {
+    const transform = { x: 100, y: 50, k: 2.0 };
+    const bounds = computeViewportBounds(transform, 800, 600, 100);
+
+    // World coordinates visible in 800x600 canvas with k=2, x=100, y=50
+    // minX = -100/2 - 100 = -150
+    // maxX = (800-100)/2 + 100 = 450
+    expect(bounds.minX).toBe(-150);
+    expect(bounds.maxX).toBe(450);
+
+    expect(isNodeInViewport({ x: 100, y: 100 }, bounds)).toBe(true);
+    expect(isNodeInViewport({ x: 1000, y: 1000 }, bounds)).toBe(false);
+    expect(isNodeInViewport({ x: undefined, y: 100 }, bounds)).toBe(false);
+  });
+
+  it('should group canvas links into style buckets for batch rendering', () => {
+    const nodes = [
+      { id: 'n1', x: 0, y: 0, type: 'concept' },
+      { id: 'n2', x: 50, y: 50, type: 'pattern' },
+      { id: 'n3', x: 100, y: 100, type: 'codemap' },
+    ];
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const links = [
+      { source: 'n1', target: 'n2', type: 'related_to' },
+      { source: 'n2', target: 'n3', type: 'imports' },
+    ];
+    const getEdgeColor = (type: string) => type === 'imports' ? '#38bdf8' : '#94a3b8';
+
+    const buckets = groupLinksByRenderStyle(
+      links,
+      nodeMap,
+      null,
+      false,
+      new Set(),
+      new Set(),
+      getEdgeColor
+    );
+
+    expect(buckets.length).toBeGreaterThan(0);
+    expect(buckets.some(b => b.isDashed)).toBe(true); // imports link is dashed
   });
 });
 

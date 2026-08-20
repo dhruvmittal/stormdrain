@@ -127,12 +127,19 @@ describe('Web API Server', () => {
     expect(data.error).toContain('Missing required fields');
   });
 
-  it('should return graph visualization nodes and links', async () => {
+  it('should return graph visualization nodes and links with pre-computed modules', async () => {
     const res = await fetch(`${baseUrl}/api/graph`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.nodes).toBeDefined();
     expect(data.links).toBeDefined();
+
+    if (data.nodes.length > 0) {
+      for (const node of data.nodes) {
+        expect(node.module).toBeDefined();
+        expect(typeof node.module).toBe('string');
+      }
+    }
   });
 
   it('should return comprehensive dashboard statistics via GET /api/stats', async () => {
