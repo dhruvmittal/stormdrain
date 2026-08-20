@@ -97,6 +97,100 @@ export const startWebServer = (port: number = 3456) => {
   });
 
 
+  app.get('/api/stats', withContext(async (req, res, ctx) => {
+    const db = ctx.getDb();
+
+    // Total & Active counts
+    const totalRow = db.prepare(`SELECT COUNT(*) as total, AVG(confidence) as avg_conf FROM memories WHERE type != 'codemap' AND superseded_by IS NULL`).get() as { total: number; avg_conf: number | null };
+    const avgConfidence = totalRow?.avg_conf !== null && totalRow?.avg_conf !== undefined ? Math.round(totalRow.avg_conf * 1000) / 10 : 100;
+
+    // Type counts breakdown
+    const typeRows = db.prepare(`SELECT type, COUNT(*) as count FROM memories GROUP BY type`).all() as Array<{ type: string; count: number }>;
+    const counts: Record<string, number> = { total: 0, concept: 0, pattern: 0, guide: 0, lesson: 0, fact: 0, warning: 0, codemap: 0, sequence: 0 };
+    typeRows.forEach(r => {
+      counts[r.type] = r.count;
+      if (r.type !== 'codemap') counts.total += r.count;
+    });
+
+    // Time calculations
+    const now = new Date();
+    const iso24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const iso7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const iso30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const velocity24h = (db.prepare(`SELECT COUNT(*) as count FROM memories WHERE created >= ? OR updated >= ?`).get(iso24h, iso24h) as any)?.count || 0;
+    const velocity7d = (db.prepare(`SELECT COUNT(*) as count FROM memories WHERE created >= ? OR updated >= ?`).get(iso7d, iso7d) as any)?.count || 0;
+    const velocity30d = (db.prepare(`SELECT COUNT(*) as count FROM memories WHERE created >= ? OR updated >= ?`).get(iso30d, iso30d) as any)?.count || 0;
+
+    // Consolidation Backlog
+    const candidates = ctx.findConsolidationCandidates();
+    const backlogCount = candidates.length;
+    const unconsolidatedCount = candidates.reduce((acc, c) => acc + c.memoryCount, 0);
+
+    // Decay Watchlist (memories with confidence < 0.9, ascending)
+    const decayWatchlist = db.prepare(`
+      SELECT id, type, title, confidence, updated 
+      FROM memories 
+      WHERE type != 'codemap' AND superseded_by IS NULL AND confidence < 0.9 
+      ORDER BY confidence ASC, updated DESC 
+      LIMIT 5
+    `).all();
+
+    // Top Knowledge Hotspots (files/codemaps with the most linked non-codemap memories)
+    const hotspots = db.prepare(`
+      SELECT m.id, m.title, COUNT(r.source_id) as attached_count 
+      FROM memories m 
+      JOIN relations r ON r.target_id = m.id OR r.source_id = m.id
+      JOIN memories m2 ON (m2.id = r.source_id OR m2.id = r.target_id) AND m2.id != m.id
+      WHERE m.type = 'codemap' AND m2.type != 'codemap'
+      GROUP BY m.id 
+      ORDER BY attached_count DESC 
+      LIMIT 5
+    `).all();
+
+    // Codebase Coverage
+    const totalCodemaps = (db.prepare(`SELECT COUNT(*) as count FROM memories WHERE type = 'codemap'`).get() as any)?.count || 0;
+    const coveredCodemaps = (db.prepare(`
+      SELECT COUNT(DISTINCT m.id) as count 
+      FROM memories m 
+      JOIN relations r ON (r.target_id = m.id OR r.source_id = m.id)
+      JOIN memories m2 ON (m2.id = r.source_id OR m2.id = r.target_id) AND m2.id != m.id
+      WHERE m.type = 'codemap' AND m2.type != 'codemap'
+    `).get() as any)?.count || 0;
+
+    // Recent Activity
+    const recentActivity = db.prepare(`
+      SELECT id, type, title, confidence, updated, created, source 
+      FROM memories 
+      WHERE type != 'codemap' 
+      ORDER BY updated DESC 
+      LIMIT 5
+    `).all();
+
+    res.json({
+      graphHealthScore: avgConfidence,
+      counts,
+      velocity: {
+        last24h: velocity24h,
+        last7d: velocity7d,
+        last30d: velocity30d
+      },
+      backlog: {
+        candidateCount: backlogCount,
+        unconsolidatedCount,
+        candidates
+      },
+      decayWatchlist,
+      hotspots,
+      codebaseCoverage: {
+        totalCodemaps,
+        coveredCodemaps,
+        percentage: totalCodemaps > 0 ? Math.round((coveredCodemaps / totalCodemaps) * 100) : 0
+      },
+      recentActivity
+    });
+  }));
+
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
     if (query) {
