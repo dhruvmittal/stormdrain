@@ -42,6 +42,15 @@ export const api = {
     }
   },
 
+  async getStats(context: string): Promise<DashboardStats | null> {
+    try {
+      const { data } = await safeJsonFetch(`${API_BASE}/stats?context=${context}`);
+      return data;
+    } catch {
+      return null;
+    }
+  },
+
   async getGraphVersion(context: string) {
     try {
       const { data } = await safeJsonFetch(`${API_BASE}/graph/version?context=${context}`);
@@ -328,4 +337,56 @@ export interface ConsolidationCandidate {
     summarySnippet: string;
   }>;
 }
+
+export interface DashboardStats {
+  graphHealthScore: number;
+  counts: {
+    total: number;
+    concept: number;
+    pattern: number;
+    guide: number;
+    lesson: number;
+    fact: number;
+    warning: number;
+    codemap: number;
+    sequence: number;
+  };
+  velocity: {
+    last24h: number;
+    last7d: number;
+    last30d: number;
+  };
+  backlog: {
+    candidateCount: number;
+    unconsolidatedCount: number;
+    candidates: ConsolidationCandidate[];
+  };
+  decayWatchlist: Array<{
+    id: string;
+    type: string;
+    title: string;
+    confidence: number;
+    updated: string;
+  }>;
+  hotspots: Array<{
+    id: string;
+    title: string;
+    attached_count: number;
+  }>;
+  codebaseCoverage: {
+    totalCodemaps: number;
+    coveredCodemaps: number;
+    percentage: number;
+  };
+  recentActivity: Array<{
+    id: string;
+    type: string;
+    title: string;
+    confidence: number;
+    updated: string;
+    created: string;
+    source: string;
+  }>;
+}
+
 

@@ -21,7 +21,10 @@ import {
   getCollisionRadius, 
   getMemoryChargeStrength,
   getAdaptiveAlphaDecay,
-  getAdaptiveVelocityDecay
+  getAdaptiveVelocityDecay,
+  computeViewportBounds,
+  isNodeInViewport,
+  groupLinksByRenderStyle
 } from '../utils/physicsHelpers';
 
 // Physics Engine Types & Presets
@@ -609,55 +612,46 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       ctx.restore();
     }
 
-    // 1. Draw Links
+    // 1. Draw Links (Batched by Render Style Bucket)
     const hoveredId = hoveredNodeIdRef.current;
     const consolidatedNodeIds = consolidatedNodeIdsRef.current;
-    for (const l of currentLinks) {
-      const s = typeof l.source === 'object' ? l.source : nodeMap.get(l.source);
-      const t = typeof l.target === 'object' ? l.target : nodeMap.get(l.target);
-      if (!s || !t || s.x == null || t.x == null) continue;
 
-      const srcId = s.id;
-      const tgtId = t.id;
-      const isConnectedToHover = hoveredId && (srcId === hoveredId || tgtId === hoveredId);
-      const isConsolidated = consolidatedNodeIds.has(srcId) || consolidatedNodeIds.has(tgtId);
+    const linkBuckets = groupLinksByRenderStyle(
+      currentLinks,
+      nodeMap,
+      hoveredId,
+      isFiltering,
+      activeInScopeSetRef.current,
+      consolidatedNodeIds,
+      getEdgeColor
+    );
 
-      let linkAlpha = isConsolidated ? 0.15 : ((s.superseded_by || t.superseded_by) ? 0.15 : 0.4);
-      let lineWidth = l.type === 'imports' ? 1.2 : 1.8;
-
-      if (hoveredId) {
-        if (isConnectedToHover) {
-          linkAlpha = 1.0;
-          lineWidth = l.type === 'imports' ? 2.2 : 3.0;
-        } else {
-          linkAlpha = 0.05;
-        }
-      } else if (isFiltering) {
-        const sMatch = activeInScopeSetRef.current.has(srcId);
-        const tMatch = activeInScopeSetRef.current.has(tgtId);
-        linkAlpha = (sMatch && tMatch) ? 0.65 : 0.03;
-      }
-
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(t.x, t.y);
-      ctx.strokeStyle = getEdgeColor(l.type);
-      ctx.lineWidth = lineWidth;
-      ctx.globalAlpha = linkAlpha;
-      if (isConsolidated) {
-        ctx.setLineDash([2, 2]);
-      } else if (l.type === 'imports') {
-        ctx.setLineDash([4, 3]);
+    for (const bucket of linkBuckets) {
+      ctx.save();
+      ctx.strokeStyle = bucket.stroke;
+      ctx.lineWidth = bucket.lineWidth;
+      ctx.globalAlpha = bucket.alpha;
+      if (bucket.isDashed) {
+        ctx.setLineDash([3, 3]);
       } else {
         ctx.setLineDash([]);
       }
+      ctx.beginPath();
+      for (const pair of bucket.links) {
+        ctx.moveTo(pair.s.x, pair.s.y);
+        ctx.lineTo(pair.t.x, pair.t.y);
+      }
       ctx.stroke();
+      ctx.restore();
     }
 
-    // 2. Draw Nodes
+    // Compute camera viewport frustum bounds for off-screen culling
+    const viewportBounds = computeViewportBounds(transform, width, height, 150);
+
+    // 2. Draw Nodes (With Frustum Culling)
     ctx.setLineDash([]);
     for (const n of currentNodes) {
-      if (n.x == null || n.y == null) continue;
+      if (n.x == null || n.y == null || !isNodeInViewport(n, viewportBounds)) continue;
       const isSuperseded = Boolean(n.superseded_by);
       const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
       const color = getTypeColor(n.type);
@@ -865,7 +859,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     linkSelectionRef.current.interrupt('style');
 
     const performanceThreshold = configSettingsRef.current?.graph?.performanceThreshold ?? 500;
-    const useTransition = nodes.length < performanceThreshold;
+    const useTransition = nodes.length < performanceThreshold && !isFiltering;
 
     const tOrSel = (selection: any, duration: number) => {
       return useTransition ? selection.transition('style').duration(duration) : selection;
@@ -1371,7 +1365,9 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
       const moduleSet = new Set<string>();
       for (const n of nodes) {
-        if (n.type === 'codemap' || n.id.startsWith('file_')) {
+        if (n.module) {
+          // Pre-computed from server payload
+        } else if (n.type === 'codemap' || n.id.startsWith('file_')) {
           n.module = getModuleName(n);
         } else {
           // Transitive Module Inheritance via BFS
@@ -1426,12 +1422,18 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           .scaleExtent([0.15, 6])
           .filter((event: any) => {
             if (draggedNodeRef.current) return false;
-            if (event.type === 'mousedown' && isCanvasModeRef.current && quadtreeRef.current) {
+            if (event.type === 'mousedown' && isCanvasModeRef.current) {
               const transform = currentZoomTransformRef.current || d3.zoomIdentity;
               const coords = d3.pointer(event, canvasRef.current || event.target);
               const [gx, gy] = transform.invert(coords);
               const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
-              const found = quadtreeRef.current.find(gx, gy, radiusInWorld);
+              if (!quadtreeRef.current && rawGraphDataRef.current?.nodes) {
+                quadtreeRef.current = d3.quadtree<any>()
+                  .x((d: any) => d.x || 0)
+                  .y((d: any) => d.y || 0)
+                  .addAll(rawGraphDataRef.current.nodes as any);
+              }
+              const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
               if (found) return false;
             }
             return !event.ctrlKey && !event.button;
@@ -1455,6 +1457,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const transform = currentZoomTransformRef.current || d3.zoomIdentity;
             const [gx, gy] = transform.invert([event.x, event.y]);
             const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+            if (!quadtreeRef.current && rawGraphDataRef.current?.nodes) {
+              quadtreeRef.current = d3.quadtree<any>()
+                .x((d: any) => d.x || 0)
+                .y((d: any) => d.y || 0)
+                .addAll(rawGraphDataRef.current.nodes as any);
+            }
             const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
             return found ? { node: found, x: event.x, y: event.y } : undefined;
           })
@@ -1889,11 +1897,8 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodeSelectionRef.current = node as any;
 
       simulation.on('tick', () => {
-        // Build quadtree on tick for O(log N) hit testing without rebuilding inside drawCanvas
-        quadtreeRef.current = d3.quadtree<any>()
-          .x((d: any) => d.x || 0)
-          .y((d: any) => d.y || 0)
-          .addAll(nodesToBind as any);
+        // Invalidate quadtree during simulation tick so hit-testing generates lazily on mouse interaction
+        quadtreeRef.current = null;
 
         if (isCanvasModeRef.current) {
           drawCanvas();

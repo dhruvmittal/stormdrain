@@ -127,12 +127,48 @@ describe('Web API Server', () => {
     expect(data.error).toContain('Missing required fields');
   });
 
-  it('should return graph visualization nodes and links', async () => {
+  it('should return graph visualization nodes and links with pre-computed modules', async () => {
     const res = await fetch(`${baseUrl}/api/graph`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.nodes).toBeDefined();
     expect(data.links).toBeDefined();
+
+    if (data.nodes.length > 0) {
+      for (const node of data.nodes) {
+        expect(node.module).toBeDefined();
+        expect(typeof node.module).toBe('string');
+      }
+    }
+  });
+
+  it('should return comprehensive dashboard statistics via GET /api/stats', async () => {
+    // Create a sample memory to verify stats computation
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'warning',
+        title: 'Stats Test Warning',
+        content: 'Test content for stats warning',
+        tags: ['test']
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/stats`);
+    expect(res.status).toBe(200);
+    const stats = await res.json();
+
+    expect(stats.graphHealthScore).toBeGreaterThan(0);
+    expect(stats.counts).toBeDefined();
+    expect(stats.counts.warning).toBeGreaterThanOrEqual(1);
+    expect(stats.velocity).toBeDefined();
+    expect(stats.velocity.last24h).toBeGreaterThanOrEqual(1);
+    expect(stats.backlog).toBeDefined();
+    expect(stats.codebaseCoverage).toBeDefined();
+    expect(Array.isArray(stats.decayWatchlist)).toBe(true);
+    expect(Array.isArray(stats.hotspots)).toBe(true);
+    expect(Array.isArray(stats.recentActivity)).toBe(true);
   });
 
   it('should get, update, and reset configuration settings', async () => {
