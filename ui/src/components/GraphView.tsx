@@ -154,6 +154,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const quadtreeRef = useRef<d3.Quadtree<any> | null>(null);
   const isCanvasModeRef = useRef<boolean>(false);
+  const nodeClickedInDragRef = useRef<boolean>(false);
 
   // Label Settings & Readability States
   const [isLabelsOpen, setIsLabelsOpen] = useState<boolean>(false);
@@ -1448,9 +1449,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
         zoomBehaviorRef.current = zoom;
         svg.call(zoom as any);
+        let hasDraggedNode = false;
+        let dragStartPos = { x: 0, y: 0 };
+
         const canvasDrag = d3.drag<HTMLCanvasElement, unknown>()
           .filter((event: any) => {
-            if (layoutModeRef.current === 'orbit') return false;
             return !event.ctrlKey && !event.button;
           })
           .subject((event: any) => {
@@ -1467,9 +1470,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             return found ? { node: found, x: event.x, y: event.y } : undefined;
           })
           .on('start', (event: any) => {
-            if (layoutModeRef.current === 'orbit') return;
             const node = event.subject?.node;
             if (!node) return;
+            hasDraggedNode = false;
+            dragStartPos = { x: event.x, y: event.y };
+            if (layoutModeRef.current === 'orbit') return;
             draggedNodeRef.current = node;
             isDraggingRef.current = true;
             if (!event.active && simulationRef.current) simulationRef.current.alphaTarget(0.2).restart();
@@ -1479,9 +1484,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             node.fy = gy;
           })
           .on('drag', (event: any) => {
-            if (layoutModeRef.current === 'orbit') return;
             const node = event.subject?.node;
             if (!node) return;
+            const dx = event.x - dragStartPos.x;
+            const dy = event.y - dragStartPos.y;
+            if (Math.hypot(dx, dy) > 4) {
+              hasDraggedNode = true;
+            }
+            if (layoutModeRef.current === 'orbit') return;
             const transform = currentZoomTransformRef.current || d3.zoomIdentity;
             const [gx, gy] = transform.invert([event.x, event.y]);
             node.fx = gx;
@@ -1503,18 +1513,32 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             }
           })
           .on('end', (event: any) => {
-            if (layoutModeRef.current === 'orbit') return;
             const node = event.subject?.node;
             if (!node) return;
-            draggedNodeRef.current = null;
-            isDraggingRef.current = false;
-            node.fx = null;
-            node.fy = null;
-            if (!event.active && simulationRef.current) {
-              simulationRef.current.alphaTarget(0);
+            if (layoutModeRef.current !== 'orbit') {
+              draggedNodeRef.current = null;
+              isDraggingRef.current = false;
+              node.fx = null;
+              node.fy = null;
+              if (!event.active && simulationRef.current) {
+                simulationRef.current.alphaTarget(0);
+              }
+              if (isCanvasModeRef.current) {
+                drawCanvas();
+              }
             }
-            if (isCanvasModeRef.current) {
-              drawCanvas();
+
+            if (!hasDraggedNode) {
+              nodeClickedInDragRef.current = true;
+              if (layoutModeRef.current === 'orbit') {
+                setFocusAnchorId(node.id);
+                setFocusAnchorTitle(node.title);
+              } else if (!node.id.startsWith('file_')) {
+                setEditingId(node.id);
+              }
+              setTimeout(() => {
+                nodeClickedInDragRef.current = false;
+              }, 100);
             }
           });
 
@@ -2853,6 +2877,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
         onClick={(e) => {
           if (!isCanvasMode) return;
           if (isDraggingRef.current) return;
+          if (nodeClickedInDragRef.current) return;
           const rect = canvasRef.current?.getBoundingClientRect();
           if (!rect) return;
           const mx = e.clientX - rect.left;
