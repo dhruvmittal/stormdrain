@@ -12,6 +12,7 @@ import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
 import { generateCuratePrompt } from '../utils/promptTemplates';
+import { runTui } from '../tui/index';
 
 
 const program = new Command();
@@ -764,6 +765,20 @@ program
   .action((options) => {
     startWebServer(parseInt(options.port, 10));
   });
+
+program
+  .command('monitor')
+  .alias('tui')
+  .description('Start the StormDrain Terminal User Interface (TUI) for remote monitoring')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-s, --snapshot', 'Output non-interactive telemetry snapshot to stdout and exit')
+  .action(async (options) => {
+    await runTui({
+      context: options.context,
+      snapshot: options.snapshot
+    });
+  });
+
 
 // Setup tab autocompletion via @bomb.sh/tab
 const completeContexts = (complete: (val: string, desc?: string) => void) => {

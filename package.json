@@ -27,11 +27,15 @@
   "dependencies": {
     "@bomb.sh/tab": "^0.0.22",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@types/react": "^19.2.18",
     "better-sqlite3": "^13.0.2",
+    "chalk": "^6.0.0",
     "commander": "^15.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "ink": "^7.1.1",
     "isomorphic-git": "^1.40.0",
+    "react": "^19.2.8",
     "yaml": "^2.9.0"
   },
   "bin": {
