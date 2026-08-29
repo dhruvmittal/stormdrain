@@ -24,7 +24,9 @@ import {
   getAdaptiveVelocityDecay,
   computeViewportBounds,
   isNodeInViewport,
-  groupLinksByRenderStyle
+  groupLinksByRenderStyle,
+  groupNodesByRenderStyle,
+  clampCanvasDPR
 } from '../utils/physicsHelpers';
 
 // Physics Engine Types & Presets
@@ -524,6 +526,11 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
   const canvasDimensionsRef = useRef<{ width: number; height: number }>({ width: 800, height: 600 });
   const consolidatedNodeIdsRef = useRef<Set<string>>(new Set());
+  const isInteractingRef = useRef<boolean>(false);
+  const quadtreeDirtyRef = useRef<boolean>(true);
+  const needsRedrawRef = useRef<boolean>(false);
+  const rafIdRef = useRef<number | null>(null);
+  const lastQuadtreeBuildTimeRef = useRef<number>(0);
 
   // Attach ResizeObserver to canvas container to eliminate getBoundingClientRect reflows during 60FPS drawCanvas
   useEffect(() => {
@@ -542,7 +549,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const observer = new ResizeObserver(() => {
       updateDimensions();
       if (isCanvasModeRef.current) {
-        drawCanvas();
+        scheduleCanvasRedraw();
       }
     });
     observer.observe(canvas);
@@ -555,7 +562,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = clampCanvasDPR(isInteractingRef.current);
     const { width, height } = canvasDimensionsRef.current;
 
     if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
@@ -648,62 +655,16 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
     // Compute camera viewport frustum bounds for off-screen culling
     const viewportBounds = computeViewportBounds(transform, width, height, 150);
 
-    // 2. Draw Nodes (With Frustum Culling)
-    ctx.setLineDash([]);
+    // 2. Collect visible nodes and labels to draw
+    const visibleNodes: any[] = [];
+    const labelsToDraw: Array<{ n: any; labelText: string; lx: number; ly: number }> = [];
+
     for (const n of currentNodes) {
       if (n.x == null || n.y == null || !isNodeInViewport(n, viewportBounds)) continue;
-      const isSuperseded = Boolean(n.superseded_by);
-      const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
-      const color = getTypeColor(n.type);
+      visibleNodes.push(n);
 
-      let nodeAlpha = isSuperseded ? 0.35 : 1.0;
-      let isTier1Match = false;
-
-      if (isFiltering) {
-        if (activeTier1SetRef.current.has(n.id)) {
-          nodeAlpha = 1.0;
-          isTier1Match = true;
-        } else if (activeInScopeSetRef.current.has(n.id)) {
-          nodeAlpha = 0.6;
-        } else {
-          nodeAlpha = 0.08;
-        }
-      }
-
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, radius, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.globalAlpha = nodeAlpha;
-      ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = '#0f172a';
-      ctx.stroke();
-
-      // Recency / Search Highlight Ring
-      if (isTier1Match || activeHighlightNodesRef.current.has(n.id)) {
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
-        ctx.strokeStyle = isTier1Match ? '#fbbf24' : '#38bdf8';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-
-      // Hovered Node Outer Highlight Ring
-      if (n.id === hoveredId) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
-        ctx.setLineDash([3, 3]);
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // Labels rendering respecting labelSettings mode, hover lens, landmarks, and zoom
       const mode = labelSettingsRef.current?.mode || 'dynamic';
       const filter = labelSettingsRef.current?.filter || 'all';
-      const textBacking = labelSettingsRef.current?.textBacking ?? true;
       const neighbors = hoveredId ? (adjacencyRef.current.get(hoveredId) || new Set<string>()) : new Set<string>();
 
       let shouldShowLabel = false;
@@ -724,16 +685,86 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       }
 
       if (shouldShowLabel && n.title) {
-        ctx.font = '11px Inter, system-ui, sans-serif';
         const labelText = getLabelText(n);
-        const lx = n.x + radius + 4;
-        const ly = n.y + 4;
+        const isSuperseded = Boolean(n.superseded_by);
+        const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
+        labelsToDraw.push({
+          n,
+          labelText,
+          lx: n.x + radius + 4,
+          ly: n.y + 4
+        });
+      }
+    }
 
+    // 3. Draw Nodes (Batched Single Pass per Color Bucket)
+    ctx.setLineDash([]);
+    const nodeBuckets = groupNodesByRenderStyle(visibleNodes, viewportBounds, getTypeColor);
+
+    for (const bucket of nodeBuckets) {
+      ctx.fillStyle = bucket.color;
+      ctx.beginPath();
+      for (const n of bucket.nodes) {
+        const isSuperseded = Boolean(n.superseded_by);
+        const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
+        let nodeAlpha = isSuperseded ? 0.35 : 1.0;
+        if (isFiltering) {
+          if (activeTier1SetRef.current.has(n.id)) {
+            nodeAlpha = 1.0;
+          } else if (activeInScopeSetRef.current.has(n.id)) {
+            nodeAlpha = 0.6;
+          } else {
+            nodeAlpha = 0.08;
+          }
+        }
+        ctx.globalAlpha = nodeAlpha;
+        ctx.moveTo(n.x + radius, n.y);
+        ctx.arc(n.x, n.y, radius, 0, 2 * Math.PI);
+      }
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#0f172a';
+      ctx.stroke();
+    }
+
+    // 4. Draw Highlight Rings & Hover Rings
+    for (const n of visibleNodes) {
+      const isSuperseded = Boolean(n.superseded_by);
+      const radius = isSuperseded ? 4 : (n.type === 'codemap' ? 9 : 7 + ((n.confidence || 0.8) * 5));
+      const isTier1Match = isFiltering && activeTier1SetRef.current.has(n.id);
+
+      if (isTier1Match || activeHighlightNodesRef.current.has(n.id)) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
+        ctx.strokeStyle = isTier1Match ? '#fbbf24' : '#38bdf8';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      if (n.id === hoveredId) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, radius + 4, 0, 2 * Math.PI);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // 5. Draw Labels (Pill Backing & Hoisted Font)
+    if (labelsToDraw.length > 0) {
+      const textBacking = labelSettingsRef.current?.textBacking ?? true;
+      ctx.font = '11px Inter, system-ui, sans-serif';
+      ctx.globalAlpha = 1.0;
+
+      for (const item of labelsToDraw) {
+        const { n, labelText, lx, ly } = item;
         if (textBacking) {
-          ctx.strokeStyle = 'rgba(15, 23, 42, 0.95)';
-          ctx.lineWidth = 3.5;
-          ctx.lineJoin = 'round';
-          ctx.strokeText(labelText, lx, ly);
+          const metrics = ctx.measureText(labelText);
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.fillRect(lx - 2, ly - 10, metrics.width + 4, 13);
         }
 
         ctx.fillStyle = n.type === 'codemap' ? '#38bdf8' : '#e2e8f0';
@@ -743,6 +774,31 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
     ctx.restore();
   }, [getTypeColor, getEdgeColor, getLabelText, debouncedQuery, selectedType, focusAnchorId]);
+
+  const scheduleCanvasRedraw = useCallback(() => {
+    if (!needsRedrawRef.current) {
+      needsRedrawRef.current = true;
+      rafIdRef.current = requestAnimationFrame(() => {
+        needsRedrawRef.current = false;
+        drawCanvas();
+      });
+    }
+  }, [drawCanvas]);
+
+  const ensureQuadtree = useCallback((force = false) => {
+    const now = Date.now();
+    if (!force && quadtreeRef.current && !quadtreeDirtyRef.current) return;
+    if (!force && quadtreeRef.current && (now - lastQuadtreeBuildTimeRef.current < 150)) return;
+
+    if (rawGraphDataRef.current?.nodes && rawGraphDataRef.current.nodes.length > 0) {
+      quadtreeRef.current = d3.quadtree<any>()
+        .x((d: any) => d.x || 0)
+        .y((d: any) => d.y || 0)
+        .addAll(rawGraphDataRef.current.nodes as any);
+      quadtreeDirtyRef.current = false;
+      lastQuadtreeBuildTimeRef.current = now;
+    }
+  }, []);
 
   useEffect(() => {
     if (isCanvasModeRef.current) {
@@ -1438,11 +1494,20 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             }
             return !event.ctrlKey && !event.button;
           })
+          .on('start', () => {
+            isInteractingRef.current = true;
+          })
           .on('zoom', (event) => {
             currentZoomTransformRef.current = event.transform;
             if (container) container.attr('transform', event.transform);
             if (isCanvasModeRef.current) {
-              drawCanvas();
+              scheduleCanvasRedraw();
+            }
+          })
+          .on('end', () => {
+            isInteractingRef.current = false;
+            if (isCanvasModeRef.current) {
+              scheduleCanvasRedraw();
             }
           });
 
@@ -1457,12 +1522,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             const transform = currentZoomTransformRef.current || d3.zoomIdentity;
             const [gx, gy] = transform.invert([event.x, event.y]);
             const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
-            if (!quadtreeRef.current && rawGraphDataRef.current?.nodes) {
-              quadtreeRef.current = d3.quadtree<any>()
-                .x((d: any) => d.x || 0)
-                .y((d: any) => d.y || 0)
-                .addAll(rawGraphDataRef.current.nodes as any);
-            }
+            ensureQuadtree();
             const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
             return found ? { node: found, x: event.x, y: event.y } : undefined;
           })
@@ -1472,6 +1532,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             if (!node) return;
             draggedNodeRef.current = node;
             isDraggingRef.current = true;
+            isInteractingRef.current = true;
             if (!event.active && simulationRef.current) simulationRef.current.alphaTarget(0.2).restart();
             const transform = currentZoomTransformRef.current || d3.zoomIdentity;
             const [gx, gy] = transform.invert([event.x, event.y]);
@@ -1488,6 +1549,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             node.fy = gy;
             node.x = gx;
             node.y = gy;
+            quadtreeDirtyRef.current = true;
             if (positionsCacheRef.current && node.id) {
               positionsCacheRef.current.set(node.id, {
                 x: gx,
@@ -1499,7 +1561,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
               });
             }
             if (isCanvasModeRef.current) {
-              drawCanvas();
+              scheduleCanvasRedraw();
             }
           })
           .on('end', (event: any) => {
@@ -1508,13 +1570,15 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
             if (!node) return;
             draggedNodeRef.current = null;
             isDraggingRef.current = false;
+            isInteractingRef.current = false;
             node.fx = null;
             node.fy = null;
+            ensureQuadtree(true);
             if (!event.active && simulationRef.current) {
               simulationRef.current.alphaTarget(0);
             }
             if (isCanvasModeRef.current) {
-              drawCanvas();
+              scheduleCanvasRedraw();
             }
           });
 
@@ -1897,11 +1961,10 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       nodeSelectionRef.current = node as any;
 
       simulation.on('tick', () => {
-        // Invalidate quadtree during simulation tick so hit-testing generates lazily on mouse interaction
-        quadtreeRef.current = null;
+        quadtreeDirtyRef.current = true;
 
         if (isCanvasModeRef.current) {
-          drawCanvas();
+          scheduleCanvasRedraw();
         } else {
           link
             .attr('x1', (d: any) => d.source.x)
@@ -1918,6 +1981,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       });
 
       simulation.on('end', () => {
+        ensureQuadtree(true);
         const currentNodes = rawGraphDataRef.current.nodes;
         for (const d of currentNodes) {
           if (d.x !== undefined && d.y !== undefined) {
@@ -2828,6 +2892,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           const [gx, gy] = transform.invert([mx, my]);
 
           const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          ensureQuadtree();
           const found = quadtreeRef.current?.find(gx, gy, radiusInWorld);
           const newHoveredId = found ? found.id : null;
           
@@ -2837,7 +2902,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
           if (hoveredNodeIdRef.current !== newHoveredId) {
             hoveredNodeIdRef.current = newHoveredId;
-            drawCanvas();
+            scheduleCanvasRedraw();
           }
         }}
         onMouseLeave={() => {
@@ -2847,7 +2912,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           }
           if (hoveredNodeIdRef.current !== null) {
             hoveredNodeIdRef.current = null;
-            drawCanvas();
+            scheduleCanvasRedraw();
           }
         }}
         onClick={(e) => {
@@ -2860,6 +2925,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           const transform = currentZoomTransformRef.current || d3.zoomIdentity;
           const [gx, gy] = transform.invert([mx, my]);
           const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          ensureQuadtree();
           const clicked = quadtreeRef.current?.find(gx, gy, radiusInWorld);
           if (clicked) {
             if (layoutModeRef.current === 'orbit') {
@@ -2880,6 +2946,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
           const transform = currentZoomTransformRef.current || d3.zoomIdentity;
           const [gx, gy] = transform.invert([mx, my]);
           const radiusInWorld = Math.max(25, 35 / (transform.k || 1));
+          ensureQuadtree();
           const clicked = quadtreeRef.current?.find(gx, gy, radiusInWorld);
           if (clicked) {
             setFocusAnchorId(prev => (prev === clicked.id ? null : clicked.id));

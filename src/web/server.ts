@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -9,6 +10,7 @@ import { ContextManager } from '../core/context';
 export const startWebServer = (port: number = 3456) => {
   const app = express();
   app.use(cors());
+  app.use(compression());
   app.use(express.json());
 
   const config = new ConfigManager();
@@ -405,6 +407,29 @@ function computeNodeModules(nodes: any[], links: any[]): void {
 }
 
   app.get('/api/graph', withContext(async (req, res, ctx) => {
+    const memoriesRow = ctx.getDb().prepare(`
+      SELECT COUNT(*) as count, COALESCE(MAX(updated), '') as max_updated FROM memories
+    `).get() as { count: number; max_updated: string };
+
+    const relationsRow = ctx.getDb().prepare(`
+      SELECT COUNT(*) as count FROM relations
+    `).get() as { count: number };
+
+    const memoriesSig = `${memoriesRow?.count || 0}:${memoriesRow?.max_updated || ''}`;
+    const relationsSig = `${relationsRow?.count || 0}`;
+
+    const versionHash = crypto.createHash('sha256')
+      .update(`${memoriesSig}||${relationsSig}`)
+      .digest('hex');
+
+    const clientETag = req.headers['if-none-match'];
+    if (clientETag && (clientETag === `"${versionHash}"` || clientETag === `W/"${versionHash}"` || clientETag === versionHash)) {
+      res.status(304).end();
+      return;
+    }
+
+    res.setHeader('ETag', `"${versionHash}"`);
+
     const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all();
     const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all();
     computeNodeModules(memories, relations);

@@ -156,3 +156,39 @@ export function groupLinksByRenderStyle(
 
   return Array.from(buckets.values());
 }
+
+export interface NodeRenderBucket {
+  key: string;
+  color: string;
+  nodes: any[];
+}
+
+export function groupNodesByRenderStyle(
+  nodes: any[],
+  viewportBounds: ViewportBounds,
+  getTypeColor: (type: string) => string
+): NodeRenderBucket[] {
+  const buckets = new Map<string, NodeRenderBucket>();
+
+  for (const n of nodes) {
+    if (n.x == null || n.y == null || !isNodeInViewport(n, viewportBounds)) continue;
+    const color = getTypeColor(n.type);
+    let bucket = buckets.get(color);
+    if (!bucket) {
+      bucket = { key: color, color, nodes: [] };
+      buckets.set(color, bucket);
+    }
+    bucket.nodes.push(n);
+  }
+
+  return Array.from(buckets.values());
+}
+
+export function clampCanvasDPR(isInteracting: boolean): number {
+  const nativeDPR = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+  if (isInteracting) {
+    return Math.min(1.25, nativeDPR);
+  }
+  return Math.min(2.0, nativeDPR);
+}
+
