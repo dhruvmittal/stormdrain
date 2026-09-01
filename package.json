@@ -27,8 +27,10 @@
   "dependencies": {
     "@bomb.sh/tab": "^0.0.22",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@types/compression": "^1.8.1",
     "better-sqlite3": "^13.0.2",
     "commander": "^15.0.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "isomorphic-git": "^1.40.0",
