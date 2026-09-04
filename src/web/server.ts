@@ -6,6 +6,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
+import { FileReader } from '../core/reader';
+import { MultiHopMemoryResult } from '../types';
 
 export const startWebServer = (port: number = 3456) => {
   const app = express();
@@ -280,6 +282,123 @@ export const startWebServer = (port: number = 3456) => {
     }
   }));
 
+  app.get('/api/recall', withContext(async (req, res, ctx) => {
+    try {
+      const target = (req.query.target || req.query.targetFile || req.query.file) as string | undefined;
+      const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 10;
+      const depth = req.query.depth ? parseInt(String(req.query.depth), 10) : 3;
+
+      if (target) {
+        const multiHop = ctx.recallMultiHop(target, {
+          maxDepth: isNaN(depth) ? 3 : depth,
+          maxResults: isNaN(limit) ? 10 : limit,
+          cumulativeThreshold: 0.98,
+        });
+
+        if (multiHop.all.length === 0) {
+          res.json({
+            target,
+            count: 0,
+            text: `No memories found for target file "${target}" or its topological neighborhood.`,
+            results: multiHop,
+          });
+          return;
+        }
+
+        const sections: string[] = [];
+
+        if (multiHop.direct.length > 0) {
+          sections.push(`### 🎯 Direct File Invariants (${target})`);
+          for (const r of multiHop.direct) {
+            const mem = ctx.getMemory(r.id);
+            sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
+          }
+        }
+
+        if (multiHop.upstream.length > 0) {
+          sections.push(`### ⚠️ Upstream Consumer Constraints (Callers at Risk)`);
+          for (const r of multiHop.upstream) {
+            const mem = ctx.getMemory(r.id);
+            const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+            sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
+          }
+        }
+
+        if (multiHop.downstream.length > 0) {
+          sections.push(`### 📦 Downstream Dependency Invariants (Foundations)`);
+          for (const r of multiHop.downstream) {
+            const mem = ctx.getMemory(r.id);
+            const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+            sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
+          }
+        }
+
+        res.json({
+          target,
+          count: multiHop.all.length,
+          text: sections.join('\n\n'),
+          results: multiHop,
+        });
+      } else {
+        const topMemories = ctx.recallTopMemories(isNaN(limit) ? 10 : limit) as Array<{
+          type: string;
+          title: string;
+          id: string;
+          confidence: number;
+        }>;
+
+        const content = topMemories.map((r) => {
+          const mem = ctx.getMemory(r.id);
+          return `## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id})\n${mem?.content || ''}\n---`;
+        }).join('\n\n');
+
+        res.json({
+          count: topMemories.length,
+          text: content || 'No memories found.',
+          memories: topMemories,
+        });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  app.get('/api/invariants', withContext(async (req, res, ctx) => {
+    try {
+      const target = (req.query.target || req.query.targetFile || req.query.path) as string;
+      if (!target) {
+        res.status(400).json({ error: 'target parameter is required' });
+        return;
+      }
+      const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
+      const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
+
+      let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops);
+      if (graphResults.length === 0 && path.basename(target) !== target) {
+        const baseNameRes = ctx.recallGraph(path.basename(target), isNaN(hops) ? 2 : hops);
+        if (baseNameRes.length > 0) {
+          graphResults = baseNameRes;
+        }
+      }
+
+      const fileReader = new FileReader(config);
+      const header = fileReader.formatInvariantHeader(
+        target,
+        graphResults as MultiHopMemoryResult[],
+        isNaN(tokenBudget) ? 500 : tokenBudget
+      );
+
+      res.json({
+        target,
+        count: graphResults.length,
+        header,
+        memories: graphResults,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
   app.get('/api/consolidation-candidates', withContext(async (req, res, ctx) => {
     try {
       const thresholdParam = req.query.threshold ? Number(req.query.threshold) : undefined;
@@ -473,12 +592,21 @@ function computeNodeModules(nodes: any[], links: any[]): void {
 
   // Graceful shutdown
   const closeAll = async () => {
+    process.removeListener('SIGINT', closeAll);
+    process.removeListener('SIGTERM', closeAll);
     for (const ctx of contextCache.values()) {
       await ctx.close();
     }
     contextCache.clear();
-    server.close();
+    if (server.listening) {
+      server.close();
+    }
   };
+
+  server.on('close', () => {
+    process.removeListener('SIGINT', closeAll);
+    process.removeListener('SIGTERM', closeAll);
+  });
 
   process.on('SIGINT', closeAll);
   process.on('SIGTERM', closeAll);

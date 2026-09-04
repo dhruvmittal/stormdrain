@@ -324,6 +324,80 @@ describe('Web API Server', () => {
     const dataAfterDelete = await resAfterDelete.json();
     expect(dataAfterDelete.version).not.toBe(version2);
   });
+
+  it('should recall top memories via /api/recall when no target is specified', async () => {
+    // Add a test memory
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'invariant',
+        title: 'Global Thread Safety Rule',
+        content: 'Never lock mutex A while holding mutex B.'
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/recall?limit=5`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.count).toBeGreaterThan(0);
+    expect(data.text).toContain('Global Thread Safety Rule');
+    expect(data.memories).toBeDefined();
+    expect(data.memories.length).toBeGreaterThan(0);
+  });
+
+  it('should recall multi-hop neighborhood invariants via /api/recall with target', async () => {
+    // Add memory attached to a target file
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'warning',
+        title: 'GPU Memory Limit',
+        content: 'Do not allocate tensors > 8GB in solver.cu',
+        targetFile: 'src/solver.cu'
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/recall?target=src/solver.cu`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.target).toBe('src/solver.cu');
+    expect(data.count).toBeGreaterThan(0);
+    expect(data.text).toContain('GPU Memory Limit');
+    expect(data.results).toBeDefined();
+    expect(data.results.direct.length).toBeGreaterThan(0);
+  });
+
+  it('should return formatted invariant header via /api/invariants', async () => {
+    // Add invariant memory for a target file
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'warning',
+        title: 'Pointer Alignment Constraint',
+        content: 'All buffers passed to solver.cu must be 64-byte aligned.',
+        targetFile: 'src/solver.cu',
+        tags: ['cuda', 'memory']
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/invariants?target=src/solver.cu&tokenBudget=300`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.target).toBe('src/solver.cu');
+    expect(data.count).toBeGreaterThan(0);
+    expect(data.header).toContain('StormDrain Architectural Invariants & Caller Constraints');
+    expect(data.header).toContain('Pointer Alignment Constraint');
+  });
+
+  it('should require target parameter for /api/invariants', async () => {
+    const res = await fetch(`${baseUrl}/api/invariants`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('target parameter is required');
+  });
 });
 
 

@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import tab from '@bomb.sh/tab/commander';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { ConfigManager } from '../core/config';
@@ -763,6 +764,29 @@ program
   .option('-p, --port <number>', 'Port to run the server on', '3456')
   .action((options) => {
     startWebServer(parseInt(options.port, 10));
+  });
+
+program
+  .command('export-agent')
+  .description('Output or locate the zero-dependency Python MCP thin agent script for remote client machines')
+  .option('-p, --path-only', 'Print only the absolute path to the script')
+  .action((options) => {
+    const candidatePaths = [
+      path.resolve(__dirname, '../../scripts/stormdrain-agent.py'),
+      path.resolve(__dirname, '../scripts/stormdrain-agent.py'),
+      path.resolve(__dirname, 'scripts/stormdrain-agent.py'),
+      path.resolve(process.cwd(), 'scripts/stormdrain-agent.py')
+    ];
+    const scriptPath = candidatePaths.find(p => fs.existsSync(p));
+    if (!scriptPath) {
+      console.error('Error: Could not locate scripts/stormdrain-agent.py');
+      process.exit(1);
+    }
+    if (options.pathOnly) {
+      console.log(scriptPath);
+    } else {
+      process.stdout.write(fs.readFileSync(scriptPath, 'utf8'));
+    }
   });
 
 // Setup tab autocompletion via @bomb.sh/tab
