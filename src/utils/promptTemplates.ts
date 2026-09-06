@@ -158,7 +158,7 @@ function generateGraphSweepCuratePrompt(
     const rows = ctx.getDb().prepare(`
       SELECT git_branch, COUNT(*) as count 
       FROM memories 
-      WHERE is_canonical = 0 AND git_branch IS NOT NULL AND git_branch != ''
+      WHERE (is_canonical = 0 OR is_canonical IS NULL) AND git_branch IS NOT NULL AND git_branch != ''
       GROUP BY git_branch
       ORDER BY count DESC
     `).all() as { git_branch: string; count: number }[];

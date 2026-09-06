@@ -182,6 +182,8 @@ export interface FullNodeDetails {
   outgoingRelations: Array<{ target: string; type: string; title?: string }>;
   incomingRelations: Array<{ source: string; type: string; title?: string }>;
   attachedMemories?: Array<{ id: string; type: MemoryType; title: string; confidence: number }>;
+  git_branch?: string | null;
+  is_canonical?: boolean;
 }
 
 export interface ConsolidationCandidate {

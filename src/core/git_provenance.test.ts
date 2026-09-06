@@ -5,6 +5,7 @@ import * as os from 'os';
 import Database from 'better-sqlite3';
 import { ContextManager } from './context';
 import { normalizeRepoPath, makeFileVertexId } from '../utils/fileGraphScanner';
+import { getCurrentGitBranch } from '../utils/gitUtils';
 import { initSchema } from '../db/schema';
 
 describe('Git Branch Provenance & Path Normalization', () => {
@@ -42,6 +43,14 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(id1).toBe(id2);
       expect(id2).toBe(id3);
       expect(id3).toBe(id4);
+    });
+
+    it('handles workspaceRoot prefix boundaries accurately without false prefix stripping', () => {
+      const root = '/home/repo';
+      // Inside workspace root
+      expect(normalizeRepoPath('/home/repo/src/core.ts', root)).toBe('src/core.ts');
+      // Sibling folder with same prefix should NOT have its name mutilated
+      expect(normalizeRepoPath('/home/repo-other/src/core.ts', root)).toBe('home/repo-other/src/core.ts');
     });
   });
 
@@ -244,6 +253,83 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(ctx.getMemory(mem1)?.metadata.is_canonical).toBe(true);
       expect(ctx.getMemory(mem2)?.metadata.is_canonical).toBe(true);
       expect(ctx.getMemory(memOther)?.metadata.is_canonical).toBe(false);
+    });
+
+    it('promotes and isolates slashed branch names like feature/login', () => {
+      const slashedBranch = 'feature/login';
+      const mem = ctx.addMemory('fact', 'Login Flow', 'Content', [], 'manual', undefined, undefined, 'affects', undefined, slashedBranch, false);
+
+      expect(ctx.getMemory(mem)?.metadata.is_canonical).toBe(false);
+      const promoted = ctx.promoteBranch(slashedBranch);
+      expect(promoted).toBe(1);
+      expect(ctx.getMemory(mem)?.metadata.is_canonical).toBe(true);
+    });
+
+    it('allows unsetting git_branch to null without retaining old branch in SQLite', () => {
+      const mem = ctx.addMemory('fact', 'Branch Fact', 'Content', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-to-clear', false);
+      expect(ctx.getMemory(mem)?.metadata.git_branch).toBe('feature-to-clear');
+
+      // Update to null
+      ctx.updateMemory(mem, undefined, undefined, undefined, undefined, { git_branch: null });
+      const updated = ctx.getMemory(mem);
+      expect(updated?.metadata.git_branch).toBeNull();
+
+      // Verify SQLite row directly
+      const row = ctx.getDb().prepare('SELECT git_branch FROM memories WHERE id = ?').get(mem) as any;
+      expect(row.git_branch).toBeNull();
+    });
+
+    it('populates git_branch and is_canonical in listMemories and getNodeDetails', () => {
+      const mem = ctx.addMemory('fact', 'Metadata Check', 'Content', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-meta', false);
+
+      const all = ctx.listMemories();
+      const found = all.find(m => m.metadata.id === mem);
+      expect(found).toBeDefined();
+      expect(found?.metadata.git_branch).toBe('feature-meta');
+      expect(found?.metadata.is_canonical).toBe(false);
+
+      const details = ctx.getNodeDetails(mem);
+      expect(details).toBeDefined();
+      expect(details?.git_branch).toBe('feature-meta');
+      expect(details?.is_canonical).toBe(false);
+    });
+
+    it('propagates branch through recallGraph to filter branch-specific memories', () => {
+      const targetFile = 'src/api/auth.ts';
+      const vertexId = makeFileVertexId(targetFile);
+      ctx.addMemory('codemap', targetFile, 'auth codemap', ['file-vertex'], 'indexer', vertexId);
+
+      const memBranch = ctx.addMemory('fact', 'Branch Auth Rule', 'Auth details', [], 'manual', undefined, targetFile, 'affects', undefined, 'feature-auth', false);
+      const memMain = ctx.addMemory('fact', 'Main Auth Rule', 'Main details', [], 'manual', undefined, targetFile, 'affects', undefined, 'main', true);
+
+      // recallGraph on feature-auth
+      const resultsBranch = ctx.recallGraph(targetFile, 2, 'feature-auth');
+      const idsBranch = resultsBranch.map(m => m.id);
+      expect(idsBranch).toContain(memBranch);
+      expect(idsBranch).toContain(memMain);
+
+      // recallGraph on main
+      const resultsMain = ctx.recallGraph(targetFile, 2, 'main');
+      const idsMain = resultsMain.map(m => m.id);
+      expect(idsMain).not.toContain(memBranch);
+      expect(idsMain).toContain(memMain);
+    });
+  });
+
+  describe('Git Worktree and Submodule Support', () => {
+    it('resolves branch from .git file pointing to gitdir', () => {
+      const mockWorktreeDir = path.join(testDir, 'worktree-repo');
+      const mockGitDir = path.join(testDir, 'main-repo', '.git', 'worktrees', 'worktree-repo');
+      fs.mkdirSync(mockWorktreeDir, { recursive: true });
+      fs.mkdirSync(mockGitDir, { recursive: true });
+
+      // Create .git file in worktree
+      fs.writeFileSync(path.join(mockWorktreeDir, '.git'), `gitdir: ${mockGitDir}\n`);
+      // Create HEAD in gitdir
+      fs.writeFileSync(path.join(mockGitDir, 'HEAD'), 'ref: refs/heads/feature/worktree-branch\n');
+
+      const detectedBranch = getCurrentGitBranch(mockWorktreeDir);
+      expect(detectedBranch).toBe('feature/worktree-branch');
     });
   });
 

@@ -75,14 +75,15 @@ def main():
         return json.loads(line)
 
     try:
-        # Step A: Add a memory
+        # Step A: Add a memory (non-canonical on feature/cuda branch)
         print("Testing sd_add...")
         res = call_tool(1, "sd_add", {
             "type": "invariant",
             "title": "Matrix Multiplication Block Size",
             "content": "Tile sizes for GEMM kernels must be multiples of 16 for tensor cores.",
             "target_file": "sim/kernel.cu",
-            "tags": ["gpu", "cuda"]
+            "tags": ["gpu", "cuda"],
+            "is_canonical": False
         })
         text = res.get("result", {}).get("content", [{}])[0].get("text", "")
         print("sd_add result:", text)
@@ -132,11 +133,20 @@ def main():
         assert "StormDrain Architectural Invariants" in read_text_norm
         assert "Matrix Multiplication Block Size" in read_text_norm
 
-        # Step F: Update memory canonical status via sd_update
+        # Step F: Pre-promotion verification - assert unpromoted memory IS found
+        print("Testing sd_search with unpromoted_only filter (pre-promotion)...")
+        res_pre = call_tool(6, "sd_search", {
+            "query": "",
+            "unpromoted_only": True
+        })
+        search_unpromoted_pre = res_pre.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_search pre-promotion result:\n", search_unpromoted_pre)
+        assert "Matrix Multiplication Block Size" in search_unpromoted_pre
+
+        # Step G: Update memory canonical status via sd_update
         print("Testing sd_update with is_canonical...")
-        # Extract memory ID from Step A result
         mem_id = [part for part in text.split() if part.startswith("mem_")][0]
-        res = call_tool(6, "sd_update", {
+        res = call_tool(7, "sd_update", {
             "id": mem_id,
             "is_canonical": True
         })
@@ -144,15 +154,39 @@ def main():
         print("sd_update result:", update_text)
         assert "Successfully updated memory" in update_text
 
-        # Step G: Search with unpromoted_only filter
-        print("Testing sd_search with unpromoted_only filter...")
-        res = call_tool(7, "sd_search", {
+        # Step H: Post-promotion verification - assert memory is NO LONGER unpromoted
+        print("Testing sd_search with unpromoted_only filter (post-promotion)...")
+        res_post = call_tool(8, "sd_search", {
             "query": "",
             "unpromoted_only": True
         })
-        search_unpromoted = res.get("result", {}).get("content", [{}])[0].get("text", "")
-        # Since the memory was promoted to canonical, unpromoted search should return no results
-        assert "No results found." in search_unpromoted
+        search_unpromoted_post = res_post.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "No results found." in search_unpromoted_post
+
+        # Step I: Slashed branch promotion test via HTTP REST API body
+        print("Testing slashed branch promote route (POST /api/branches/promote)...")
+        promote_req = urllib.request.Request(
+            f"{server_url}/api/branches/promote",
+            data=json.dumps({"branch": "feature/slashed-test"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(promote_req, timeout=2) as r:
+            assert r.getcode() == 200
+            promote_data = json.loads(r.read().decode("utf-8"))
+            assert promote_data.get("success") is True
+            assert promote_data.get("branch") == "feature/slashed-test"
+
+        print("Testing standard branch param route (POST /api/branches/standard-branch/promote)...")
+        param_req = urllib.request.Request(
+            f"{server_url}/api/branches/standard-branch/promote",
+            data=b"",
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(param_req, timeout=2) as r:
+            assert r.getcode() == 200
+            param_data = json.loads(r.read().decode("utf-8"))
+            assert param_data.get("success") is True
+            assert param_data.get("branch") == "standard-branch"
 
         print("\nALL CLIENT-SERVER INTEGRATION TESTS PASSED SUCCESSFULLY!")
 

@@ -780,7 +780,8 @@ program
       if (action === 'promote') {
         if (!target) {
           console.error('Error: Please specify the branch name to promote (e.g. stormdrain branch promote feature-xyz)');
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         const count = ctx.promoteBranch(target);
         console.log(`Successfully promoted ${count} memories on branch "${target}" to canonical baseline.`);
@@ -802,7 +803,8 @@ program
         }
       } else {
         console.error(`Unknown action: "${action}". Supported actions: list, promote`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
     } finally {
       await ctx.close();

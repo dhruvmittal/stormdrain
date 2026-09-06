@@ -220,7 +220,8 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
     try {
       const targetArg = targets || target || targetFile;
       const branchHeader = req.headers['x-stormdrain-branch'] as string | undefined;
-      const effectiveBranch = gitBranch || git_branch || branchHeader;
+      const explicitBranch = gitBranch !== undefined ? gitBranch : git_branch;
+      const effectiveBranch = explicitBranch !== undefined ? explicitBranch : (branchHeader || null);
       const effectiveCanonical = isCanonical !== undefined ? Boolean(isCanonical) : (is_canonical !== undefined ? Boolean(is_canonical) : undefined);
 
       const id = ctx.addMemory(
@@ -278,6 +279,20 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/branches/promote', withContext(async (req, res, ctx) => {
+    const branch = req.body.branch || req.query.branch;
+    if (!branch) {
+      res.status(400).json({ error: 'Field "branch" is required in request body or query' });
+      return;
+    }
+    try {
+      const count = ctx.promoteBranch(String(branch));
+      res.json({ success: true, branch, promotedCount: count });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   }));
 
@@ -413,10 +428,11 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const target = normalizeRepoPath(rawTarget);
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
+      const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
 
-      let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops);
+      let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops, branch);
       if (graphResults.length === 0 && path.basename(target) !== target) {
-        const baseNameRes = ctx.recallGraph(path.basename(target), isNaN(hops) ? 2 : hops);
+        const baseNameRes = ctx.recallGraph(path.basename(target), isNaN(hops) ? 2 : hops, branch);
         if (baseNameRes.length > 0) {
           graphResults = baseNameRes;
         }

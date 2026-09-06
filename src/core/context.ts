@@ -312,7 +312,9 @@ export class ContextManager {
           source: row.source || 'manual',
           expires: row.expires || null,
           superseded_by: row.superseded_by || null,
-          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType }))
+          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType })),
+          git_branch: row.git_branch || null,
+          is_canonical: Boolean(row.is_canonical)
         },
         content: row.content || ''
       });
@@ -493,7 +495,9 @@ export class ContextManager {
       astOutline: astOutline && astOutline.length > 0 ? astOutline : undefined,
       outgoingRelations: outgoing,
       incomingRelations: incoming,
-      attachedMemories
+      attachedMemories,
+      git_branch: mem.metadata.git_branch || null,
+      is_canonical: Boolean(mem.metadata.is_canonical)
     };
   }
 
@@ -1003,6 +1007,7 @@ export class ContextManager {
       };
 
       const finalMemories: MultiHopMemoryResult[] = [];
+      const effectiveBranch = options.branch !== undefined ? options.branch : (getCurrentGitBranch() || null);
 
       for (const fileVertexId of activeFrontier) {
         const h = dist.get(fileVertexId) ?? 0;
@@ -1052,8 +1057,6 @@ export class ContextManager {
           const tags = (row.tags_str || '').split(',');
           return row.type === 'guide' && (tags.includes('consolidated-guide') || tags.includes('super-memory'));
         });
-
-        const effectiveBranch = options.branch !== undefined ? options.branch : (getCurrentGitBranch() || null);
 
         for (const row of attachedRows) {
           if (row.type === 'codemap' && !includeCodemaps) continue; // Exclude raw codemaps unless requested
@@ -1200,8 +1203,8 @@ export class ContextManager {
     }
   }
 
-  public recallGraph(fileOrMemoryId: string, maxDepth = 2) {
-    const res = this.recallMultiHop(fileOrMemoryId, { maxDepth, includeCodemaps: true, cumulativeThreshold: 1.0 });
+  public recallGraph(fileOrMemoryId: string, maxDepth = 2, branch?: string) {
+    const res = this.recallMultiHop(fileOrMemoryId, { maxDepth, includeCodemaps: true, cumulativeThreshold: 1.0, branch });
     return res.all;
   }
 
@@ -1279,16 +1282,20 @@ export class ContextManager {
       const globalDbPath = getContextDbPath('_global');
       if (fs.existsSync(globalDbPath)) {
         const globalDb = initDb(globalDbPath);
-        const globalResults = doSearch(globalDb, '_global');
-        const seenIds = new Set(localResults.map(r => r.id));
-        const combined = [...localResults];
-        for (const g of globalResults) {
-          if (!seenIds.has(g.id)) {
-            seenIds.add(g.id);
-            combined.push(g);
+        try {
+          const globalResults = doSearch(globalDb, '_global');
+          const seenIds = new Set(localResults.map(r => r.id));
+          const combined = [...localResults];
+          for (const g of globalResults) {
+            if (!seenIds.has(g.id)) {
+              seenIds.add(g.id);
+              combined.push(g);
+            }
           }
+          return combined;
+        } finally {
+          globalDb.close();
         }
-        return combined;
       }
     } catch {}
 

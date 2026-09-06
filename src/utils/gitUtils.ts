@@ -30,11 +30,26 @@ export function isGitRepo(dir: string): boolean {
  */
 export function getCurrentGitBranch(dir: string = process.cwd()): string | null {
   try {
-    const gitHeadPath = path.join(dir, '.git', 'HEAD');
-    if (fs.existsSync(gitHeadPath)) {
-      const content = fs.readFileSync(gitHeadPath, 'utf8').trim();
-      const match = content.match(/^ref:\s*refs\/heads\/(.+)$/);
-      if (match) return match[1];
+    const gitPath = path.join(dir, '.git');
+    if (fs.existsSync(gitPath)) {
+      let gitHeadPath: string | null = null;
+      const stat = fs.statSync(gitPath);
+      if (stat.isDirectory()) {
+        gitHeadPath = path.join(gitPath, 'HEAD');
+      } else if (stat.isFile()) {
+        const line = fs.readFileSync(gitPath, 'utf8').trim();
+        if (line.startsWith('gitdir:')) {
+          const rawDir = line.slice(7).trim();
+          const resolvedDir = path.isAbsolute(rawDir) ? rawDir : path.resolve(dir, rawDir);
+          gitHeadPath = path.join(resolvedDir, 'HEAD');
+        }
+      }
+
+      if (gitHeadPath && fs.existsSync(gitHeadPath)) {
+        const content = fs.readFileSync(gitHeadPath, 'utf8').trim();
+        const match = content.match(/^ref:\s*refs\/heads\/(.+)$/);
+        if (match) return match[1];
+      }
     }
   } catch {}
 

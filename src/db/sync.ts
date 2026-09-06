@@ -35,8 +35,8 @@ function getStatementCache(db: Database.Database): DbStatementCache {
           source=excluded.source,
           expires=excluded.expires,
           superseded_by=excluded.superseded_by,
-          git_branch=COALESCE(excluded.git_branch, memories.git_branch),
-          is_canonical=COALESCE(excluded.is_canonical, memories.is_canonical)
+          git_branch=excluded.git_branch,
+          is_canonical=excluded.is_canonical
       `),
       insertTag: db.prepare(`
         INSERT OR IGNORE INTO tags (memory_id, tag) VALUES (?, ?)

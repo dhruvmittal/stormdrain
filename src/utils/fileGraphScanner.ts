@@ -42,8 +42,9 @@ export function normalizeRepoPath(filePath: string, workspaceRoot?: string): str
   let p = filePath.replace(/\\/g, '/');
   if (workspaceRoot) {
     const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-    if (p.startsWith(root)) {
-      p = p.slice(root.length);
+    if (p === root) return '';
+    if (p.startsWith(root + '/')) {
+      p = p.slice(root.length + 1);
     }
   }
   return p.replace(/^(\.\/|\/)+/, '').replace(/\/+/g, '/');

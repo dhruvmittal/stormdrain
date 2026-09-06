@@ -57,15 +57,29 @@ def get_git_info(cwd: Optional[str] = None) -> Tuple[Optional[str], Optional[str
         curr = os.path.abspath(target_dir)
         while True:
             candidate = os.path.join(curr, ".git")
-            if os.path.isdir(candidate):
-                root = curr
-                head_file = os.path.join(candidate, "HEAD")
-                if os.path.isfile(head_file):
+            if os.path.exists(candidate):
+                head_file = None
+                if os.path.isdir(candidate):
+                    root = curr
+                    head_file = os.path.join(candidate, "HEAD")
+                elif os.path.isfile(candidate):
+                    root = curr
+                    try:
+                        with open(candidate, "r", encoding="utf-8", errors="replace") as f:
+                            line = f.read().strip()
+                            if line.startswith("gitdir:"):
+                                raw_gitdir = line[7:].strip()
+                                gitdir = raw_gitdir if os.path.isabs(raw_gitdir) else os.path.normpath(os.path.join(curr, raw_gitdir))
+                                head_file = os.path.join(gitdir, "HEAD")
+                    except Exception:
+                        pass
+                if head_file and os.path.isfile(head_file):
                     with open(head_file, "r", encoding="utf-8", errors="replace") as f:
                         line = f.read().strip()
                         if line.startswith("ref: refs/heads/"):
                             branch = line[16:].strip()
-                break
+                if root:
+                    break
             parent = os.path.dirname(curr)
             if parent == curr:
                 break
@@ -504,10 +518,13 @@ class StormDrainMcpServer:
             include_invariants = arguments.get("include_invariants", True)
             if include_invariants:
                 norm_inv_target = normalize_client_path(file_path, git_root)
+                inv_params = {"target": norm_inv_target, "tokenBudget": 500}
+                if current_branch:
+                    inv_params["branch"] = current_branch
                 status, inv_data = self.client.request(
                     "GET",
                     "/api/invariants",
-                    params={"target": norm_inv_target, "tokenBudget": 500},
+                    params=inv_params,
                     context=context
                 )
                 if status == 200 and isinstance(inv_data, dict) and inv_data.get("header"):
