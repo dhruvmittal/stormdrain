@@ -7,9 +7,10 @@ import * as crypto from 'crypto';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
-import { MultiHopMemoryResult } from '../types';
+import { MultiHopMemoryResult, MemoryType } from '../types';
+import { normalizeRepoPath } from '../utils/fileGraphScanner';
 
-export const startWebServer = (port: number = 3456) => {
+export const startWebServer = (port: number = 3456, host: string = process.env.STORMDRAIN_HOST || '127.0.0.1') => {
   const app = express();
   app.use(cors());
   app.use(compression());
@@ -197,24 +198,44 @@ export const startWebServer = (port: number = 3456) => {
 
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
-    if (query) {
-      const results = ctx.searchMemories(query);
+    const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
+    const type = req.query.type as MemoryType | undefined;
+    const unpromotedOnly = req.query.unpromoted === 'true' || req.query.unpromoted === '1';
+
+    if (query || branch || type || unpromotedOnly) {
+      const results = ctx.searchMemories(query, true, { branch, type, unpromotedOnly });
       res.json(results);
     } else {
-      const memories = ctx.getDb().prepare(`SELECT id, type, title, confidence, created, updated, accessed, access_count, source FROM memories ORDER BY updated DESC`).all();
+      const memories = ctx.getDb().prepare(`SELECT id, type, title, confidence, created, updated, accessed, access_count, source, git_branch, is_canonical FROM memories ORDER BY updated DESC`).all();
       res.json(memories);
     }
   }));
 
   app.post('/api/memories', withContext(async (req, res, ctx) => {
-    const { type, title, content, tags, target, targets, targetFile, relationType, relations } = req.body;
+    const { type, title, content, tags, target, targets, targetFile, relationType, relations, gitBranch, git_branch, isCanonical, is_canonical } = req.body;
     if (!type || !title || !content) {
       res.status(400).json({ error: 'Missing required fields: type, title, and content are required' });
       return;
     }
     try {
       const targetArg = targets || target || targetFile;
-      const id = ctx.addMemory(type, title, content, tags || [], 'manual', undefined, targetArg, relationType || 'affects', relations);
+      const branchHeader = req.headers['x-stormdrain-branch'] as string | undefined;
+      const effectiveBranch = gitBranch || git_branch || branchHeader;
+      const effectiveCanonical = isCanonical !== undefined ? Boolean(isCanonical) : (is_canonical !== undefined ? Boolean(is_canonical) : undefined);
+
+      const id = ctx.addMemory(
+        type,
+        title,
+        content,
+        tags || [],
+        'manual',
+        undefined,
+        targetArg,
+        relationType || 'affects',
+        relations,
+        effectiveBranch,
+        effectiveCanonical
+      );
       res.status(201).json({ success: true, id });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -243,18 +264,34 @@ export const startWebServer = (port: number = 3456) => {
 
   app.put('/api/memories/:id', withContext(async (req, res, ctx) => {
     const id = req.params.id ? String(req.params.id) : '';
-    const { title, content, tags, type, relations, addRelations, removeRelations, addTargets, removeTargets } = req.body;
+    const { title, content, tags, type, relations, addRelations, removeRelations, addTargets, removeTargets, is_canonical, isCanonical, git_branch, gitBranch } = req.body;
     try {
       ctx.updateMemory(id, content, title, tags, type, {
         relations,
         addRelations,
         removeRelations,
         addTargets,
-        removeTargets
+        removeTargets,
+        is_canonical: is_canonical !== undefined ? Boolean(is_canonical) : (isCanonical !== undefined ? Boolean(isCanonical) : undefined),
+        git_branch: git_branch !== undefined ? git_branch : gitBranch
       });
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/branches/:branch/promote', withContext(async (req, res, ctx) => {
+    const branch = req.params.branch;
+    if (!branch) {
+      res.status(400).json({ error: 'branch parameter is required' });
+      return;
+    }
+    try {
+      const count = ctx.promoteBranch(branch);
+      res.json({ success: true, branch, promotedCount: count });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   }));
 
@@ -287,19 +324,22 @@ export const startWebServer = (port: number = 3456) => {
       const target = (req.query.target || req.query.targetFile || req.query.file) as string | undefined;
       const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 10;
       const depth = req.query.depth ? parseInt(String(req.query.depth), 10) : 3;
+      const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
 
       if (target) {
-        const multiHop = ctx.recallMultiHop(target, {
+        const normTarget = normalizeRepoPath(target);
+        const multiHop = ctx.recallMultiHop(normTarget, {
           maxDepth: isNaN(depth) ? 3 : depth,
           maxResults: isNaN(limit) ? 10 : limit,
           cumulativeThreshold: 0.98,
+          branch
         });
 
         if (multiHop.all.length === 0) {
           res.json({
-            target,
+            target: normTarget,
             count: 0,
-            text: `No memories found for target file "${target}" or its topological neighborhood.`,
+            text: `No memories found for target file "${normTarget}" or its topological neighborhood.`,
             results: multiHop,
           });
           return;
@@ -308,7 +348,7 @@ export const startWebServer = (port: number = 3456) => {
         const sections: string[] = [];
 
         if (multiHop.direct.length > 0) {
-          sections.push(`### 🎯 Direct File Invariants (${target})`);
+          sections.push(`### 🎯 Direct File Invariants (${normTarget})`);
           for (const r of multiHop.direct) {
             const mem = ctx.getMemory(r.id);
             sections.push(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`, Score: ${r.relevanceScore})\n${mem?.content || ''}`);
@@ -334,7 +374,7 @@ export const startWebServer = (port: number = 3456) => {
         }
 
         res.json({
-          target,
+          target: normTarget,
           count: multiHop.all.length,
           text: sections.join('\n\n'),
           results: multiHop,
@@ -365,11 +405,12 @@ export const startWebServer = (port: number = 3456) => {
 
   app.get('/api/invariants', withContext(async (req, res, ctx) => {
     try {
-      const target = (req.query.target || req.query.targetFile || req.query.path) as string;
-      if (!target) {
+      const rawTarget = (req.query.target || req.query.targetFile || req.query.path) as string;
+      if (!rawTarget) {
         res.status(400).json({ error: 'target parameter is required' });
         return;
       }
+      const target = normalizeRepoPath(rawTarget);
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
 
@@ -586,8 +627,8 @@ function computeNodeModules(nodes: any[], links: any[]): void {
   });
 
 
-  const server = app.listen(port, () => {
-    console.log(`StormDrain Web UI running on http://localhost:${port}`);
+  const server = app.listen(port, host, () => {
+    console.log(`StormDrain Web UI running on http://${host}:${port}`);
   });
 
   // Graceful shutdown

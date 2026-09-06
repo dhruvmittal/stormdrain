@@ -122,6 +122,38 @@ def main():
         assert "StormDrain Architectural Invariants" in read_text
         assert "Matrix Multiplication Block Size" in read_text
 
+        # Step E: Read with leading dot path normalization
+        print("Testing sd_read with leading ./ path normalization...")
+        res = call_tool(5, "sd_read", {
+            "path": "./sim/kernel.cu",
+            "include_invariants": True
+        })
+        read_text_norm = res.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "StormDrain Architectural Invariants" in read_text_norm
+        assert "Matrix Multiplication Block Size" in read_text_norm
+
+        # Step F: Update memory canonical status via sd_update
+        print("Testing sd_update with is_canonical...")
+        # Extract memory ID from Step A result
+        mem_id = [part for part in text.split() if part.startswith("mem_")][0]
+        res = call_tool(6, "sd_update", {
+            "id": mem_id,
+            "is_canonical": True
+        })
+        update_text = res.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_update result:", update_text)
+        assert "Successfully updated memory" in update_text
+
+        # Step G: Search with unpromoted_only filter
+        print("Testing sd_search with unpromoted_only filter...")
+        res = call_tool(7, "sd_search", {
+            "query": "",
+            "unpromoted_only": True
+        })
+        search_unpromoted = res.get("result", {}).get("content", [{}])[0].get("text", "")
+        # Since the memory was promoted to canonical, unpromoted search should return no results
+        assert "No results found." in search_unpromoted
+
         print("\nALL CLIENT-SERVER INTEGRATION TESTS PASSED SUCCESSFULLY!")
 
     finally:

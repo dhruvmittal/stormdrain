@@ -26,6 +26,31 @@ export function isGitRepo(dir: string): boolean {
 }
 
 /**
+ * Get current git branch name fast. Returns null if detached HEAD or outside git.
+ */
+export function getCurrentGitBranch(dir: string = process.cwd()): string | null {
+  try {
+    const gitHeadPath = path.join(dir, '.git', 'HEAD');
+    if (fs.existsSync(gitHeadPath)) {
+      const content = fs.readFileSync(gitHeadPath, 'utf8').trim();
+      const match = content.match(/^ref:\s*refs\/heads\/(.+)$/);
+      if (match) return match[1];
+    }
+  } catch {}
+
+  try {
+    const branch = execSync('git symbolic-ref -q --short HEAD', {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 2000
+    }).toString('utf8').trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get all non-ignored files in a git repository using `git ls-files`.
  * Returns relative paths from the workspace root.
  * Returns null if git is unavailable or directory is not a git repo.

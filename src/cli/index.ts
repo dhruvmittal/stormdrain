@@ -762,8 +762,51 @@ program
   .command('web')
   .description('Start the StormDrain Web UI')
   .option('-p, --port <number>', 'Port to run the server on', '3456')
+  .option('-H, --host <host>', 'Host address to bind the server to', process.env.STORMDRAIN_HOST || '127.0.0.1')
   .action((options) => {
-    startWebServer(parseInt(options.port, 10));
+    startWebServer(parseInt(options.port, 10), options.host);
+  });
+
+program
+  .command('branch')
+  .description('Branch memory management and canonical promotion')
+  .argument('<action>', 'list, promote')
+  .argument('[target]', 'Branch name to promote (required for promote)')
+  .option('-c, --context <name>', 'Target context override')
+  .action(async (action, target, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      if (action === 'promote') {
+        if (!target) {
+          console.error('Error: Please specify the branch name to promote (e.g. stormdrain branch promote feature-xyz)');
+          process.exit(1);
+        }
+        const count = ctx.promoteBranch(target);
+        console.log(`Successfully promoted ${count} memories on branch "${target}" to canonical baseline.`);
+      } else if (action === 'list') {
+        const rows = ctx.getDb().prepare(`
+          SELECT git_branch, COUNT(*) as count, SUM(CASE WHEN is_canonical = 1 THEN 1 ELSE 0 END) as canonical_count
+          FROM memories
+          WHERE git_branch IS NOT NULL AND git_branch != ''
+          GROUP BY git_branch
+          ORDER BY count DESC
+        `).all() as { git_branch: string; count: number; canonical_count: number }[];
+        if (rows.length === 0) {
+          console.log(`No branch-associated memories found in context "${targetCtxName}".`);
+        } else {
+          console.log(`Branch memories in context "${targetCtxName}":`);
+          for (const r of rows) {
+            console.log(`  - ${r.git_branch}: ${r.count} total (${r.canonical_count} canonical, ${r.count - r.canonical_count} unpromoted)`);
+          }
+        }
+      } else {
+        console.error(`Unknown action: "${action}". Supported actions: list, promote`);
+        process.exit(1);
+      }
+    } finally {
+      await ctx.close();
+    }
   });
 
 program

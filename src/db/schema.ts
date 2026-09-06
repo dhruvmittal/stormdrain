@@ -1,8 +1,6 @@
 import Database from 'better-sqlite3';
 
-export const initDb = (dbPath: string): Database.Database => {
-  const db = new Database(dbPath);
-
+export const initSchema = (db: Database.Database): void => {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
@@ -20,9 +18,23 @@ export const initDb = (dbPath: string): Database.Database => {
       access_count INTEGER NOT NULL,
       source TEXT NOT NULL,
       expires TEXT,
-      superseded_by TEXT
+      superseded_by TEXT,
+      git_branch TEXT,
+      is_canonical INTEGER DEFAULT 0
     );
   `);
+
+  // Idempotent column migrations for existing databases
+  try {
+    const cols = (db.pragma('table_info(memories)') as Array<{ name: string }>).map(c => c.name);
+    if (!cols.includes('git_branch')) {
+      db.exec('ALTER TABLE memories ADD COLUMN git_branch TEXT');
+    }
+    if (!cols.includes('is_canonical')) {
+      db.exec('ALTER TABLE memories ADD COLUMN is_canonical INTEGER DEFAULT 0');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_memories_branch_canonical ON memories(git_branch, is_canonical)');
+  } catch {}
 
   // Tags table
   db.exec(`
@@ -54,6 +66,10 @@ export const initDb = (dbPath: string): Database.Database => {
       tokenize='trigram'
     );
   `);
+};
 
+export const initDb = (dbPath: string): Database.Database => {
+  const db = new Database(dbPath);
+  initSchema(db);
   return db;
 };

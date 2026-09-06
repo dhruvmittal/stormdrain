@@ -10,6 +10,7 @@ import { GitManager } from './git';
 import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
+import { getCurrentGitBranch } from '../utils/gitUtils';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
 import { asyncDiskQueue } from '../utils/asyncDiskQueue';
 
@@ -69,7 +70,9 @@ export class ContextManager {
     customId?: string,
     targetOrTargets?: string | string[],
     relationType: RelationType = 'affects',
-    explicitRelations?: Array<{ target: string; type?: RelationType }>
+    explicitRelations?: Array<{ target: string; type?: RelationType }>,
+    gitBranch?: string | null,
+    isCanonical?: boolean
   ): string {
     const id = customId || `mem_${crypto.randomBytes(6).toString('hex')}`;
     const relations: MemoryRelation[] = [];
@@ -108,8 +111,11 @@ export class ContextManager {
       }
     }
 
+    const effectiveBranch = gitBranch !== undefined ? gitBranch : (getCurrentGitBranch() || null);
+    const effectiveCanonical = isCanonical !== undefined ? isCanonical : (effectiveBranch === 'main' || effectiveBranch === 'master');
+
     const memory: Memory = {
-      metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source),
+      metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source, effectiveBranch, effectiveCanonical),
       content
     };
 
@@ -129,17 +135,25 @@ export class ContextManager {
       removeRelations?: Array<{ target: string; type?: string }>;
       addTargets?: string | string[];
       removeTargets?: string | string[];
+      is_canonical?: boolean;
+      git_branch?: string | null;
     }
   ) {
     const memory = this.getMemory(id);
     if (!memory) throw new Error(`Memory ${id} not found.`);
 
-    if (content !== undefined) memory.content = content;
-    if (title !== undefined) memory.metadata.title = title;
-    if (tags !== undefined) memory.metadata.tags = tags;
-    if (type !== undefined) memory.metadata.type = type;
+    if (content !== undefined && content !== null) memory.content = content;
+    if (title !== undefined && title !== null) memory.metadata.title = title;
+    if (tags !== undefined && tags !== null) memory.metadata.tags = tags;
+    if (type !== undefined && type !== null) memory.metadata.type = type;
 
     if (options) {
+      if (options.is_canonical !== undefined) {
+        memory.metadata.is_canonical = options.is_canonical;
+      }
+      if (options.git_branch !== undefined) {
+        memory.metadata.git_branch = options.git_branch;
+      }
       if (options.relations) {
         memory.metadata.relations = options.relations.map(r => ({
           target: this.resolveTargetId(r.target),
@@ -781,6 +795,7 @@ export class ContextManager {
       epsilon?: number;
       alpha?: number;
       includeCodemaps?: boolean;
+      branch?: string;
     } = {}
   ): MultiHopRecallResponse {
     let startNodeId = fileOrMemoryId;
@@ -1038,8 +1053,15 @@ export class ContextManager {
           return row.type === 'guide' && (tags.includes('consolidated-guide') || tags.includes('super-memory'));
         });
 
+        const effectiveBranch = options.branch !== undefined ? options.branch : (getCurrentGitBranch() || null);
+
         for (const row of attachedRows) {
           if (row.type === 'codemap' && !includeCodemaps) continue; // Exclude raw codemaps unless requested
+
+          const isInvariant = row.type === 'invariant';
+          const isCanonical = row.is_canonical === 1 || Boolean(row.is_canonical);
+          const matchesBranch = isInvariant || isCanonical || !row.git_branch || (effectiveBranch && row.git_branch === effectiveBranch);
+          if (!matchesBranch) continue;
 
           const tags = (row.tags_str || '').split(',').filter(Boolean);
 
@@ -1062,7 +1084,9 @@ export class ContextManager {
             relevanceScore: Math.round(score * 1000) / 1000,
             targetFile: fileVertexId,
             tags,
-            content_snippet: row.content_snippet
+            content_snippet: row.content_snippet,
+            git_branch: row.git_branch || null,
+            is_canonical: Boolean(row.is_canonical)
           });
 
           // Also pull in connected memory-to-memory conceptual links (supports, related_to, depends_on, references, part_of)
@@ -1078,6 +1102,10 @@ export class ContextManager {
 
           for (const conn of connectedMems) {
             if (finalMemories.some(fm => fm.id === conn.id)) continue;
+            const connInvariant = conn.type === 'invariant';
+            const connCanonical = conn.is_canonical === 1 || Boolean(conn.is_canonical);
+            const connMatches = connInvariant || connCanonical || !conn.git_branch || (effectiveBranch && conn.git_branch === effectiveBranch);
+            if (!connMatches) continue;
             const connTags = (conn.tags_str || '').split(',').filter(Boolean);
             if (connTags.includes('consolidated') || conn.superseded_by) continue;
             const connTypeWeight = typeWeights[conn.type] || 1.0;
@@ -1094,7 +1122,9 @@ export class ContextManager {
               relevanceScore: Math.round(connScore * 1000) / 1000,
               targetFile: `via ${row.title} (${conn.rel_type})`,
               tags: connTags,
-              content_snippet: conn.content_snippet
+              content_snippet: conn.content_snippet,
+              git_branch: conn.git_branch || null,
+              is_canonical: Boolean(conn.is_canonical)
             });
           }
         }
@@ -1175,27 +1205,65 @@ export class ContextManager {
     return res.all;
   }
 
-  public searchMemories(query: string, includeGlobal: boolean = true): Array<MemoryDbRow & { content_snippet: string; context?: string }> {
-    const safeQuery = query
+  public searchMemories(
+    query: string,
+    includeGlobal: boolean = true,
+    options?: { branch?: string; type?: MemoryType; unpromotedOnly?: boolean }
+  ): Array<MemoryDbRow & { content_snippet: string; context?: string }> {
+    const rawQuery = (query || '').trim();
+    const safeQuery = rawQuery
       .split(/\s+/)
       .map(term => term.replace(/[^a-zA-Z0-9_\-\u00C0-\u024F]/g, ''))
       .filter(Boolean)
       .map(term => `"${term}"`)
       .join(' AND ');
 
-    if (!safeQuery) return [];
-
     const doSearch = (db: Database.Database, ctxName: string) => {
       try {
-        const stmt = db.prepare(`
+        if (!safeQuery) {
+          if (!options || (!options.branch && !options.type && !options.unpromotedOnly)) {
+            return [];
+          }
+          let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap'";
+          const params: any[] = [];
+          if (options?.branch) {
+            sql += ' AND m.git_branch = ?';
+            params.push(options.branch);
+          }
+          if (options?.type) {
+            sql += ' AND m.type = ?';
+            params.push(options.type);
+          }
+          if (options?.unpromotedOnly) {
+            sql += ' AND (m.is_canonical = 0 OR m.is_canonical IS NULL)';
+          }
+          sql += ' ORDER BY m.updated DESC LIMIT 20';
+          const rows = db.prepare(sql).all(...params) as Array<MemoryDbRow & { content_snippet: string }>;
+          return rows.map(r => ({ ...r, context: ctxName }));
+        }
+
+        let sql = `
           SELECT m.*, fts.content as content_snippet
           FROM memories_fts fts
           JOIN memories m ON m.id = fts.id
           WHERE memories_fts MATCH ?
-          ORDER BY rank
-          LIMIT 20
-        `);
-        const rows = stmt.all(safeQuery) as Array<MemoryDbRow & { content_snippet: string }>;
+        `;
+        const params: any[] = [safeQuery];
+        if (options?.branch) {
+          sql += ' AND m.git_branch = ?';
+          params.push(options.branch);
+        }
+        if (options?.type) {
+          sql += ' AND m.type = ?';
+          params.push(options.type);
+        }
+        if (options?.unpromotedOnly) {
+          sql += ' AND (m.is_canonical = 0 OR m.is_canonical IS NULL)';
+        }
+        sql += ' ORDER BY rank LIMIT 20';
+
+        const stmt = db.prepare(sql);
+        const rows = stmt.all(...params) as Array<MemoryDbRow & { content_snippet: string }>;
         return rows.map(r => ({ ...r, context: ctxName }));
       } catch {
         return [];
@@ -1225,6 +1293,21 @@ export class ContextManager {
     } catch {}
 
     return localResults;
+  }
+
+  public promoteBranch(branch: string): number {
+    const res = this.db.prepare('UPDATE memories SET is_canonical = 1 WHERE git_branch = ?').run(branch);
+    if (res.changes > 0) {
+      const rows = this.db.prepare('SELECT id FROM memories WHERE git_branch = ?').all(branch) as Array<{ id: string }>;
+      for (const { id } of rows) {
+        const mem = this.getMemory(id);
+        if (mem) {
+          mem.metadata.is_canonical = true;
+          this.saveMemory(mem, `[stormdrain] promote: memory ${id} on branch ${branch}`);
+        }
+      }
+    }
+    return res.changes;
   }
 
   public findConsolidationCandidates(threshold?: number): ConsolidationCandidate[] {

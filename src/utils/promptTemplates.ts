@@ -152,6 +152,21 @@ function generateGraphSweepCuratePrompt(
   const candidates = ctx.findConsolidationCandidates(threshold).slice(0, maxCandidates);
   const allMemories = ctx.listMemories();
 
+  // Find unpromoted branch memories
+  let unpromotedBranches: { git_branch: string; count: number }[] = [];
+  try {
+    const rows = ctx.getDb().prepare(`
+      SELECT git_branch, COUNT(*) as count 
+      FROM memories 
+      WHERE is_canonical = 0 AND git_branch IS NOT NULL AND git_branch != ''
+      GROUP BY git_branch
+      ORDER BY count DESC
+    `).all() as { git_branch: string; count: number }[];
+    unpromotedBranches = rows;
+  } catch {
+    // If column doesn't exist yet or db error
+  }
+
   // Find candidate memories for promotion: facts or environment-tagged memories in local context
   const promotionCandidates = allMemories.filter((m) => {
     if (m.metadata.type === 'guide') return false;
@@ -234,11 +249,29 @@ You are performing a holistic health and curation review of the knowledge graph 
 
   prompt += `---
 
+## 4. 🌿 Unpromoted Branch Memories
+`;
+
+  if (unpromotedBranches.length === 0) {
+    prompt += `*No unpromoted branch memories found. All branch knowledge is canonical or on baseline branches.*\n\n`;
+  } else {
+    prompt += `The following feature branches have accumulated non-canonical memories:\n\n`;
+    unpromotedBranches.forEach((b) => {
+      prompt += `- **Branch \`${b.git_branch}\`**: ${b.count} unpromoted memories\n`;
+      prompt += `  - Inspect: \`sd_search(query="", branch="${b.git_branch}", unpromoted_only=true)\`\n`;
+      prompt += `  - Promote single: \`sd_update(id="<id>", is_canonical=true)\`\n`;
+      prompt += `  - Promote all on branch: run CLI \`stormdrain branch promote ${b.git_branch}\`\n\n`;
+    });
+  }
+
+  prompt += `---
+
 ## 🛠️ Step-by-Step Curation Workflow
 1. **Consolidate**: Work through the dense clusters in Section 1 to synthesize guides and reduce prompt bloat.
-2. **Promote**: Generalize universal facts in Section 2 and add them to \`_global\`.
-3. **Link / Prune**: Connect orphans in Section 3 to relevant files or delete outdated notes.
-4. **Verify**: Call \`sd_recall()\` or \`sd_search(query="...")\` to ensure clean recall precision.
+2. **Promote Universal**: Generalize universal facts in Section 2 and add them to \`_global\`.
+3. **Promote Branch Memories**: Review merged feature branch memories in Section 4 and promote to canonical baseline with \`sd_update(id="...", is_canonical=true)\` or CLI.
+4. **Link / Prune**: Connect orphans in Section 3 to relevant files or delete outdated notes.
+5. **Verify**: Call \`sd_recall()\` or \`sd_search(query="...")\` to ensure clean recall precision.
 `;
 
   return {

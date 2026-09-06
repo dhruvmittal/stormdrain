@@ -17,6 +17,8 @@ Features:
 
 import sys
 import os
+import time
+import subprocess
 import json
 import re
 import ast
@@ -37,6 +39,92 @@ except ImportError:
 DEFAULT_SERVER_URL = os.environ.get("STORMDRAIN_SERVER_URL", "http://localhost:3456")
 DEFAULT_CONTEXT = os.environ.get("STORMDRAIN_CONTEXT", "")
 DEFAULT_TIMEOUT = int(os.environ.get("STORMDRAIN_TIMEOUT", "10"))
+
+_GIT_CACHE = {"branch": None, "root": None, "ts": 0.0}
+
+def get_git_info(cwd: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """Returns (workspace_root, branch_name) with an in-memory 10-second TTL cache."""
+    now = time.time()
+    if _GIT_CACHE["ts"] and (now - _GIT_CACHE["ts"] < 10.0):
+        return _GIT_CACHE["root"], _GIT_CACHE["branch"]
+
+    root = None
+    branch = None
+    target_dir = cwd or os.getcwd()
+
+    # Fast check: read .git/HEAD directly
+    try:
+        curr = os.path.abspath(target_dir)
+        while True:
+            candidate = os.path.join(curr, ".git")
+            if os.path.isdir(candidate):
+                root = curr
+                head_file = os.path.join(candidate, "HEAD")
+                if os.path.isfile(head_file):
+                    with open(head_file, "r", encoding="utf-8", errors="replace") as f:
+                        line = f.read().strip()
+                        if line.startswith("ref: refs/heads/"):
+                            branch = line[16:].strip()
+                break
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+    except Exception:
+        pass
+
+    # Fallback to git subprocess if root or branch was not found
+    if not root or not branch:
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=target_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=2
+            )
+            if res.returncode == 0:
+                root = res.stdout.strip()
+        except Exception:
+            pass
+
+        if not branch:
+            try:
+                res = subprocess.run(
+                    ["git", "symbolic-ref", "-q", "--short", "HEAD"],
+                    cwd=target_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=2
+                )
+                if res.returncode == 0:
+                    b = res.stdout.strip()
+                    if b and b != "HEAD":
+                        branch = b
+            except Exception:
+                pass
+
+    _GIT_CACHE["root"] = root
+    _GIT_CACHE["branch"] = branch
+    _GIT_CACHE["ts"] = now
+    return root, branch
+
+def normalize_client_path(file_path: str, workspace_root: Optional[str] = None) -> str:
+    """Normalize file path to POSIX workspace-relative path."""
+    p = os.path.normpath(file_path)
+    if workspace_root:
+        try:
+            rel = os.path.relpath(p, workspace_root)
+            if not rel.startswith(".."):
+                p = rel
+        except ValueError:
+            pass
+    norm = p.replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.lstrip("/")
 
 
 class StormDrainApiClient:
@@ -65,6 +153,10 @@ class StormDrainApiClient:
         url = self._build_url(endpoint, params=params, explicit_context=context)
         body_bytes = None
         headers = {"Accept": "application/json"}
+
+        _, branch = get_git_info()
+        if branch:
+            headers["X-StormDrain-Branch"] = branch
 
         if data is not None:
             body_bytes = json.dumps(data).encode("utf-8")
@@ -198,11 +290,22 @@ class StormDrainMcpServer:
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query terms"
+                            "description": "Search query terms (optional if metadata filters are provided)"
+                        },
+                        "branch": {
+                            "type": "string",
+                            "description": "Optional git branch filter"
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "Optional memory type filter (decision, lesson, pattern, etc.)"
+                        },
+                        "unpromoted_only": {
+                            "type": "boolean",
+                            "description": "If true, returns only unpromoted (non-canonical) memories"
                         },
                         "context": context_prop
-                    },
-                    "required": ["query"]
+                    }
                 }
             },
             {
@@ -262,7 +365,7 @@ class StormDrainMcpServer:
             },
             {
                 "name": "sd_update",
-                "description": "UPDATE TOOL: Update an existing memory's content, title, tags, or type.",
+                "description": "UPDATE TOOL: Update an existing memory's content, title, tags, type, or canonical promotion status.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -274,6 +377,10 @@ class StormDrainMcpServer:
                         "content": {"type": "string"},
                         "tags": {"type": "array", "items": {"type": "string"}},
                         "type": {"type": "string"},
+                        "is_canonical": {
+                            "type": "boolean",
+                            "description": "Set to true to mark or promote as canonical repository baseline knowledge"
+                        },
                         "context": context_prop
                     },
                     "required": ["id"]
@@ -356,6 +463,8 @@ class StormDrainMcpServer:
     def handle_tool_call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         context = arguments.get("context")
 
+        git_root, current_branch = get_git_info()
+
         if name == "sd_read":
             file_path = arguments.get("path") or arguments.get("filePath")
             if not file_path:
@@ -394,10 +503,11 @@ class StormDrainMcpServer:
             # 1. Topological Invariant Injection from central server
             include_invariants = arguments.get("include_invariants", True)
             if include_invariants:
+                norm_inv_target = normalize_client_path(file_path, git_root)
                 status, inv_data = self.client.request(
                     "GET",
                     "/api/invariants",
-                    params={"target": file_path, "tokenBudget": 500},
+                    params={"target": norm_inv_target, "tokenBudget": 500},
                     context=context
                 )
                 if status == 200 and isinstance(inv_data, dict) and inv_data.get("header"):
@@ -426,10 +536,15 @@ class StormDrainMcpServer:
         elif name == "sd_recall":
             target = arguments.get("target_file") or arguments.get("target")
             limit = arguments.get("limit", 10)
+            params = {"limit": limit}
+            if target:
+                params["target"] = normalize_client_path(target, git_root)
+            if current_branch:
+                params["branch"] = current_branch
             status, data = self.client.request(
                 "GET",
                 "/api/recall",
-                params={"target": target, "limit": limit},
+                params=params,
                 context=context
             )
             if status != 200:
@@ -439,10 +554,21 @@ class StormDrainMcpServer:
 
         elif name == "sd_search":
             query = arguments.get("query", "")
+            branch = arguments.get("branch")
+            type_filter = arguments.get("type")
+            unpromoted_only = arguments.get("unpromoted_only")
+            params = {"q": query}
+            if branch:
+                params["branch"] = branch
+            if type_filter:
+                params["type"] = type_filter
+            if unpromoted_only is not None:
+                params["unpromoted"] = "true" if unpromoted_only else "false"
+
             status, data = self.client.request(
                 "GET",
                 "/api/memories",
-                params={"q": query},
+                params=params,
                 context=context
             )
             if status != 200:
@@ -481,15 +607,28 @@ class StormDrainMcpServer:
             return {"content": [{"type": "text", "text": json.dumps(data, indent=2)}]}
 
         elif name == "sd_add":
+            target_file = arguments.get("target_file")
+            if target_file:
+                target_file = normalize_client_path(target_file, git_root)
+            targets = arguments.get("targets")
+            if isinstance(targets, list):
+                targets = [normalize_client_path(t, git_root) if isinstance(t, str) else t for t in targets]
+            elif isinstance(targets, str):
+                targets = normalize_client_path(targets, git_root)
+
             payload = {
                 "type": arguments.get("type"),
                 "title": arguments.get("title"),
                 "content": arguments.get("content"),
                 "tags": arguments.get("tags", []),
-                "targetFile": arguments.get("target_file"),
-                "targets": arguments.get("targets"),
+                "targetFile": target_file,
+                "targets": targets,
                 "relationType": arguments.get("relation_type", "affects"),
+                "gitBranch": current_branch,
             }
+            if "is_canonical" in arguments:
+                payload["isCanonical"] = arguments["is_canonical"]
+
             status, data = self.client.request("POST", "/api/memories", data=payload, context=context)
             if status not in (200, 201):
                 err_msg = data.get("error", "Failed to add memory") if isinstance(data, dict) else str(data)
@@ -502,12 +641,10 @@ class StormDrainMcpServer:
             mid = arguments.get("id")
             if not mid:
                 return {"isError": True, "content": [{"type": "text", "text": "Argument 'id' is required for sd_update."}]}
-            payload = {
-                "title": arguments.get("title"),
-                "content": arguments.get("content"),
-                "tags": arguments.get("tags"),
-                "type": arguments.get("type"),
-            }
+            payload = {}
+            for field in ("title", "content", "tags", "type", "is_canonical"):
+                if field in arguments and arguments[field] is not None:
+                    payload[field] = arguments[field]
             status, data = self.client.request("PUT", "/api/memories/{}".format(mid), data=payload, context=context)
             if status != 200:
                 err_msg = data.get("error", "Failed to update memory") if isinstance(data, dict) else str(data)
@@ -525,9 +662,12 @@ class StormDrainMcpServer:
             return {"content": [{"type": "text", "text": "Successfully deleted memory {}".format(mid)}]}
 
         elif name == "sd_relate":
+            target = arguments.get("target")
+            if target and not target.startswith("mem-") and not target.startswith("node-"):
+                target = normalize_client_path(target, git_root)
             payload = {
                 "source": arguments.get("source_id"),
-                "target": arguments.get("target"),
+                "target": target,
                 "type": arguments.get("relation_type", "related_to")
             }
             status, data = self.client.request("POST", "/api/relations", data=payload, context=context)
@@ -537,8 +677,11 @@ class StormDrainMcpServer:
             return {"content": [{"type": "text", "text": "Successfully linked {} -> {} ({})".format(payload['source'], payload['target'], payload['type'])}]}
 
         elif name == "sd_consolidate":
+            target_file = arguments.get("target_file")
+            if target_file:
+                target_file = normalize_client_path(target_file, git_root)
             payload = {
-                "targetFile": arguments.get("target_file"),
+                "targetFile": target_file,
                 "memoryIds": arguments.get("memory_ids")
             }
             status, data = self.client.request("POST", "/api/consolidate", data=payload, context=context)

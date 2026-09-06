@@ -22,8 +22,8 @@ function getStatementCache(db: Database.Database): DbStatementCache {
   if (!cache) {
     cache = {
       insertMemory: db.prepare(`
-        INSERT INTO memories (id, type, title, context, confidence, created, updated, accessed, access_count, source, expires, superseded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO memories (id, type, title, context, confidence, created, updated, accessed, access_count, source, expires, superseded_by, git_branch, is_canonical)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           type=excluded.type,
           title=excluded.title,
@@ -34,7 +34,9 @@ function getStatementCache(db: Database.Database): DbStatementCache {
           access_count=excluded.access_count,
           source=excluded.source,
           expires=excluded.expires,
-          superseded_by=excluded.superseded_by
+          superseded_by=excluded.superseded_by,
+          git_branch=COALESCE(excluded.git_branch, memories.git_branch),
+          is_canonical=COALESCE(excluded.is_canonical, memories.is_canonical)
       `),
       insertTag: db.prepare(`
         INSERT OR IGNORE INTO tags (memory_id, tag) VALUES (?, ?)
@@ -82,7 +84,9 @@ export const syncMemoryToDb = (db: Database.Database, memory: Memory) => {
       m.access_count,
       m.source || 'direct',
       m.expires ?? null,
-      m.superseded_by ?? null
+      m.superseded_by ?? null,
+      m.git_branch ? String(m.git_branch) : null,
+      m.is_canonical ? 1 : 0
     );
 
     // 2. Update tags

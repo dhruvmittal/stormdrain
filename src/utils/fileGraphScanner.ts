@@ -38,8 +38,20 @@ export interface ScanOptions {
   submodulePolicies?: Record<string, SubmodulePolicy> | SubmodulePolicy;
 }
 
+export function normalizeRepoPath(filePath: string, workspaceRoot?: string): string {
+  let p = filePath.replace(/\\/g, '/');
+  if (workspaceRoot) {
+    const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (p.startsWith(root)) {
+      p = p.slice(root.length);
+    }
+  }
+  return p.replace(/^(\.\/|\/)+/, '').replace(/\/+/g, '/');
+}
+
 export function makeFileVertexId(relativePath: string): string {
-  const sanitized = relativePath.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+  const normalized = normalizeRepoPath(relativePath);
+  const sanitized = normalized.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
   return `file_${sanitized}`;
 }
 

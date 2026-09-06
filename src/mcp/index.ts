@@ -146,11 +146,22 @@ export class StormDrainMcpServer {
             properties: {
               query: {
                 type: 'string',
-                description: 'Search query'
+                description: 'Search query (optional if metadata filters are provided)'
+              },
+              branch: {
+                type: 'string',
+                description: 'Optional git branch filter'
+              },
+              type: {
+                type: 'string',
+                description: 'Optional memory type filter (decision, lesson, pattern, etc.)'
+              },
+              unpromoted_only: {
+                type: 'boolean',
+                description: 'If true, returns only unpromoted (non-canonical) memories'
               },
               context: contextProp
-            },
-            required: ['query']
+            }
           }
         },
         {
@@ -276,6 +287,10 @@ export class StormDrainMcpServer {
                   required: ['target']
                 },
                 description: 'Replace full relations list'
+              },
+              is_canonical: {
+                type: 'boolean',
+                description: 'Set to true to mark or promote as canonical repository baseline knowledge'
               },
               context: contextProp
             },
@@ -482,7 +497,11 @@ export class StormDrainMcpServer {
 
         if (request.params.name === 'sd_search') {
           const query = (request.params.arguments?.query as string) || '';
-          const results = ctx.searchMemories(query, true) as Array<{ type: string; title: string; id: string; content_snippet?: string; context?: string }>;
+          const branch = request.params.arguments?.branch as string | undefined;
+          const memType = request.params.arguments?.type as MemoryType | undefined;
+          const unpromotedOnly = Boolean(request.params.arguments?.unpromoted_only);
+
+          const results = ctx.searchMemories(query, true, { branch, type: memType, unpromotedOnly }) as Array<{ type: string; title: string; id: string; content_snippet?: string; context?: string; git_branch?: string; is_canonical?: boolean | number }>;
           
           if (results.length === 0) {
             return { content: [{ type: 'text', text: 'No results found.' }] };
@@ -635,11 +654,13 @@ export class StormDrainMcpServer {
             relations?: Array<{ target: string; type: RelationType }>;
             add_targets?: string[] | string;
             remove_targets?: string[] | string;
+            is_canonical?: boolean;
           };
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
             relations: args.relations,
             addTargets: args.add_targets,
-            removeTargets: args.remove_targets
+            removeTargets: args.remove_targets,
+            is_canonical: args.is_canonical
           });
           return { content: [{ type: 'text', text: `Successfully updated memory ${args.id} in context "${targetContext}"` }] };
         }
