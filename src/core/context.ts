@@ -10,7 +10,7 @@ import { GitManager } from './git';
 import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
-import { getCurrentGitBranch } from '../utils/gitUtils';
+import { getCurrentGitBranch, isBranchMergedInto } from '../utils/gitUtils';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
 import { asyncDiskQueue } from '../utils/asyncDiskQueue';
 
@@ -553,10 +553,51 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number } {
+  /**
+   * Automatically detect unpromoted branches in SQLite that have merged into targetRef (default: HEAD).
+   * Supports squash-merges, PR merges, and direct fast-forward/merge commits.
+   */
+  public autoPromoteMergedBranches(cwd: string = process.cwd()): string[] {
+    try {
+      const unpromotedRows = this.db.prepare(`
+        SELECT DISTINCT git_branch 
+        FROM memories 
+        WHERE is_canonical = 0 
+          AND git_branch IS NOT NULL 
+          AND git_branch != '' 
+          AND git_branch NOT IN ('main', 'master')
+      `).all() as Array<{ git_branch: string }>;
+
+      if (!unpromotedRows || unpromotedRows.length === 0) {
+        return [];
+      }
+
+      const promoted: string[] = [];
+      for (const row of unpromotedRows) {
+        const branch = row.git_branch;
+        if (isBranchMergedInto(branch, 'HEAD', cwd)) {
+          const count = this.promoteBranch(branch);
+          if (count > 0) {
+            promoted.push(branch);
+          }
+        }
+      }
+      return promoted;
+    } catch {
+      return [];
+    }
+  }
+
+  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number; autoPromotedBranches?: string[] } {
+    // 1. Auto-promote any unpromoted branches that have merged into the current branch / HEAD
+    const autoPromotedBranches = this.autoPromoteMergedBranches(workspaceDir);
+
     const vertices = generateWorkspaceFileVertices(workspaceDir, scanOptions);
     let createdCount = 0;
     let decayedCount = 0;
+
+    const activeBranch = getCurrentGitBranch(workspaceDir);
+    const isScanningCanonical = !activeBranch || activeBranch === 'main' || activeBranch === 'master';
 
     for (const v of vertices) {
       const existing = this.getMemory(v.id);
@@ -586,6 +627,19 @@ export class ContextManager {
           for (const rel of attachedRelations) {
             const attachedMem = this.getMemory(rel.source_id);
             if (attachedMem && attachedMem.metadata.type !== 'codemap') {
+              const memCanonical = attachedMem.metadata.is_canonical === 1 || Boolean(attachedMem.metadata.is_canonical);
+              const memBranch = attachedMem.metadata.git_branch;
+
+              // Branch-segmented decay guard:
+              // - Canonical memories are only decayed when scanning on a canonical branch.
+              // - Non-canonical feature memories are only decayed if they match the active branch.
+              if (memCanonical && !isScanningCanonical) {
+                continue; // Do not let feature branch edits decay production canonical memories
+              }
+              if (!memCanonical && memBranch && activeBranch && memBranch !== activeBranch) {
+                continue; // Do not decay other branch's memories
+              }
+
               const oldConf = attachedMem.metadata.confidence;
               attachedMem.metadata.confidence = Math.max(0.3, Math.round(oldConf * 0.75 * 100) / 100);
               attachedMem.metadata.updated = new Date().toISOString();
@@ -1061,9 +1115,18 @@ export class ContextManager {
         for (const row of attachedRows) {
           if (row.type === 'codemap' && !includeCodemaps) continue; // Exclude raw codemaps unless requested
 
-          const isInvariant = row.type === 'invariant';
-          const isCanonical = row.is_canonical === 1 || Boolean(row.is_canonical);
-          const matchesBranch = isInvariant || isCanonical || !row.git_branch || (effectiveBranch && row.git_branch === effectiveBranch);
+          const isCanonical = row.is_canonical === 1 || Boolean(row.is_canonical) || !row.git_branch || row.git_branch === '';
+          const isSameBranch = effectiveBranch && row.git_branch === effectiveBranch;
+          let matchesBranch = isCanonical || isSameBranch;
+
+          if (!matchesBranch && ['lesson', 'pattern', 'fact'].includes(row.type)) {
+            // Observation Plane: cross-branch accessible if tagged as environment/toolchain/dependency
+            const rawTags = (row.tags_str || '').split(',').map((t: string) => t.trim().toLowerCase());
+            const observationTags = ['#environment', '#dependency', '#toolchain', 'environment', 'dependency', 'toolchain'];
+            if (rawTags.some((t: string) => observationTags.includes(t))) {
+              matchesBranch = true;
+            }
+          }
           if (!matchesBranch) continue;
 
           const tags = (row.tags_str || '').split(',').filter(Boolean);
@@ -1105,9 +1168,17 @@ export class ContextManager {
 
           for (const conn of connectedMems) {
             if (finalMemories.some(fm => fm.id === conn.id)) continue;
-            const connInvariant = conn.type === 'invariant';
-            const connCanonical = conn.is_canonical === 1 || Boolean(conn.is_canonical);
-            const connMatches = connInvariant || connCanonical || !conn.git_branch || (effectiveBranch && conn.git_branch === effectiveBranch);
+            const connCanonical = conn.is_canonical === 1 || Boolean(conn.is_canonical) || !conn.git_branch || conn.git_branch === '';
+            const connSameBranch = effectiveBranch && conn.git_branch === effectiveBranch;
+            let connMatches = connCanonical || connSameBranch;
+
+            if (!connMatches && ['lesson', 'pattern', 'fact'].includes(conn.type)) {
+              const rawConnTags = (conn.tags_str || '').split(',').map((t: string) => t.trim().toLowerCase());
+              const observationTags = ['#environment', '#dependency', '#toolchain', 'environment', 'dependency', 'toolchain'];
+              if (rawConnTags.some((t: string) => observationTags.includes(t))) {
+                connMatches = true;
+              }
+            }
             if (!connMatches) continue;
             const connTags = (conn.tags_str || '').split(',').filter(Boolean);
             if (connTags.includes('consolidated') || conn.superseded_by) continue;

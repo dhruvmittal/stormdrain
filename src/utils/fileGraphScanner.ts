@@ -39,6 +39,7 @@ export interface ScanOptions {
 }
 
 export function normalizeRepoPath(filePath: string, workspaceRoot?: string): string {
+  if (!filePath) return '';
   let p = filePath.replace(/\\/g, '/');
   if (workspaceRoot) {
     const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -47,7 +48,26 @@ export function normalizeRepoPath(filePath: string, workspaceRoot?: string): str
       p = p.slice(root.length + 1);
     }
   }
-  return p.replace(/^(\.\/|\/)+/, '').replace(/\/+/g, '/');
+  // Strip leading slashes or ./
+  p = p.replace(/^(\.\/|\/)+/, '');
+
+  // Collapse '.' and '..' segments safely
+  const segments = p.split('/').filter(s => s !== '' && s !== '.');
+  const resolved: string[] = [];
+  for (const s of segments) {
+    if (s === '..') {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== '..') {
+        resolved.pop();
+      }
+    } else {
+      resolved.push(s);
+    }
+  }
+  // Remove any remaining leading '..' if within repo context
+  while (resolved.length > 0 && resolved[0] === '..') {
+    resolved.shift();
+  }
+  return resolved.join('/');
 }
 
 export function makeFileVertexId(relativePath: string): string {

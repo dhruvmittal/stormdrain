@@ -176,9 +176,9 @@ def main():
             assert promote_data.get("success") is True
             assert promote_data.get("branch") == "feature/slashed-test"
 
-        print("Testing standard branch param route (POST /api/branches/standard-branch/promote)...")
+        print("Testing branch query param route (POST /api/branches/promote?branch=standard-branch)...")
         param_req = urllib.request.Request(
-            f"{server_url}/api/branches/standard-branch/promote",
+            f"{server_url}/api/branches/promote?branch=standard-branch",
             data=b"",
             headers={"Content-Type": "application/json"}
         )

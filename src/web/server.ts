@@ -12,16 +12,69 @@ import { normalizeRepoPath } from '../utils/fileGraphScanner';
 
 export const startWebServer = (port: number = 3456, host: string = process.env.STORMDRAIN_HOST || '127.0.0.1') => {
   const app = express();
-  app.use(cors());
+
+  const allowedOriginPatterns = [
+    /^http:\/\/localhost(:\d+)?$/,
+    /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+    /^http:\/\/\[::1\](:\d+)?$/
+  ];
+  if (host && host !== '127.0.0.1' && host !== 'localhost') {
+    allowedOriginPatterns.push(new RegExp(`^http://${host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(:\\d+)?$`));
+  }
+  const customOrigins = process.env.STORMDRAIN_ALLOWED_ORIGINS
+    ? process.env.STORMDRAIN_ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+
+  const isOriginAllowed = (origin?: string): boolean => {
+    if (!origin) return true; // Non-browser clients (curl, thin python agent, MCP stdio)
+    if (customOrigins.includes(origin)) return true;
+    return allowedOriginPatterns.some(pattern => pattern.test(origin));
+  };
+
+  app.use(cors({
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    }
+  }));
+
+  // CSRF protection: block cross-origin state-mutating requests from unauthorized browser origins
+  app.use((req, res, next) => {
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+      const origin = req.headers.origin;
+      if (origin && !isOriginAllowed(origin)) {
+        res.status(403).json({ error: 'Cross-origin mutation forbidden' });
+        return;
+      }
+    }
+    next();
+  });
+
   app.use(compression());
   app.use(express.json());
 
   const config = new ConfigManager();
   const contextCache = new Map<string, ContextManager>();
+  const MAX_CONTEXT_CACHE = 50;
+
+  const isValidContextName = (name: string): boolean => {
+    return /^[a-zA-Z0-9_-]+$/.test(name);
+  };
 
   const getContext = (name: string): ContextManager => {
     let ctx = contextCache.get(name);
     if (!ctx) {
+      if (contextCache.size >= MAX_CONTEXT_CACHE) {
+        const oldestKey = contextCache.keys().next().value;
+        if (oldestKey) {
+          const oldestCtx = contextCache.get(oldestKey);
+          try { oldestCtx?.close(); } catch {}
+          contextCache.delete(oldestKey);
+        }
+      }
       ctx = new ContextManager(name);
       contextCache.set(name, ctx);
     }
@@ -31,7 +84,12 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   // Helper middleware wrapper
   const withContext = (handler: (req: express.Request, res: express.Response, ctx: ContextManager) => Promise<void>) => {
     return async (req: express.Request, res: express.Response) => {
-      const active = req.query.context ? String(req.query.context) : config.getActiveContext();
+      const rawContext = req.query.context ? String(req.query.context) : undefined;
+      if (rawContext !== undefined && !isValidContextName(rawContext)) {
+        res.status(400).json({ error: 'Invalid context name: must contain only alphanumeric characters, dashes, or underscores' });
+        return;
+      }
+      const active = rawContext || config.getActiveContext();
       try {
         const ctx = getContext(active);
         await handler(req, res, ctx);
@@ -51,6 +109,10 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   app.post('/api/contexts/use', (req, res) => {
     const { name } = req.body;
+    if (!name || typeof name !== 'string' || !isValidContextName(name)) {
+      res.status(400).json({ error: 'Invalid context name: must contain only alphanumeric characters, dashes, or underscores' });
+      return;
+    }
     try {
       config.setActiveContext(name);
       res.json({ success: true, active: name });
@@ -61,6 +123,10 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   app.delete('/api/contexts/:name', (req, res) => {
     const name = req.params.name ? String(req.params.name) : '';
+    if (!name || !isValidContextName(name)) {
+      res.status(400).json({ error: 'Invalid context name: must contain only alphanumeric characters, dashes, or underscores' });
+      return;
+    }
     try {
       // Close cached context manager before deletion
       const cached = contextCache.get(name);
@@ -296,20 +362,6 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
     }
   }));
 
-  app.post('/api/branches/:branch/promote', withContext(async (req, res, ctx) => {
-    const branch = req.params.branch;
-    if (!branch) {
-      res.status(400).json({ error: 'branch parameter is required' });
-      return;
-    }
-    try {
-      const count = ctx.promoteBranch(branch);
-      res.json({ success: true, branch, promotedCount: count });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  }));
-
   app.delete('/api/memories/:id', withContext(async (req, res, ctx) => {
     const id = req.params.id ? String(req.params.id) : '';
     try {
@@ -347,7 +399,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
           maxDepth: isNaN(depth) ? 3 : depth,
           maxResults: isNaN(limit) ? 10 : limit,
           cumulativeThreshold: 0.98,
-          branch
+          branch: branch || null
         });
 
         if (multiHop.all.length === 0) {
@@ -428,7 +480,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const target = normalizeRepoPath(rawTarget);
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
-      const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
+      const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || null;
 
       let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops, branch);
       if (graphResults.length === 0 && path.basename(target) !== target) {
@@ -511,25 +563,6 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
-  }));
-
-  app.get('/api/graph/version', withContext(async (req, res, ctx) => {
-    const memoriesRow = ctx.getDb().prepare(`
-      SELECT COUNT(*) as count, COALESCE(MAX(updated), '') as max_updated FROM memories
-    `).get() as { count: number; max_updated: string };
-
-    const relationsRow = ctx.getDb().prepare(`
-      SELECT COUNT(*) as count FROM relations
-    `).get() as { count: number };
-
-    const memoriesSig = `${memoriesRow?.count || 0}:${memoriesRow?.max_updated || ''}`;
-    const relationsSig = `${relationsRow?.count || 0}`;
-
-    const hash = crypto.createHash('sha256')
-      .update(`${memoriesSig}||${relationsSig}`)
-      .digest('hex');
-
-    res.json({ version: hash });
   }));
 
 function computeNodeModules(nodes: any[], links: any[]): void {

@@ -26,31 +26,29 @@ import argparse
 import hashlib
 from typing import Dict, Any, List, Optional, Tuple
 
-try:
-    import urllib.request as url_request
-    import urllib.error as url_error
-    import urllib.parse as url_parse
-except ImportError:
-    import urllib2 as url_request
-    import urllib2 as url_error
-    import urllib as url_parse
+import urllib.request as url_request
+import urllib.error as url_error
+import urllib.parse as url_parse
 
 
 DEFAULT_SERVER_URL = os.environ.get("STORMDRAIN_SERVER_URL", "http://localhost:3456")
 DEFAULT_CONTEXT = os.environ.get("STORMDRAIN_CONTEXT", "")
 DEFAULT_TIMEOUT = int(os.environ.get("STORMDRAIN_TIMEOUT", "10"))
 
-_GIT_CACHE = {"branch": None, "root": None, "ts": 0.0}
+_GIT_CACHE: Dict[str, Dict[str, Any]] = {}
+_GIT_CACHE_MAX = 50
 
 def get_git_info(cwd: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
-    """Returns (workspace_root, branch_name) with an in-memory 10-second TTL cache."""
+    """Returns (workspace_root, branch_name) with an in-memory 10-second TTL cache keyed by directory."""
     now = time.time()
-    if _GIT_CACHE["ts"] and (now - _GIT_CACHE["ts"] < 10.0):
-        return _GIT_CACHE["root"], _GIT_CACHE["branch"]
+    target_dir = os.path.abspath(cwd or os.getcwd())
+
+    cached = _GIT_CACHE.get(target_dir)
+    if cached and (now - cached["ts"] < 10.0):
+        return cached["root"], cached["branch"]
 
     root = None
     branch = None
-    target_dir = cwd or os.getcwd()
 
     # Fast check: read .git/HEAD directly
     try:
@@ -120,9 +118,9 @@ def get_git_info(cwd: Optional[str] = None) -> Tuple[Optional[str], Optional[str
             except Exception:
                 pass
 
-    _GIT_CACHE["root"] = root
-    _GIT_CACHE["branch"] = branch
-    _GIT_CACHE["ts"] = now
+    if len(_GIT_CACHE) >= _GIT_CACHE_MAX:
+        _GIT_CACHE.clear()
+    _GIT_CACHE[target_dir] = {"root": root, "branch": branch, "ts": now}
     return root, branch
 
 def normalize_client_path(file_path: str, workspace_root: Optional[str] = None) -> str:
@@ -757,10 +755,19 @@ class StormDrainMcpServer:
                 continue
 
             # Support Content-Length headers if sent by some client wrappers
-            if line.startswith("Content-Length:"):
+            if line.lower().startswith("content-length:"):
                 try:
-                    length = int(line.split(":")[1].strip())
-                    sys.stdin.readline()  # empty separator line
+                    length = int(line.split(":", 1)[1].strip())
+                    # Consume all subsequent header lines until empty separator line
+                    while True:
+                        hdr = sys.stdin.readline()
+                        if not hdr:
+                            break
+                        hdr_stripped = hdr.strip()
+                        if hdr_stripped == "":
+                            break
+                        if hdr_stripped.lower().startswith("content-length:"):
+                            length = int(hdr_stripped.split(":", 1)[1].strip())
                     body = sys.stdin.read(length)
                     req = json.loads(body)
                 except Exception as e:

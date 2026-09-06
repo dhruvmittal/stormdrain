@@ -258,6 +258,14 @@ export class StormDrainMcpServer {
                 type: 'string',
                 description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
               },
+              git_branch: {
+                type: 'string',
+                description: 'Optional Git branch provenance override (defaults to current git branch)'
+              },
+              is_canonical: {
+                type: 'boolean',
+                description: 'Whether to mark memory as canonical baseline repository knowledge (defaults to true for main/master, false for feature branches)'
+              },
               context: contextProp
             },
             required: ['type', 'title', 'content']
@@ -621,6 +629,8 @@ export class StormDrainMcpServer {
             targets?: string[] | string;
             relations?: Array<{ target: string; type?: RelationType }>;
             relation_type?: RelationType;
+            git_branch?: string;
+            is_canonical?: boolean;
           };
           const targets = args.targets || args.target_file;
           const id = ctx.addMemory(
@@ -632,7 +642,9 @@ export class StormDrainMcpServer {
             undefined,
             targets,
             args.relation_type || 'affects',
-            args.relations
+            args.relations,
+            args.git_branch,
+            args.is_canonical
           );
           const mem = ctx.getMemory(id);
           let linkMsg = '';
