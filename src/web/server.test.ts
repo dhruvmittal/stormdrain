@@ -286,16 +286,20 @@ describe('Web API Server', () => {
     expect(errRes.status).toBeGreaterThanOrEqual(400);
   });
 
-  it('should return a graph version hash and update on changes', async () => {
-    const res = await fetch(`${baseUrl}/api/graph/version`);
+  it('should return an ETag header on /api/graph and update on changes', async () => {
+    const res = await fetch(`${baseUrl}/api/graph`);
     expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.version).toBeDefined();
-    expect(typeof data.version).toBe('string');
-    expect(data.version.length).toBe(64);
+    const initialETag = res.headers.get('etag');
+    expect(initialETag).toBeDefined();
+    expect(initialETag!.length).toBeGreaterThan(10);
 
-    const initialVersion = data.version;
+    // ETag match should return 304 Not Modified
+    const cachedRes = await fetch(`${baseUrl}/api/graph`, {
+      headers: { 'If-None-Match': initialETag! }
+    });
+    expect(cachedRes.status).toBe(304);
 
+    // Create memory - ETag should change
     const createRes = await fetch(`${baseUrl}/api/memories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -309,20 +313,159 @@ describe('Web API Server', () => {
     const createData = await createRes.json();
     const createdId = createData.id;
 
-    const resAfterCreate = await fetch(`${baseUrl}/api/graph/version`);
-    const dataAfterCreate = await resAfterCreate.json();
-    expect(dataAfterCreate.version).not.toBe(initialVersion);
+    const resAfterCreate = await fetch(`${baseUrl}/api/graph`);
+    const etagAfterCreate = resAfterCreate.headers.get('etag');
+    expect(etagAfterCreate).not.toBe(initialETag);
 
-    const version2 = dataAfterCreate.version;
-
+    // Delete memory - ETag should change again
     const delRes = await fetch(`${baseUrl}/api/memories/${createdId}`, {
       method: 'DELETE'
     });
     expect(delRes.status).toBe(200);
 
-    const resAfterDelete = await fetch(`${baseUrl}/api/graph/version`);
-    const dataAfterDelete = await resAfterDelete.json();
-    expect(dataAfterDelete.version).not.toBe(version2);
+    const resAfterDelete = await fetch(`${baseUrl}/api/graph`);
+    const etagAfterDelete = resAfterDelete.headers.get('etag');
+    expect(etagAfterDelete).not.toBe(etagAfterCreate);
+  });
+
+  it('should recall top memories via /api/recall when no target is specified', async () => {
+    // Add a test memory
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'invariant',
+        title: 'Global Thread Safety Rule',
+        content: 'Never lock mutex A while holding mutex B.'
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/recall?limit=5`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.count).toBeGreaterThan(0);
+    expect(data.text).toContain('Global Thread Safety Rule');
+    expect(data.memories).toBeDefined();
+    expect(data.memories.length).toBeGreaterThan(0);
+  });
+
+  it('should recall multi-hop neighborhood invariants via /api/recall with target', async () => {
+    // Add memory attached to a target file
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'warning',
+        title: 'GPU Memory Limit',
+        content: 'Do not allocate tensors > 8GB in solver.cu',
+        targetFile: 'src/solver.cu'
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/recall?target=src/solver.cu`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.target).toBe('src/solver.cu');
+    expect(data.count).toBeGreaterThan(0);
+    expect(data.text).toContain('GPU Memory Limit');
+    expect(data.results).toBeDefined();
+    expect(data.results.direct.length).toBeGreaterThan(0);
+  });
+
+  it('should return formatted invariant header via /api/invariants', async () => {
+    // Add invariant memory for a target file
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'warning',
+        title: 'Pointer Alignment Constraint',
+        content: 'All buffers passed to solver.cu must be 64-byte aligned.',
+        targetFile: 'src/solver.cu',
+        tags: ['cuda', 'memory']
+      })
+    });
+
+    const res = await fetch(`${baseUrl}/api/invariants?target=src/solver.cu&tokenBudget=300`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.target).toBe('src/solver.cu');
+    expect(data.count).toBeGreaterThan(0);
+    expect(data.header).toContain('StormDrain Architectural Invariants & Caller Constraints');
+    expect(data.header).toContain('Pointer Alignment Constraint');
+  });
+
+  it('should require target parameter for /api/invariants', async () => {
+    const res = await fetch(`${baseUrl}/api/invariants`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('target parameter is required');
+  });
+
+  it('should reject invalid context names with 400', async () => {
+    const res = await fetch(`${baseUrl}/api/memories?context=../../evil`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('Invalid context name');
+  });
+
+  it('should reject cross-origin mutating requests from unauthorized origins with 403', async () => {
+    const res = await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': 'http://evil-attacker.com'
+      },
+      body: JSON.stringify({
+        type: 'lesson',
+        title: 'CSRF Attempt',
+        content: 'Malicious payload'
+      })
+    });
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toContain('Cross-origin mutation forbidden');
+  });
+
+  it('should allow mutating requests with localhost origin', async () => {
+    const res = await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': 'http://localhost:5173'
+      },
+      body: JSON.stringify({
+        type: 'lesson',
+        title: 'Legit Web UI Call',
+        content: 'From Vite dev server'
+      })
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('should promote unpromoted branch memories via POST /api/branches/promote', async () => {
+    // Add memory with branch
+    await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'concept',
+        title: 'Feature Branch Work',
+        content: 'Some feature branch concept',
+        gitBranch: 'feature/auth-v2'
+      })
+    });
+
+    const promoteRes = await fetch(`${baseUrl}/api/branches/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch: 'feature/auth-v2' })
+    });
+    expect(promoteRes.status).toBe(200);
+    const promoteData = await promoteRes.json();
+    expect(promoteData.success).toBe(true);
+    expect(promoteData.branch).toBe('feature/auth-v2');
+    expect(promoteData.promotedCount).toBeGreaterThanOrEqual(1);
   });
 });
 

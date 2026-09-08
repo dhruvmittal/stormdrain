@@ -33,6 +33,8 @@ export interface MemoryMetadata {
   expires: string | null; // ISO format
   superseded_by: string | null; // id of superseding memory
   relations: MemoryRelation[];
+  git_branch?: string | null;
+  is_canonical?: boolean;
 }
 
 export interface Memory {
@@ -58,6 +60,8 @@ export interface MultiHopMemoryResult {
   targetFile?: string;
   tags: string[];
   content_snippet?: string;
+  git_branch?: string | null;
+  is_canonical?: boolean;
 }
 
 export interface MultiHopRecallResponse {
@@ -178,6 +182,8 @@ export interface FullNodeDetails {
   outgoingRelations: Array<{ target: string; type: string; title?: string }>;
   incomingRelations: Array<{ source: string; type: string; title?: string }>;
   attachedMemories?: Array<{ id: string; type: MemoryType; title: string; confidence: number }>;
+  git_branch?: string | null;
+  is_canonical?: boolean;
 }
 
 export interface ConsolidationCandidate {

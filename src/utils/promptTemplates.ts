@@ -1,4 +1,6 @@
 import { ContextManager } from '../core/context';
+import { ConfigManager } from '../core/config';
+import { getRecentGitActivity, isGitRepo } from './gitUtils';
 
 export interface CuratePromptOptions {
   target?: string;
@@ -152,6 +154,21 @@ function generateGraphSweepCuratePrompt(
   const candidates = ctx.findConsolidationCandidates(threshold).slice(0, maxCandidates);
   const allMemories = ctx.listMemories();
 
+  // Find unpromoted branch memories
+  let unpromotedBranches: { git_branch: string; count: number }[] = [];
+  try {
+    const rows = ctx.getDb().prepare(`
+      SELECT git_branch, COUNT(*) as count 
+      FROM memories 
+      WHERE (is_canonical = 0 OR is_canonical IS NULL) AND git_branch IS NOT NULL AND git_branch != ''
+      GROUP BY git_branch
+      ORDER BY count DESC
+    `).all() as { git_branch: string; count: number }[];
+    unpromotedBranches = rows;
+  } catch {
+    // If column doesn't exist yet or db error
+  }
+
   // Find candidate memories for promotion: facts or environment-tagged memories in local context
   const promotionCandidates = allMemories.filter((m) => {
     if (m.metadata.type === 'guide') return false;
@@ -234,16 +251,202 @@ You are performing a holistic health and curation review of the knowledge graph 
 
   prompt += `---
 
+## 4. 🌿 Unpromoted Branch Memories
+`;
+
+  if (unpromotedBranches.length === 0) {
+    prompt += `*No unpromoted branch memories found. All branch knowledge is canonical or on baseline branches.*\n\n`;
+  } else {
+    prompt += `The following feature branches have accumulated non-canonical memories:\n\n`;
+    unpromotedBranches.forEach((b) => {
+      prompt += `- **Branch \`${b.git_branch}\`**: ${b.count} unpromoted memories\n`;
+      prompt += `  - Inspect: \`sd_search(query="", branch="${b.git_branch}", unpromoted_only=true)\`\n`;
+      prompt += `  - Promote single: \`sd_update(id="<id>", is_canonical=true)\`\n`;
+      prompt += `  - Promote all on branch: run CLI \`stormdrain branch promote ${b.git_branch}\`\n\n`;
+    });
+  }
+
+  prompt += `---
+
 ## 🛠️ Step-by-Step Curation Workflow
 1. **Consolidate**: Work through the dense clusters in Section 1 to synthesize guides and reduce prompt bloat.
-2. **Promote**: Generalize universal facts in Section 2 and add them to \`_global\`.
-3. **Link / Prune**: Connect orphans in Section 3 to relevant files or delete outdated notes.
-4. **Verify**: Call \`sd_recall()\` or \`sd_search(query="...")\` to ensure clean recall precision.
+2. **Promote Universal**: Generalize universal facts in Section 2 and add them to \`_global\`.
+3. **Promote Branch Memories**: Review merged feature branch memories in Section 4 and promote to canonical baseline with \`sd_update(id="...", is_canonical=true)\` or CLI.
+4. **Link / Prune**: Connect orphans in Section 3 to relevant files or delete outdated notes.
+5. **Verify**: Call \`sd_recall()\` or \`sd_search(query="...")\` to ensure clean recall precision.
 `;
 
   return {
     title: `Graph Curation Sweep (${contextName})`,
     description: `Holistic graph curation sweep for context ${contextName}`,
+    promptText: prompt,
+  };
+}
+
+export interface HarvestPromptOptions {
+  limit?: number;
+  workspaceDir?: string;
+}
+
+export interface HarvestPromptResult {
+  title: string;
+  description: string;
+  promptText: string;
+}
+
+/**
+ * Generate a structured discovery harvest prompt for an AI agent or developer.
+ * Inspects recent git commits and modified files, cross-references existing memories,
+ * and prompts for high-signal discoveries (warning, fact, lesson, pattern, sequence, guide).
+ */
+export async function generateHarvestPrompt(
+  ctx: ContextManager,
+  options?: HarvestPromptOptions
+): Promise<HarvestPromptResult> {
+  const limit = options?.limit && options.limit > 0 ? options.limit : 5;
+  let workspaceDir = options?.workspaceDir;
+  if (!workspaceDir) {
+    if (isGitRepo(process.cwd())) {
+      workspaceDir = process.cwd();
+    } else {
+      try {
+        const cm = new ConfigManager();
+        const ctxData = cm.getContext(ctx.getContextName());
+        const found = (ctxData?.paths || []).find(p => isGitRepo(p));
+        workspaceDir = found || process.cwd();
+      } catch {
+        workspaceDir = process.cwd();
+      }
+    }
+  }
+  const contextName = ctx.getContextName();
+
+  const activity = getRecentGitActivity(workspaceDir, limit);
+  const activeBranch = activity.branch || 'unknown';
+
+  // Find existing memories attached to the touched files
+  const existingMemoriesByFile: Array<{ file: string; id: string; type: string; title: string }> = [];
+
+  if (activity.touchedFiles.length > 0) {
+    // Collect target vertex IDs
+    const fileVertexMap = new Map<string, string>(); // vertexId -> relFile
+    for (const file of activity.touchedFiles) {
+      const vId = ctx.resolveTargetId(file);
+      if (vId) fileVertexMap.set(vId, file);
+    }
+
+    const vertexIds = Array.from(fileVertexMap.keys());
+    if (vertexIds.length > 0) {
+      try {
+        const placeholders = vertexIds.map(() => '?').join(',');
+        const rows = ctx.getDb().prepare(`
+          SELECT DISTINCT m.id, m.type, m.title, r.target_id
+          FROM relations r
+          JOIN memories m ON m.id = r.source_id
+          WHERE r.target_id IN (${placeholders})
+          ORDER BY m.id DESC
+        `).all(...vertexIds) as Array<{ id: string; type: string; title: string; target_id: string }>;
+
+        for (const row of rows) {
+          const matchedFile = fileVertexMap.get(row.target_id) || row.target_id;
+          existingMemoriesByFile.push({
+            file: matchedFile,
+            id: row.id,
+            type: row.type,
+            title: row.title
+          });
+        }
+      } catch {}
+    }
+  }
+
+  let prompt = `# 🌾 StormDrain Discovery Harvest
+
+You are wrapping up development on branch **\`${activeBranch}\`** in context **\`${contextName}\`**.
+Your goal is to extract and persist discoveries made during this session into StormDrain so future agents and sessions have immediate access to them.
+
+---
+
+## 🔍 Recent Session Context
+- **Active Branch**: \`${activeBranch}\`
+- **Recent Commits**:
+`;
+
+  if (activity.recentCommits.length === 0) {
+    prompt += `*No recent commits found on active branch.*\n`;
+  } else {
+    for (const c of activity.recentCommits) {
+      prompt += `- \`${c.hash}\` ${c.subject}\n`;
+    }
+  }
+
+  prompt += `\n- **Modified / Touched Files**:\n`;
+  if (activity.touchedFiles.length === 0) {
+    prompt += `*No recently modified files detected in working tree or recent commits.*\n`;
+  } else {
+    const displayFiles = activity.touchedFiles.slice(0, 20);
+    for (const f of displayFiles) {
+      prompt += `- \`${f}\`\n`;
+    }
+    if (activity.touchedFiles.length > 20) {
+      prompt += `- *...and ${activity.touchedFiles.length - 20} more files*\n`;
+    }
+  }
+
+  prompt += `\n### 📚 Existing Memories on Touched Files (Avoid Duplicating These)\n`;
+  if (existingMemoriesByFile.length === 0) {
+    prompt += `*No memories currently recorded for recently touched files.*\n`;
+  } else {
+    for (const m of existingMemoriesByFile.slice(0, 15)) {
+      prompt += `- \`${m.id}\` [${m.type.toUpperCase()}]: *${m.title}* (\`${m.file}\`)\n`;
+    }
+    if (existingMemoriesByFile.length > 15) {
+      prompt += `- *...and ${existingMemoriesByFile.length - 15} more memories*\n`;
+    }
+  }
+
+  prompt += `\n---
+
+## 🎯 Discovery Extraction Rubric
+Review what you learned while implementing and debugging this session.
+Do NOT review code quality or audit PRs. Capture **concrete discoveries already made**:
+
+| Memory Type | Core Question to Ask | Example Discovery |
+| :--- | :--- | :--- |
+| **\`warning\`** | *What footgun, subtle hazard, or anti-pattern must future sessions avoid?* | *"Do not use \`git branch --merged\` for squash merges; squash merges produce new commit hashes."* |
+| **\`fact\`** | *What hard structural invariant or caller contract did you establish or uncover?* | *"Memories on feature branches must have \`is_canonical == 1\` to cross into \`main\`."* |
+| **\`lesson\`** | *What tricky bug or unexpected failure mode did you diagnose and solve?* | *"In NixOS, Vitest subprocesses need \`nix develop --command\` to link shared libraries."* |
+| **\`pattern\`** | *What reusable structural pattern or convention was adopted in this codebase?* | *"Use parent directory walking to find Git root instead of spawning shell subprocesses."* |
+| **\`sequence\`** | *What strict ordering of steps or lifecycle protocol is required here?* | *"Promotion order: 1. Check reachability, 2. Execute SQL update, 3. Invalidate memory cache."* |
+| **\`guide\`** | *What end-to-end procedural workflow or subsystem rule was formulated?* | *"Guide on testing git branch provenance across mock git worktrees."* |
+
+*(Note: High-level architectural \`concept\` nodes and AST \`codemap\` files are managed separately; do not create them during this harvest.)*
+
+---
+
+## 🏷️ Standard Tags
+Use semantic tags for precise multi-hop filtering:
+\`#invariant\`, \`#decision\`, \`#edge-case\`, \`#environment\`, \`#performance\`, \`#anti-pattern\`, \`#toolchain\`
+
+---
+
+## ⚡ Action Directive
+For any genuine discovery not already recorded above, immediately call \`sd_add()\` to persist it:
+
+\`\`\`json
+sd_add({
+  "type": "warning" | "fact" | "lesson" | "pattern" | "sequence" | "guide",
+  "title": "<Concise summary>",
+  "content": "<Detailed mechanism, rationale, or reproduction>",
+  "target_file": "<path/to/primary/file>",
+  "tags": ["#tag1", "#tag2"]
+})
+\`\`\`
+`;
+
+  return {
+    title: `Discovery Harvest: ${activeBranch} (${contextName})`,
+    description: `Extract and persist architectural discoveries from recent work on ${activeBranch}`,
     promptText: prompt,
   };
 }

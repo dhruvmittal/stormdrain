@@ -38,8 +38,55 @@ export interface ScanOptions {
   submodulePolicies?: Record<string, SubmodulePolicy> | SubmodulePolicy;
 }
 
-export function makeFileVertexId(relativePath: string): string {
-  const sanitized = relativePath.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+export function normalizeRepoPath(filePath: string, workspaceRoot?: string | string[]): string {
+  if (!filePath) return '';
+  let p = filePath.replace(/\\/g, '/');
+  const roots = (Array.isArray(workspaceRoot) ? workspaceRoot : (workspaceRoot ? [workspaceRoot] : []))
+    .filter(Boolean)
+    .map(r => r.replace(/\\/g, '/').replace(/\/+$/, ''));
+
+  if (roots.length === 0 && path.isAbsolute(filePath)) {
+    roots.push(process.cwd().replace(/\\/g, '/').replace(/\/+$/, ''));
+  }
+
+  // Longest match first
+  roots.sort((a, b) => b.length - a.length);
+  for (const root of roots) {
+    if (p === root) {
+      p = '';
+      break;
+    }
+    if (p.startsWith(root + '/')) {
+      p = p.slice(root.length + 1);
+      break;
+    }
+  }
+
+  // Strip leading slashes or ./
+  p = p.replace(/^(\.\/|\/)+/, '');
+
+  // Collapse '.' and '..' segments safely
+  const segments = p.split('/').filter(s => s !== '' && s !== '.');
+  const resolved: string[] = [];
+  for (const s of segments) {
+    if (s === '..') {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== '..') {
+        resolved.pop();
+      }
+    } else {
+      resolved.push(s);
+    }
+  }
+  // Remove any remaining leading '..' if within repo context
+  while (resolved.length > 0 && resolved[0] === '..') {
+    resolved.shift();
+  }
+  return resolved.join('/');
+}
+
+export function makeFileVertexId(relativePath: string, workspaceRoot?: string | string[]): string {
+  const normalized = normalizeRepoPath(relativePath, workspaceRoot);
+  const sanitized = normalized.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
   return `file_${sanitized}`;
 }
 

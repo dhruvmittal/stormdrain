@@ -16,6 +16,8 @@ export interface MemoryDbRow {
   content: string;
   file_path?: string | null;
   ast_outline?: string | null;
+  git_branch?: string | null;
+  is_canonical?: number | boolean | null;
 }
 
 export interface TagDbRow {

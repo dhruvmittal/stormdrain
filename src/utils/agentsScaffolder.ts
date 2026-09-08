@@ -12,6 +12,7 @@ This project uses StormDrain for persistent cross-session architectural memory. 
 - **Primary Source Reader (MANDATORY)**: Always use \`sd_read(path="path/to/file")\` instead of default read tools. It automatically injects topological invariants, upstream caller constraints, and symbol outlines into the file stream.
 - **Pre-Edit Invariant Check**: Call \`sd_recall(target_file="path/to/file")\` before modifying or refactoring any file to inspect multi-hop caller contracts and dependency rules.
 - **Record High-Signal Discoveries**: Call \`sd_add(type, title, content, target_file)\` when discovering non-obvious bugs, architectural decisions, invariants, or reusable patterns.
+- **Harvest Session Discoveries (\`/sd_harvest\`)**: Run \`/sd_harvest\` (or CLI \`stormdrain harvest\`) at the end of a feature, bugfix, or coding session to capture and persist newly established invariants, gotchas, failure modes, or architectural decisions directly via \`sd_add\`.
 - **Curate, Consolidate & Promote (\`/sd_curate\`)**: Run \`/sd_curate\` to review candidate micro-memories for surgical consolidation (\`sd_consolidate\`), generalize and promote environment-wide knowledge to global (\`sd_add(..., context="_global")\`), or connect related concepts (\`sd_relate\`).
 - **Sync Code Graph**: Call \`sd_scan()\` whenever new source files, exports, or imports are added or reorganized.
 

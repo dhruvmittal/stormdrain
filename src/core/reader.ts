@@ -233,7 +233,8 @@ export class FileReader {
       const depthBadge = mem.depth > 0 ? ` (Hop ${mem.depth})` : ' (Direct)';
       const confBadge = `Confidence: ${(mem.confidence * 100).toFixed(0)}%`;
       
-      let item = `- [${mem.type.toUpperCase()}] ${mem.title} (ID: ${mem.id}${depthBadge}, ${confBadge})${tagStr}\n`;
+      const branchBadge = (!mem.is_canonical && mem.git_branch) ? ` [Branch: ${mem.git_branch}]` : '';
+      let item = `- [${mem.type.toUpperCase()}] ${mem.title} (ID: ${mem.id}${depthBadge}, ${confBadge})${branchBadge}${tagStr}\n`;
       if (mem.content) {
         const snippet = mem.content.length > 180 ? `${mem.content.substring(0, 180)}...` : mem.content;
         item += `  ${snippet.split('\n').join('\n  ')}\n`;

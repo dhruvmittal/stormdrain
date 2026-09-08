@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -23,6 +23,171 @@ export function isGitRepo(dir: string): boolean {
   } catch {
     return false;
   }
+}
+
+interface GitBranchCacheEntry {
+  branch: string | null;
+  ts: number;
+}
+const gitBranchCache = new Map<string, GitBranchCacheEntry>();
+const GIT_BRANCH_CACHE_TTL_MS = 5000;
+
+export function clearGitBranchCache(): void {
+  gitBranchCache.clear();
+}
+
+/**
+ * Get current git branch name fast. Returns null if detached HEAD or outside git.
+ * Walks up directory hierarchy looking for .git (directory or worktree pointer file).
+ */
+export function getCurrentGitBranch(dir: string = process.cwd()): string | null {
+  const resolvedDir = path.resolve(dir);
+
+  // 1. Fast filesystem read of .git/HEAD (sub-millisecond, always fresh on branch switches)
+  try {
+    let curr = resolvedDir;
+    while (curr) {
+      const gitPath = path.join(curr, '.git');
+      if (fs.existsSync(gitPath)) {
+        let gitHeadPath: string | null = null;
+        const stat = fs.statSync(gitPath);
+        if (stat.isDirectory()) {
+          gitHeadPath = path.join(gitPath, 'HEAD');
+        } else if (stat.isFile()) {
+          const line = fs.readFileSync(gitPath, 'utf8').trim();
+          if (line.startsWith('gitdir:')) {
+            const rawDir = line.slice(7).trim();
+            const resolvedDirGit = path.isAbsolute(rawDir) ? rawDir : path.resolve(curr, rawDir);
+            gitHeadPath = path.join(resolvedDirGit, 'HEAD');
+          }
+        }
+
+        if (gitHeadPath && fs.existsSync(gitHeadPath)) {
+          const content = fs.readFileSync(gitHeadPath, 'utf8').trim();
+          const match = content.match(/^ref:\s*refs\/heads\/(.+)$/);
+          if (match) {
+            return match[1];
+          }
+        }
+        // Found .git boundary but HEAD was detached or unreadable
+        break;
+      }
+      const parent = path.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+  } catch {}
+
+  // 2. Fallback to cache for slow subprocess/CI checks
+  const now = Date.now();
+  const cached = gitBranchCache.get(resolvedDir);
+  if (cached && (now - cached.ts < GIT_BRANCH_CACHE_TTL_MS)) {
+    return cached.branch;
+  }
+
+  const setCache = (b: string | null): string | null => {
+    if (gitBranchCache.size >= 100) gitBranchCache.clear();
+    gitBranchCache.set(resolvedDir, { branch: b, ts: now });
+    return b;
+  };
+
+  try {
+    const branch = execSync('git symbolic-ref -q --short HEAD', {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 2000
+    }).toString('utf8').trim();
+    if (branch && branch !== 'HEAD') {
+      return setCache(branch);
+    }
+  } catch {}
+
+  // CI/CD runner fallback: when running in detached HEAD (e.g. GitHub Actions, GitLab CI)
+  const ciBranch = (
+    process.env.GITHUB_HEAD_REF ||
+    process.env.GITHUB_REF_NAME ||
+    process.env.CI_COMMIT_REF_NAME ||
+    process.env.CI_COMMIT_BRANCH ||
+    process.env.GIT_BRANCH ||
+    process.env.BRANCH_NAME ||
+    process.env.STORMDRAIN_BRANCH
+  )?.trim();
+  if (ciBranch && ciBranch !== 'HEAD' && !ciBranch.startsWith('refs/tags/')) {
+    const cleanCiBranch = ciBranch.replace(/^refs\/heads\//, '');
+    return setCache(cleanCiBranch);
+  }
+
+  return setCache(null);
+}
+
+/**
+ * Check if a branch has been merged into a target ref (default: HEAD) via:
+ * 1. Direct git ancestry (git merge-base --is-ancestor)
+ * 2. Remote tracking branch ancestry (origin/<branch>)
+ * 3. Commit messages from PR squash-merges:
+ *    - "Merge pull request #... from .../<branch>"
+ *    - "Merge branch '<branch>' into ..."
+ *    - "Merged in <branch> ..."
+ */
+export function isBranchMergedInto(
+  branch: string,
+  targetRef: string = 'HEAD',
+  cwd: string = process.cwd()
+): boolean {
+  if (!branch || branch === 'main' || branch === 'master' || branch === 'HEAD') {
+    return false;
+  }
+  if (!isGitRepo(cwd)) {
+    return false;
+  }
+
+  // 1. Direct commit ancestry check: is <branch> an ancestor of targetRef?
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', branch, targetRef], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    });
+    return true;
+  } catch {}
+
+  // 2. Check remote tracking branch origin/<branch> if local ref was deleted after PR
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', `origin/${branch}`, targetRef], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    });
+    return true;
+  } catch {}
+
+  // 3. PR Squash / Merge Commit Message Matching in recent git log
+  try {
+    const logOutput = execFileSync(
+      'git',
+      ['log', '-n', '50', '--format=%s%n%b%n---COMMIT_END---', targetRef],
+      {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000
+      }
+    ).toString('utf8');
+
+    const escapedBranch = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const prPatterns = [
+      new RegExp(`Merge pull request #\\d+ from (?:\\S+/)?${escapedBranch}\\b`, 'i'),
+      new RegExp(`Merge branch '${escapedBranch}'`, 'i'),
+      new RegExp(`Merged in ${escapedBranch}\\b`, 'i'),
+      new RegExp(`\\bfrom branch ['"]?${escapedBranch}['"]?`, 'i'),
+      new RegExp(`\\(${escapedBranch}\\)`, 'i')
+    ];
+
+    if (prPatterns.some(pat => pat.test(logOutput))) {
+      return true;
+    }
+  } catch {}
+
+  return false;
 }
 
 /**
@@ -201,5 +366,107 @@ export function summarizeSubmodule(workspaceDir: string, sub: SubmoduleInfo): {
     title: `[Submodule] ${sub.path}`,
     content,
     tags: ['submodule', 'codemap', 'codebase-graph']
+  };
+}
+
+export interface GitCommitSummary {
+  hash: string;
+  subject: string;
+}
+
+export interface RecentGitActivity {
+  branch: string | null;
+  recentCommits: GitCommitSummary[];
+  touchedFiles: string[];
+}
+
+/**
+ * Inspect recent Git activity: active branch, recent commit history, and touched files.
+ * Combines working-tree uncommitted changes with recent commits.
+ */
+export function getRecentGitActivity(
+  dir: string = process.cwd(),
+  maxCommits: number = 5
+): RecentGitActivity {
+  const branch = getCurrentGitBranch(dir);
+  const recentCommits: GitCommitSummary[] = [];
+  const touchedFilesSet = new Set<string>();
+
+  // 1. Fetch recent commit log
+  try {
+    const logOutput = execSync(`git log -n ${Math.max(1, maxCommits)} --oneline`, {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    }).toString('utf8').trim();
+
+    if (logOutput) {
+      for (const line of logOutput.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const spaceIdx = trimmed.indexOf(' ');
+        if (spaceIdx > 0) {
+          recentCommits.push({
+            hash: trimmed.slice(0, spaceIdx),
+            subject: trimmed.slice(spaceIdx + 1).trim()
+          });
+        } else {
+          recentCommits.push({ hash: trimmed, subject: '' });
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Fetch files modified in recent commits
+  try {
+    const commitFilesOutput = execSync(`git log -n ${Math.max(1, maxCommits)} --name-only --pretty=""`, {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    }).toString('utf8').trim();
+
+    if (commitFilesOutput) {
+      for (const line of commitFilesOutput.split('\n')) {
+        const file = line.trim();
+        if (file && !file.endsWith('/')) {
+          touchedFilesSet.add(file);
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Fetch working tree uncommitted changes (modified, added, untracked)
+  try {
+    const statusOutput = execSync('git status --porcelain', {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    }).toString('utf8').trim();
+
+    if (statusOutput) {
+      for (const line of statusOutput.split('\n')) {
+        if (!line || line.length < 3) continue;
+        // Format: XY <path> or XY <path> -> <newpath>
+        let rawPath = line.slice(2).trim();
+        if (rawPath.includes(' -> ')) {
+          rawPath = rawPath.split(' -> ')[1].trim();
+        }
+        // Strip quotes if git quoted paths with special chars
+        if (rawPath.startsWith('"') && rawPath.endsWith('"')) {
+          rawPath = rawPath.slice(1, -1);
+        }
+        if (rawPath && !rawPath.endsWith('/')) {
+          touchedFilesSet.add(rawPath);
+        }
+      }
+    }
+  } catch {}
+
+  const touchedFiles = Array.from(touchedFilesSet).sort();
+
+  return {
+    branch,
+    recentCommits,
+    touchedFiles
   };
 }

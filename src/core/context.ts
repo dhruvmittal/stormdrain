@@ -10,6 +10,7 @@ import { GitManager } from './git';
 import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
+import { getCurrentGitBranch, isBranchMergedInto } from '../utils/gitUtils';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
 import { asyncDiskQueue } from '../utils/asyncDiskQueue';
 
@@ -43,6 +44,27 @@ export class ContextManager {
     return path.join(this.memoriesPath, `${safeId}.md`);
   }
 
+  private cachedWorkspaceRoots?: string[];
+
+  public getWorkspaceRoots(): string[] {
+    if (this.cachedWorkspaceRoots) {
+      return this.cachedWorkspaceRoots;
+    }
+    try {
+      const cfg = new ConfigManager();
+      const ctx = cfg.getContext(this.name);
+      const roots = (ctx?.paths || []).map(p => path.resolve(p));
+      const cwd = path.resolve(process.cwd());
+      if (!roots.includes(cwd)) roots.push(cwd);
+      this.cachedWorkspaceRoots = roots;
+      return roots;
+    } catch {
+      const roots = [path.resolve(process.cwd())];
+      this.cachedWorkspaceRoots = roots;
+      return roots;
+    }
+  }
+
   public resolveTargetId(target: string): string {
     const trimmed = target.trim();
     if (!trimmed) return '';
@@ -56,8 +78,8 @@ export class ContextManager {
         return trimmed;
       }
     } catch {}
-    // Otherwise treat as a file path
-    return makeFileVertexId(trimmed);
+    // Otherwise treat as a file path normalized against workspace roots
+    return makeFileVertexId(trimmed, this.getWorkspaceRoots());
   }
 
   public addMemory(
@@ -69,7 +91,9 @@ export class ContextManager {
     customId?: string,
     targetOrTargets?: string | string[],
     relationType: RelationType = 'affects',
-    explicitRelations?: Array<{ target: string; type?: RelationType }>
+    explicitRelations?: Array<{ target: string; type?: RelationType }>,
+    gitBranch?: string | null,
+    isCanonical?: boolean
   ): string {
     const id = customId || `mem_${crypto.randomBytes(6).toString('hex')}`;
     const relations: MemoryRelation[] = [];
@@ -108,8 +132,11 @@ export class ContextManager {
       }
     }
 
+    const effectiveBranch = gitBranch !== undefined ? gitBranch : (getCurrentGitBranch() || null);
+    const effectiveCanonical = isCanonical !== undefined ? isCanonical : (effectiveBranch === 'main' || effectiveBranch === 'master');
+
     const memory: Memory = {
-      metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source),
+      metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source, effectiveBranch, effectiveCanonical),
       content
     };
 
@@ -129,17 +156,25 @@ export class ContextManager {
       removeRelations?: Array<{ target: string; type?: string }>;
       addTargets?: string | string[];
       removeTargets?: string | string[];
+      is_canonical?: boolean;
+      git_branch?: string | null;
     }
   ) {
     const memory = this.getMemory(id);
     if (!memory) throw new Error(`Memory ${id} not found.`);
 
-    if (content !== undefined) memory.content = content;
-    if (title !== undefined) memory.metadata.title = title;
-    if (tags !== undefined) memory.metadata.tags = tags;
-    if (type !== undefined) memory.metadata.type = type;
+    if (content !== undefined && content !== null) memory.content = content;
+    if (title !== undefined && title !== null) memory.metadata.title = title;
+    if (tags !== undefined && tags !== null) memory.metadata.tags = tags;
+    if (type !== undefined && type !== null) memory.metadata.type = type;
 
     if (options) {
+      if (options.is_canonical !== undefined) {
+        memory.metadata.is_canonical = options.is_canonical;
+      }
+      if (options.git_branch !== undefined) {
+        memory.metadata.git_branch = options.git_branch;
+      }
       if (options.relations) {
         memory.metadata.relations = options.relations.map(r => ({
           target: this.resolveTargetId(r.target),
@@ -298,7 +333,9 @@ export class ContextManager {
           source: row.source || 'manual',
           expires: row.expires || null,
           superseded_by: row.superseded_by || null,
-          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType }))
+          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType })),
+          git_branch: row.git_branch || null,
+          is_canonical: Boolean(row.is_canonical)
         },
         content: row.content || ''
       });
@@ -315,7 +352,7 @@ export class ContextManager {
     if (trimmed.startsWith('file_')) {
       targetId = trimmed;
     } else if (trimmed.includes('/') || trimmed.includes('.') || !trimmed.startsWith('mem_')) {
-      targetId = makeFileVertexId(trimmed);
+      targetId = this.resolveTargetId(trimmed);
     }
 
     // Try fetching memory with targetId or trimmed
@@ -392,7 +429,11 @@ export class ContextManager {
       if (this.name !== '_global') {
         try {
           const globalCtx = new ContextManager('_global');
-          return globalCtx.getNodeDetails(idOrPath);
+          try {
+            return globalCtx.getNodeDetails(idOrPath);
+          } finally {
+            globalCtx.close();
+          }
         } catch {}
       }
       return null;
@@ -479,7 +520,9 @@ export class ContextManager {
       astOutline: astOutline && astOutline.length > 0 ? astOutline : undefined,
       outgoingRelations: outgoing,
       incomingRelations: incoming,
-      attachedMemories
+      attachedMemories,
+      git_branch: mem.metadata.git_branch || null,
+      is_canonical: Boolean(mem.metadata.is_canonical)
     };
   }
 
@@ -535,10 +578,51 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number } {
+  /**
+   * Automatically detect unpromoted branches in SQLite that have merged into targetRef (default: HEAD).
+   * Supports squash-merges, PR merges, and direct fast-forward/merge commits.
+   */
+  public autoPromoteMergedBranches(cwd: string = process.cwd()): string[] {
+    try {
+      const unpromotedRows = this.db.prepare(`
+        SELECT DISTINCT git_branch 
+        FROM memories 
+        WHERE is_canonical = 0 
+          AND git_branch IS NOT NULL 
+          AND git_branch != '' 
+          AND git_branch NOT IN ('main', 'master')
+      `).all() as Array<{ git_branch: string }>;
+
+      if (!unpromotedRows || unpromotedRows.length === 0) {
+        return [];
+      }
+
+      const promoted: string[] = [];
+      for (const row of unpromotedRows) {
+        const branch = row.git_branch;
+        if (isBranchMergedInto(branch, 'HEAD', cwd)) {
+          const count = this.promoteBranch(branch);
+          if (count > 0) {
+            promoted.push(branch);
+          }
+        }
+      }
+      return promoted;
+    } catch {
+      return [];
+    }
+  }
+
+  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number; autoPromotedBranches?: string[] } {
+    // 1. Auto-promote any unpromoted branches that have merged into the current branch / HEAD
+    const autoPromotedBranches = this.autoPromoteMergedBranches(workspaceDir);
+
     const vertices = generateWorkspaceFileVertices(workspaceDir, scanOptions);
     let createdCount = 0;
     let decayedCount = 0;
+
+    const activeBranch = getCurrentGitBranch(workspaceDir);
+    const isScanningCanonical = !activeBranch || activeBranch === 'main' || activeBranch === 'master';
 
     for (const v of vertices) {
       const existing = this.getMemory(v.id);
@@ -568,6 +652,19 @@ export class ContextManager {
           for (const rel of attachedRelations) {
             const attachedMem = this.getMemory(rel.source_id);
             if (attachedMem && attachedMem.metadata.type !== 'codemap') {
+              const memCanonical = attachedMem.metadata.is_canonical === 1 || Boolean(attachedMem.metadata.is_canonical);
+              const memBranch = attachedMem.metadata.git_branch;
+
+              // Branch-segmented decay guard:
+              // - Canonical memories are only decayed when scanning on a canonical branch.
+              // - Non-canonical feature memories are only decayed if they match the active branch.
+              if (memCanonical && !isScanningCanonical) {
+                continue; // Do not let feature branch edits decay production canonical memories
+              }
+              if (!memCanonical && memBranch && activeBranch && memBranch !== activeBranch) {
+                continue; // Do not decay other branch's memories
+              }
+
               const oldConf = attachedMem.metadata.confidence;
               attachedMem.metadata.confidence = Math.max(0.3, Math.round(oldConf * 0.75 * 100) / 100);
               attachedMem.metadata.updated = new Date().toISOString();
@@ -676,7 +773,7 @@ export class ContextManager {
     targetFileOrId: string,
     options?: { memory_ids?: string[] } | string[]
   ): { consolidatedId: string; mergedCount: number } {
-    const targetId = targetFileOrId.startsWith('file_') ? targetFileOrId : makeFileVertexId(targetFileOrId);
+    const targetId = this.resolveTargetId(targetFileOrId);
 
     // Find non-codemap memories attached to this target vertex
     const relations = this.db.prepare(`
@@ -781,6 +878,7 @@ export class ContextManager {
       epsilon?: number;
       alpha?: number;
       includeCodemaps?: boolean;
+      branch?: string;
     } = {}
   ): MultiHopRecallResponse {
     let startNodeId = fileOrMemoryId;
@@ -793,15 +891,17 @@ export class ContextManager {
       if (rel && rel.target_id.startsWith('file_')) {
         startNodeId = rel.target_id;
       }
-    } else if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.')) {
-      startNodeId = makeFileVertexId(fileOrMemoryId);
-    } else {
+    } else if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.') || !fileOrMemoryId.startsWith('mem_')) {
+      let isMemory = false;
       try {
-        const memExists = this.db.prepare('SELECT id FROM memories WHERE id = ?').get(fileOrMemoryId);
-        if (memExists) {
+        if (this.db.prepare('SELECT id FROM memories WHERE id = ?').get(fileOrMemoryId)) {
+          isMemory = true;
           isDirectMemoryQuery = true;
         }
       } catch {}
+      if (!isMemory) {
+        startNodeId = this.resolveTargetId(fileOrMemoryId);
+      }
     }
 
     const maxDepth = options.maxDepth ?? 3;
@@ -988,6 +1088,7 @@ export class ContextManager {
       };
 
       const finalMemories: MultiHopMemoryResult[] = [];
+      const effectiveBranch = options.branch !== undefined ? options.branch : (getCurrentGitBranch() || null);
 
       for (const fileVertexId of activeFrontier) {
         const h = dist.get(fileVertexId) ?? 0;
@@ -1041,6 +1142,20 @@ export class ContextManager {
         for (const row of attachedRows) {
           if (row.type === 'codemap' && !includeCodemaps) continue; // Exclude raw codemaps unless requested
 
+          const isCanonical = row.is_canonical === 1 || Boolean(row.is_canonical) || !row.git_branch || row.git_branch === '';
+          const isSameBranch = effectiveBranch && row.git_branch === effectiveBranch;
+          let matchesBranch = isCanonical || isSameBranch;
+
+          if (!matchesBranch && ['lesson', 'pattern', 'fact'].includes(row.type)) {
+            // Observation Plane: cross-branch accessible if tagged as environment/toolchain/dependency
+            const rawTags = (row.tags_str || '').split(',').map((t: string) => t.trim().toLowerCase());
+            const observationTags = ['#environment', '#dependency', '#toolchain', 'environment', 'dependency', 'toolchain'];
+            if (rawTags.some((t: string) => observationTags.includes(t))) {
+              matchesBranch = true;
+            }
+          }
+          if (!matchesBranch) continue;
+
           const tags = (row.tags_str || '').split(',').filter(Boolean);
 
           // Consolidation Shield: suppress individual micro-memories if super-memory is active
@@ -1062,7 +1177,9 @@ export class ContextManager {
             relevanceScore: Math.round(score * 1000) / 1000,
             targetFile: fileVertexId,
             tags,
-            content_snippet: row.content_snippet
+            content_snippet: row.content_snippet,
+            git_branch: row.git_branch || null,
+            is_canonical: Boolean(row.is_canonical)
           });
 
           // Also pull in connected memory-to-memory conceptual links (supports, related_to, depends_on, references, part_of)
@@ -1078,6 +1195,18 @@ export class ContextManager {
 
           for (const conn of connectedMems) {
             if (finalMemories.some(fm => fm.id === conn.id)) continue;
+            const connCanonical = conn.is_canonical === 1 || Boolean(conn.is_canonical) || !conn.git_branch || conn.git_branch === '';
+            const connSameBranch = effectiveBranch && conn.git_branch === effectiveBranch;
+            let connMatches = connCanonical || connSameBranch;
+
+            if (!connMatches && ['lesson', 'pattern', 'fact'].includes(conn.type)) {
+              const rawConnTags = (conn.tags_str || '').split(',').map((t: string) => t.trim().toLowerCase());
+              const observationTags = ['#environment', '#dependency', '#toolchain', 'environment', 'dependency', 'toolchain'];
+              if (rawConnTags.some((t: string) => observationTags.includes(t))) {
+                connMatches = true;
+              }
+            }
+            if (!connMatches) continue;
             const connTags = (conn.tags_str || '').split(',').filter(Boolean);
             if (connTags.includes('consolidated') || conn.superseded_by) continue;
             const connTypeWeight = typeWeights[conn.type] || 1.0;
@@ -1094,7 +1223,9 @@ export class ContextManager {
               relevanceScore: Math.round(connScore * 1000) / 1000,
               targetFile: `via ${row.title} (${conn.rel_type})`,
               tags: connTags,
-              content_snippet: conn.content_snippet
+              content_snippet: conn.content_snippet,
+              git_branch: conn.git_branch || null,
+              is_canonical: Boolean(conn.is_canonical)
             });
           }
         }
@@ -1170,32 +1301,70 @@ export class ContextManager {
     }
   }
 
-  public recallGraph(fileOrMemoryId: string, maxDepth = 2) {
-    const res = this.recallMultiHop(fileOrMemoryId, { maxDepth, includeCodemaps: true, cumulativeThreshold: 1.0 });
+  public recallGraph(fileOrMemoryId: string, maxDepth = 2, branch?: string) {
+    const res = this.recallMultiHop(fileOrMemoryId, { maxDepth, includeCodemaps: true, cumulativeThreshold: 1.0, branch });
     return res.all;
   }
 
-  public searchMemories(query: string, includeGlobal: boolean = true): Array<MemoryDbRow & { content_snippet: string; context?: string }> {
-    const safeQuery = query
+  public searchMemories(
+    query: string,
+    includeGlobal: boolean = true,
+    options?: { branch?: string; type?: MemoryType; unpromotedOnly?: boolean }
+  ): Array<MemoryDbRow & { content_snippet: string; context?: string }> {
+    const rawQuery = (query || '').trim();
+    const safeQuery = rawQuery
       .split(/\s+/)
       .map(term => term.replace(/[^a-zA-Z0-9_\-\u00C0-\u024F]/g, ''))
       .filter(Boolean)
       .map(term => `"${term}"`)
       .join(' AND ');
 
-    if (!safeQuery) return [];
-
     const doSearch = (db: Database.Database, ctxName: string) => {
       try {
-        const stmt = db.prepare(`
+        if (!safeQuery) {
+          if (!options || (!options.branch && !options.type && !options.unpromotedOnly)) {
+            return [];
+          }
+          let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap'";
+          const params: any[] = [];
+          if (options?.branch) {
+            sql += ' AND m.git_branch = ?';
+            params.push(options.branch);
+          }
+          if (options?.type) {
+            sql += ' AND m.type = ?';
+            params.push(options.type);
+          }
+          if (options?.unpromotedOnly) {
+            sql += ' AND (m.is_canonical = 0 OR m.is_canonical IS NULL)';
+          }
+          sql += ' ORDER BY m.updated DESC LIMIT 20';
+          const rows = db.prepare(sql).all(...params) as Array<MemoryDbRow & { content_snippet: string }>;
+          return rows.map(r => ({ ...r, context: ctxName }));
+        }
+
+        let sql = `
           SELECT m.*, fts.content as content_snippet
           FROM memories_fts fts
           JOIN memories m ON m.id = fts.id
           WHERE memories_fts MATCH ?
-          ORDER BY rank
-          LIMIT 20
-        `);
-        const rows = stmt.all(safeQuery) as Array<MemoryDbRow & { content_snippet: string }>;
+        `;
+        const params: any[] = [safeQuery];
+        if (options?.branch) {
+          sql += ' AND m.git_branch = ?';
+          params.push(options.branch);
+        }
+        if (options?.type) {
+          sql += ' AND m.type = ?';
+          params.push(options.type);
+        }
+        if (options?.unpromotedOnly) {
+          sql += ' AND (m.is_canonical = 0 OR m.is_canonical IS NULL)';
+        }
+        sql += ' ORDER BY rank LIMIT 20';
+
+        const stmt = db.prepare(sql);
+        const rows = stmt.all(...params) as Array<MemoryDbRow & { content_snippet: string }>;
         return rows.map(r => ({ ...r, context: ctxName }));
       } catch {
         return [];
@@ -1211,20 +1380,55 @@ export class ContextManager {
       const globalDbPath = getContextDbPath('_global');
       if (fs.existsSync(globalDbPath)) {
         const globalDb = initDb(globalDbPath);
-        const globalResults = doSearch(globalDb, '_global');
-        const seenIds = new Set(localResults.map(r => r.id));
-        const combined = [...localResults];
-        for (const g of globalResults) {
-          if (!seenIds.has(g.id)) {
-            seenIds.add(g.id);
-            combined.push(g);
+        try {
+          const globalResults = doSearch(globalDb, '_global');
+          const seenIds = new Set(localResults.map(r => r.id));
+          const combined = [...localResults];
+          for (const g of globalResults) {
+            if (!seenIds.has(g.id)) {
+              seenIds.add(g.id);
+              combined.push(g);
+            }
           }
+          return combined;
+        } finally {
+          globalDb.close();
         }
-        return combined;
       }
     } catch {}
 
     return localResults;
+  }
+
+  public getBranches(): Array<{ git_branch: string; count: number; canonical_count: number; unpromoted_count: number }> {
+    const rows = this.db.prepare(`
+      SELECT git_branch, COUNT(*) as count, SUM(CASE WHEN is_canonical = 1 THEN 1 ELSE 0 END) as canonical_count
+      FROM memories
+      WHERE git_branch IS NOT NULL AND git_branch != ''
+      GROUP BY git_branch
+    `).all() as Array<{ git_branch: string; count: number; canonical_count: number }>;
+    return rows.map(r => ({ ...r, unpromoted_count: r.count - r.canonical_count }));
+  }
+
+  public promoteBranch(branch: string): number {
+    const rows = this.db.prepare(
+      'SELECT id FROM memories WHERE git_branch = ? AND (is_canonical = 0 OR is_canonical IS NULL)'
+    ).all(branch) as Array<{ id: string }>;
+    if (rows.length === 0) return 0;
+
+    this.db.prepare('UPDATE memories SET is_canonical = 1 WHERE git_branch = ?').run(branch);
+    for (const { id } of rows) {
+      try {
+        const mem = this.getMemory(id);
+        if (mem) {
+          mem.metadata.is_canonical = true;
+          this.saveMemory(mem, `[stormdrain] promote: memory ${id} on branch ${branch}`);
+        }
+      } catch (err) {
+        console.warn(`[stormdrain] Failed to write memory ${id} markdown during promote:`, err);
+      }
+    }
+    return rows.length;
   }
 
   public findConsolidationCandidates(threshold?: number): ConsolidationCandidate[] {

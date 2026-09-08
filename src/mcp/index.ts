@@ -13,7 +13,7 @@ import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
 import { MemoryType } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
-import { generateCuratePrompt } from '../utils/promptTemplates';
+import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
 export class StormDrainMcpServer {
   private server: Server;
@@ -146,11 +146,22 @@ export class StormDrainMcpServer {
             properties: {
               query: {
                 type: 'string',
-                description: 'Search query'
+                description: 'Search query (optional if metadata filters are provided)'
+              },
+              branch: {
+                type: 'string',
+                description: 'Optional git branch filter'
+              },
+              type: {
+                type: 'string',
+                description: 'Optional memory type filter (decision, lesson, pattern, etc.)'
+              },
+              unpromoted_only: {
+                type: 'boolean',
+                description: 'If true, returns only unpromoted (non-canonical) memories'
               },
               context: contextProp
-            },
-            required: ['query']
+            }
           }
         },
         {
@@ -247,6 +258,14 @@ export class StormDrainMcpServer {
                 type: 'string',
                 description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
               },
+              git_branch: {
+                type: 'string',
+                description: 'Optional Git branch provenance override (defaults to current git branch)'
+              },
+              is_canonical: {
+                type: 'boolean',
+                description: 'Whether to mark memory as canonical baseline repository knowledge (defaults to true for main/master, false for feature branches)'
+              },
               context: contextProp
             },
             required: ['type', 'title', 'content']
@@ -276,6 +295,10 @@ export class StormDrainMcpServer {
                   required: ['target']
                 },
                 description: 'Replace full relations list'
+              },
+              is_canonical: {
+                type: 'boolean',
+                description: 'Set to true to mark or promote as canonical repository baseline knowledge'
               },
               context: contextProp
             },
@@ -482,7 +505,11 @@ export class StormDrainMcpServer {
 
         if (request.params.name === 'sd_search') {
           const query = (request.params.arguments?.query as string) || '';
-          const results = ctx.searchMemories(query, true) as Array<{ type: string; title: string; id: string; content_snippet?: string; context?: string }>;
+          const branch = request.params.arguments?.branch as string | undefined;
+          const memType = request.params.arguments?.type as MemoryType | undefined;
+          const unpromotedOnly = Boolean(request.params.arguments?.unpromoted_only);
+
+          const results = ctx.searchMemories(query, true, { branch, type: memType, unpromotedOnly }) as Array<{ type: string; title: string; id: string; content_snippet?: string; context?: string; git_branch?: string; is_canonical?: boolean | number }>;
           
           if (results.length === 0) {
             return { content: [{ type: 'text', text: 'No results found.' }] };
@@ -602,6 +629,8 @@ export class StormDrainMcpServer {
             targets?: string[] | string;
             relations?: Array<{ target: string; type?: RelationType }>;
             relation_type?: RelationType;
+            git_branch?: string;
+            is_canonical?: boolean;
           };
           const targets = args.targets || args.target_file;
           const id = ctx.addMemory(
@@ -613,7 +642,9 @@ export class StormDrainMcpServer {
             undefined,
             targets,
             args.relation_type || 'affects',
-            args.relations
+            args.relations,
+            args.git_branch,
+            args.is_canonical
           );
           const mem = ctx.getMemory(id);
           let linkMsg = '';
@@ -635,11 +666,13 @@ export class StormDrainMcpServer {
             relations?: Array<{ target: string; type: RelationType }>;
             add_targets?: string[] | string;
             remove_targets?: string[] | string;
+            is_canonical?: boolean;
           };
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
             relations: args.relations,
             addTargets: args.add_targets,
-            removeTargets: args.remove_targets
+            removeTargets: args.remove_targets,
+            is_canonical: args.is_canonical
           });
           return { content: [{ type: 'text', text: `Successfully updated memory ${args.id} in context "${targetContext}"` }] };
         }
@@ -780,38 +813,76 @@ export class StormDrainMcpServer {
               },
             ],
           },
+          {
+            name: 'sd_harvest',
+            description: 'Discovery harvest prompt: extracts and persists architectural invariants, gotchas, decisions, and patterns discovered during recent work.',
+            arguments: [
+              {
+                name: 'limit',
+                description: 'Optional maximum number of recent commits and files to inspect (default: 5).',
+                required: false,
+              },
+              {
+                name: 'context',
+                description: 'Optional context namespace override (defaults to active workspace context).',
+                required: false,
+              },
+            ],
+          },
         ],
       };
     });
 
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      if (name !== 'sd_curate') {
-        throw new Error(`Unknown prompt: ${name}`);
-      }
-
       let rawContext = (args?.context as string | undefined)?.trim();
       const { ctx } = this.getContext(rawContext);
-      const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
-      const target = (args?.target as string | undefined)?.trim();
 
-      const curateResult = await generateCuratePrompt(ctx, {
-        target: target || undefined,
-        threshold: isNaN(threshold) ? 3 : threshold,
-      });
+      if (name === 'sd_curate') {
+        const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
+        const target = (args?.target as string | undefined)?.trim();
 
-      return {
-        description: curateResult.description,
-        messages: [
-          {
-            role: 'user' as const,
-            content: {
-              type: 'text' as const,
-              text: curateResult.promptText,
+        const curateResult = await generateCuratePrompt(ctx, {
+          target: target || undefined,
+          threshold: isNaN(threshold) ? 3 : threshold,
+        });
+
+        return {
+          description: curateResult.description,
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text: curateResult.promptText,
+              },
             },
-          },
-        ],
-      };
+          ],
+        };
+      }
+
+      if (name === 'sd_harvest') {
+        const limit = args?.limit ? parseInt(args.limit as string, 10) : 5;
+        const harvestResult = await generateHarvestPrompt(ctx, {
+          limit: isNaN(limit) ? 5 : limit,
+          workspaceDir: process.cwd(),
+        });
+
+        return {
+          description: harvestResult.description,
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text: harvestResult.promptText,
+              },
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unknown prompt: ${name}`);
     });
   }
 
