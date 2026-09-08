@@ -133,7 +133,7 @@ export class ContextManager {
     }
 
     const effectiveBranch = gitBranch !== undefined ? gitBranch : (getCurrentGitBranch() || null);
-    const effectiveCanonical = isCanonical !== undefined ? isCanonical : (effectiveBranch === 'main' || effectiveBranch === 'master');
+    const effectiveCanonical = isCanonical !== undefined ? isCanonical : true;
 
     const memory: Memory = {
       metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source, effectiveBranch, effectiveCanonical),
@@ -1088,7 +1088,6 @@ export class ContextManager {
       };
 
       const finalMemories: MultiHopMemoryResult[] = [];
-      const effectiveBranch = options.branch !== undefined ? options.branch : (getCurrentGitBranch() || null);
 
       for (const fileVertexId of activeFrontier) {
         const h = dist.get(fileVertexId) ?? 0;
@@ -1142,20 +1141,6 @@ export class ContextManager {
         for (const row of attachedRows) {
           if (row.type === 'codemap' && !includeCodemaps) continue; // Exclude raw codemaps unless requested
 
-          const isCanonical = row.is_canonical === 1 || Boolean(row.is_canonical) || !row.git_branch || row.git_branch === '';
-          const isSameBranch = effectiveBranch && row.git_branch === effectiveBranch;
-          let matchesBranch = isCanonical || isSameBranch;
-
-          if (!matchesBranch && ['lesson', 'pattern', 'fact'].includes(row.type)) {
-            // Observation Plane: cross-branch accessible if tagged as environment/toolchain/dependency
-            const rawTags = (row.tags_str || '').split(',').map((t: string) => t.trim().toLowerCase());
-            const observationTags = ['#environment', '#dependency', '#toolchain', 'environment', 'dependency', 'toolchain'];
-            if (rawTags.some((t: string) => observationTags.includes(t))) {
-              matchesBranch = true;
-            }
-          }
-          if (!matchesBranch) continue;
-
           const tags = (row.tags_str || '').split(',').filter(Boolean);
 
           // Consolidation Shield: suppress individual micro-memories if super-memory is active
@@ -1195,18 +1180,6 @@ export class ContextManager {
 
           for (const conn of connectedMems) {
             if (finalMemories.some(fm => fm.id === conn.id)) continue;
-            const connCanonical = conn.is_canonical === 1 || Boolean(conn.is_canonical) || !conn.git_branch || conn.git_branch === '';
-            const connSameBranch = effectiveBranch && conn.git_branch === effectiveBranch;
-            let connMatches = connCanonical || connSameBranch;
-
-            if (!connMatches && ['lesson', 'pattern', 'fact'].includes(conn.type)) {
-              const rawConnTags = (conn.tags_str || '').split(',').map((t: string) => t.trim().toLowerCase());
-              const observationTags = ['#environment', '#dependency', '#toolchain', 'environment', 'dependency', 'toolchain'];
-              if (rawConnTags.some((t: string) => observationTags.includes(t))) {
-                connMatches = true;
-              }
-            }
-            if (!connMatches) continue;
             const connTags = (conn.tags_str || '').split(',').filter(Boolean);
             if (connTags.includes('consolidated') || conn.superseded_by) continue;
             const connTypeWeight = typeWeights[conn.type] || 1.0;

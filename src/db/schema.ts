@@ -20,7 +20,7 @@ export const initSchema = (db: Database.Database): void => {
       expires TEXT,
       superseded_by TEXT,
       git_branch TEXT,
-      is_canonical INTEGER DEFAULT 0
+      is_canonical INTEGER DEFAULT 1
     );
   `);
 
@@ -31,7 +31,7 @@ export const initSchema = (db: Database.Database): void => {
       db.exec('ALTER TABLE memories ADD COLUMN git_branch TEXT');
     }
     if (!cols.includes('is_canonical')) {
-      db.exec('ALTER TABLE memories ADD COLUMN is_canonical INTEGER DEFAULT 0');
+      db.exec('ALTER TABLE memories ADD COLUMN is_canonical INTEGER DEFAULT 1');
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_memories_branch_canonical ON memories(git_branch, is_canonical)');
   } catch {}

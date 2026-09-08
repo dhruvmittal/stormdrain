@@ -452,7 +452,8 @@ describe('Web API Server', () => {
         type: 'concept',
         title: 'Feature Branch Work',
         content: 'Some feature branch concept',
-        gitBranch: 'feature/auth-v2'
+        gitBranch: 'feature/auth-v2',
+        isCanonical: false
       })
     });
 
