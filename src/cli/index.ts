@@ -12,7 +12,7 @@ import { generateCodebaseCodemap } from '../utils/codemapGenerator';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
-import { generateCuratePrompt } from '../utils/promptTemplates';
+import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
 
 const program = new Command();
@@ -733,26 +733,55 @@ program
   });
 
 program
-  .command('prompt')
-  .description('Generate guided agent prompt instructions')
-  .argument('<action>', 'Prompt action: curate')
-  .argument('[target]', 'Optional target file path or memory ID')
-  .option('-c, --context <name>', 'Target context override')
-  .option('-t, --threshold <number>', 'Consolidation candidate threshold')
-  .action(async (action, target, options) => {
-    if (action !== 'curate') {
-      console.error(`Unknown prompt action: "${action}". Available actions: curate`);
-      process.exit(1);
-    }
+  .command('harvest')
+  .description('Harvest and persist architectural discoveries, invariants, and gotchas from recent work')
+  .option('-c, --context <name>', 'Target context override (defaults to active workspace context)')
+  .option('-l, --limit <number>', 'Recent commits limit (default: 5)')
+  .action(async (options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const threshold = options.threshold ? parseInt(options.threshold, 10) : 3;
-      const result = await generateCuratePrompt(ctx, {
-        target: target ? target.trim() : undefined,
-        threshold: isNaN(threshold) ? 3 : threshold,
+      const limit = options.limit ? parseInt(options.limit, 10) : 5;
+      const result = await generateHarvestPrompt(ctx, {
+        limit: isNaN(limit) ? 5 : limit,
+        workspaceDir: process.cwd(),
       });
       console.log(result.promptText);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('prompt')
+  .description('Generate guided agent prompt instructions')
+  .argument('<action>', 'Prompt action: curate | harvest')
+  .argument('[target]', 'Optional target file path or memory ID (for curate)')
+  .option('-c, --context <name>', 'Target context override')
+  .option('-t, --threshold <number>', 'Consolidation candidate threshold')
+  .option('-l, --limit <number>', 'Recent commits limit (for harvest)')
+  .action(async (action, target, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      if (action === 'curate') {
+        const threshold = options.threshold ? parseInt(options.threshold, 10) : 3;
+        const result = await generateCuratePrompt(ctx, {
+          target: target ? target.trim() : undefined,
+          threshold: isNaN(threshold) ? 3 : threshold,
+        });
+        console.log(result.promptText);
+      } else if (action === 'harvest') {
+        const limit = options.limit ? parseInt(options.limit, 10) : 5;
+        const result = await generateHarvestPrompt(ctx, {
+          limit: isNaN(limit) ? 5 : limit,
+          workspaceDir: process.cwd(),
+        });
+        console.log(result.promptText);
+      } else {
+        console.error(`Unknown prompt action: "${action}". Available actions: curate, harvest`);
+        process.exit(1);
+      }
     } finally {
       await ctx.close();
     }
@@ -972,6 +1001,7 @@ const promptActionArg = promptCmd?.arguments.get('action');
 if (promptActionArg) {
   promptActionArg.handler = (complete) => {
     complete('curate', 'Generate guided memory curation instructions');
+    complete('harvest', 'Generate guided discovery harvest instructions');
   };
 }
 

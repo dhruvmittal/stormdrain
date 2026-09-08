@@ -13,7 +13,7 @@ import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
 import { MemoryType } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
-import { generateCuratePrompt } from '../utils/promptTemplates';
+import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
 export class StormDrainMcpServer {
   private server: Server;
@@ -813,38 +813,76 @@ export class StormDrainMcpServer {
               },
             ],
           },
+          {
+            name: 'sd_harvest',
+            description: 'Discovery harvest prompt: extracts and persists architectural invariants, gotchas, decisions, and patterns discovered during recent work.',
+            arguments: [
+              {
+                name: 'limit',
+                description: 'Optional maximum number of recent commits and files to inspect (default: 5).',
+                required: false,
+              },
+              {
+                name: 'context',
+                description: 'Optional context namespace override (defaults to active workspace context).',
+                required: false,
+              },
+            ],
+          },
         ],
       };
     });
 
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      if (name !== 'sd_curate') {
-        throw new Error(`Unknown prompt: ${name}`);
-      }
-
       let rawContext = (args?.context as string | undefined)?.trim();
       const { ctx } = this.getContext(rawContext);
-      const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
-      const target = (args?.target as string | undefined)?.trim();
 
-      const curateResult = await generateCuratePrompt(ctx, {
-        target: target || undefined,
-        threshold: isNaN(threshold) ? 3 : threshold,
-      });
+      if (name === 'sd_curate') {
+        const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
+        const target = (args?.target as string | undefined)?.trim();
 
-      return {
-        description: curateResult.description,
-        messages: [
-          {
-            role: 'user' as const,
-            content: {
-              type: 'text' as const,
-              text: curateResult.promptText,
+        const curateResult = await generateCuratePrompt(ctx, {
+          target: target || undefined,
+          threshold: isNaN(threshold) ? 3 : threshold,
+        });
+
+        return {
+          description: curateResult.description,
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text: curateResult.promptText,
+              },
             },
-          },
-        ],
-      };
+          ],
+        };
+      }
+
+      if (name === 'sd_harvest') {
+        const limit = args?.limit ? parseInt(args.limit as string, 10) : 5;
+        const harvestResult = await generateHarvestPrompt(ctx, {
+          limit: isNaN(limit) ? 5 : limit,
+          workspaceDir: process.cwd(),
+        });
+
+        return {
+          description: harvestResult.description,
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text: harvestResult.promptText,
+              },
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unknown prompt: ${name}`);
     });
   }
 

@@ -367,3 +367,105 @@ export function summarizeSubmodule(workspaceDir: string, sub: SubmoduleInfo): {
     tags: ['submodule', 'codemap', 'codebase-graph']
   };
 }
+
+export interface GitCommitSummary {
+  hash: string;
+  subject: string;
+}
+
+export interface RecentGitActivity {
+  branch: string | null;
+  recentCommits: GitCommitSummary[];
+  touchedFiles: string[];
+}
+
+/**
+ * Inspect recent Git activity: active branch, recent commit history, and touched files.
+ * Combines working-tree uncommitted changes with recent commits.
+ */
+export function getRecentGitActivity(
+  dir: string = process.cwd(),
+  maxCommits: number = 5
+): RecentGitActivity {
+  const branch = getCurrentGitBranch(dir);
+  const recentCommits: GitCommitSummary[] = [];
+  const touchedFilesSet = new Set<string>();
+
+  // 1. Fetch recent commit log
+  try {
+    const logOutput = execSync(`git log -n ${Math.max(1, maxCommits)} --oneline`, {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    }).toString('utf8').trim();
+
+    if (logOutput) {
+      for (const line of logOutput.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const spaceIdx = trimmed.indexOf(' ');
+        if (spaceIdx > 0) {
+          recentCommits.push({
+            hash: trimmed.slice(0, spaceIdx),
+            subject: trimmed.slice(spaceIdx + 1).trim()
+          });
+        } else {
+          recentCommits.push({ hash: trimmed, subject: '' });
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Fetch files modified in recent commits
+  try {
+    const commitFilesOutput = execSync(`git log -n ${Math.max(1, maxCommits)} --name-only --pretty=""`, {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    }).toString('utf8').trim();
+
+    if (commitFilesOutput) {
+      for (const line of commitFilesOutput.split('\n')) {
+        const file = line.trim();
+        if (file && !file.endsWith('/')) {
+          touchedFilesSet.add(file);
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Fetch working tree uncommitted changes (modified, added, untracked)
+  try {
+    const statusOutput = execSync('git status --porcelain', {
+      cwd: dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 3000
+    }).toString('utf8').trim();
+
+    if (statusOutput) {
+      for (const line of statusOutput.split('\n')) {
+        if (!line || line.length < 3) continue;
+        // Format: XY <path> or XY <path> -> <newpath>
+        let rawPath = line.slice(2).trim();
+        if (rawPath.includes(' -> ')) {
+          rawPath = rawPath.split(' -> ')[1].trim();
+        }
+        // Strip quotes if git quoted paths with special chars
+        if (rawPath.startsWith('"') && rawPath.endsWith('"')) {
+          rawPath = rawPath.slice(1, -1);
+        }
+        if (rawPath && !rawPath.endsWith('/')) {
+          touchedFilesSet.add(rawPath);
+        }
+      }
+    }
+  } catch {}
+
+  const touchedFiles = Array.from(touchedFilesSet).sort();
+
+  return {
+    branch,
+    recentCommits,
+    touchedFiles
+  };
+}
