@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -143,7 +143,7 @@ export function isBranchMergedInto(
 
   // 1. Direct commit ancestry check: is <branch> an ancestor of targetRef?
   try {
-    execSync(`git merge-base --is-ancestor ${JSON.stringify(branch)} ${JSON.stringify(targetRef)}`, {
+    execFileSync('git', ['merge-base', '--is-ancestor', branch, targetRef], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 3000
@@ -153,7 +153,7 @@ export function isBranchMergedInto(
 
   // 2. Check remote tracking branch origin/<branch> if local ref was deleted after PR
   try {
-    execSync(`git merge-base --is-ancestor ${JSON.stringify(`origin/${branch}`)} ${JSON.stringify(targetRef)}`, {
+    execFileSync('git', ['merge-base', '--is-ancestor', `origin/${branch}`, targetRef], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 3000
@@ -163,8 +163,9 @@ export function isBranchMergedInto(
 
   // 3. PR Squash / Merge Commit Message Matching in recent git log
   try {
-    const logOutput = execSync(
-      `git log -n 50 --format="%s%n%b%n---COMMIT_END---" ${JSON.stringify(targetRef)}`,
+    const logOutput = execFileSync(
+      'git',
+      ['log', '-n', '50', '--format=%s%n%b%n---COMMIT_END---', targetRef],
       {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],

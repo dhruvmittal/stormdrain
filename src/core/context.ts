@@ -44,16 +44,24 @@ export class ContextManager {
     return path.join(this.memoriesPath, `${safeId}.md`);
   }
 
+  private cachedWorkspaceRoots?: string[];
+
   public getWorkspaceRoots(): string[] {
+    if (this.cachedWorkspaceRoots) {
+      return this.cachedWorkspaceRoots;
+    }
     try {
       const cfg = new ConfigManager();
       const ctx = cfg.getContext(this.name);
       const roots = (ctx?.paths || []).map(p => path.resolve(p));
       const cwd = path.resolve(process.cwd());
       if (!roots.includes(cwd)) roots.push(cwd);
+      this.cachedWorkspaceRoots = roots;
       return roots;
     } catch {
-      return [path.resolve(process.cwd())];
+      const roots = [path.resolve(process.cwd())];
+      this.cachedWorkspaceRoots = roots;
+      return roots;
     }
   }
 
@@ -421,7 +429,11 @@ export class ContextManager {
       if (this.name !== '_global') {
         try {
           const globalCtx = new ContextManager('_global');
-          return globalCtx.getNodeDetails(idOrPath);
+          try {
+            return globalCtx.getNodeDetails(idOrPath);
+          } finally {
+            globalCtx.close();
+          }
         } catch {}
       }
       return null;
@@ -879,15 +891,17 @@ export class ContextManager {
       if (rel && rel.target_id.startsWith('file_')) {
         startNodeId = rel.target_id;
       }
-    } else if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.')) {
-      startNodeId = this.resolveTargetId(fileOrMemoryId);
-    } else {
+    } else if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.') || !fileOrMemoryId.startsWith('mem_')) {
+      let isMemory = false;
       try {
-        const memExists = this.db.prepare('SELECT id FROM memories WHERE id = ?').get(fileOrMemoryId);
-        if (memExists) {
+        if (this.db.prepare('SELECT id FROM memories WHERE id = ?').get(fileOrMemoryId)) {
+          isMemory = true;
           isDirectMemoryQuery = true;
         }
       } catch {}
+      if (!isMemory) {
+        startNodeId = this.resolveTargetId(fileOrMemoryId);
+      }
     }
 
     const maxDepth = options.maxDepth ?? 3;
@@ -1386,19 +1400,35 @@ export class ContextManager {
     return localResults;
   }
 
+  public getBranches(): Array<{ git_branch: string; count: number; canonical_count: number; unpromoted_count: number }> {
+    const rows = this.db.prepare(`
+      SELECT git_branch, COUNT(*) as count, SUM(CASE WHEN is_canonical = 1 THEN 1 ELSE 0 END) as canonical_count
+      FROM memories
+      WHERE git_branch IS NOT NULL AND git_branch != ''
+      GROUP BY git_branch
+    `).all() as Array<{ git_branch: string; count: number; canonical_count: number }>;
+    return rows.map(r => ({ ...r, unpromoted_count: r.count - r.canonical_count }));
+  }
+
   public promoteBranch(branch: string): number {
-    const res = this.db.prepare('UPDATE memories SET is_canonical = 1 WHERE git_branch = ?').run(branch);
-    if (res.changes > 0) {
-      const rows = this.db.prepare('SELECT id FROM memories WHERE git_branch = ?').all(branch) as Array<{ id: string }>;
-      for (const { id } of rows) {
+    const rows = this.db.prepare(
+      'SELECT id FROM memories WHERE git_branch = ? AND (is_canonical = 0 OR is_canonical IS NULL)'
+    ).all(branch) as Array<{ id: string }>;
+    if (rows.length === 0) return 0;
+
+    this.db.prepare('UPDATE memories SET is_canonical = 1 WHERE git_branch = ?').run(branch);
+    for (const { id } of rows) {
+      try {
         const mem = this.getMemory(id);
         if (mem) {
           mem.metadata.is_canonical = true;
           this.saveMemory(mem, `[stormdrain] promote: memory ${id} on branch ${branch}`);
         }
+      } catch (err) {
+        console.warn(`[stormdrain] Failed to write memory ${id} markdown during promote:`, err);
       }
     }
-    return res.changes;
+    return rows.length;
   }
 
   public findConsolidationCandidates(threshold?: number): ConsolidationCandidate[] {

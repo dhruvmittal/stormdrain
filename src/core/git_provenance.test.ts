@@ -581,5 +581,34 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(canonMemAfter.metadata.confidence).toBe(1.0);
       expect(canonMemAfter.metadata.tags).not.toContain('stale');
     });
+
+    it('handles extensionless files (Makefile, Dockerfile) in recallMultiHop', () => {
+      // Add a file vertex for Makefile
+      const vertexId = ctx.resolveTargetId('Makefile');
+      expect(vertexId).toBe('file_makefile');
+
+      ctx.addMemory(
+        'invariant',
+        'Make Rule',
+        'Always run lint before build',
+        ['build'],
+        'manual',
+        undefined,
+        'Makefile'
+      );
+
+      const recallResults = ctx.recallMultiHop('Makefile');
+      expect(recallResults.all.length).toBeGreaterThan(0);
+      expect(recallResults.all[0].title).toBe('Make Rule');
+    });
+
+    it('is immune to shell command injection in isBranchMergedInto', () => {
+      const canaryFile = path.join(testDir, 'vuln_canary.txt');
+      const maliciousBranch = `$(touch ${canaryFile})`;
+
+      // Should return false safely without executing subshell
+      expect(isBranchMergedInto(maliciousBranch, 'HEAD', testDir)).toBe(false);
+      expect(fs.existsSync(canaryFile)).toBe(false);
+    });
   });
 });

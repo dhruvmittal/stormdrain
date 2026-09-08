@@ -66,18 +66,21 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   const getContext = (name: string): ContextManager => {
     let ctx = contextCache.get(name);
-    if (!ctx) {
-      if (contextCache.size >= MAX_CONTEXT_CACHE) {
-        const oldestKey = contextCache.keys().next().value;
-        if (oldestKey) {
-          const oldestCtx = contextCache.get(oldestKey);
-          try { oldestCtx?.close(); } catch {}
-          contextCache.delete(oldestKey);
-        }
-      }
-      ctx = new ContextManager(name);
+    if (ctx) {
+      contextCache.delete(name);
       contextCache.set(name, ctx);
+      return ctx;
     }
+    if (contextCache.size >= MAX_CONTEXT_CACHE) {
+      const oldestKey = contextCache.keys().next().value;
+      if (oldestKey) {
+        const oldestCtx = contextCache.get(oldestKey);
+        try { oldestCtx?.close(); } catch {}
+        contextCache.delete(oldestKey);
+      }
+    }
+    ctx = new ContextManager(name);
+    contextCache.set(name, ctx);
     return ctx;
   };
 
@@ -331,20 +334,33 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   app.put('/api/memories/:id', withContext(async (req, res, ctx) => {
     const id = req.params.id ? String(req.params.id) : '';
-    const { title, content, tags, type, relations, addRelations, removeRelations, addTargets, removeTargets, is_canonical, isCanonical, git_branch, gitBranch } = req.body;
+    const {
+      title, content, tags, type, relations,
+      addRelations, removeRelations, add_relations, remove_relations,
+      addTargets, removeTargets, add_targets, remove_targets,
+      is_canonical, isCanonical, git_branch, gitBranch
+    } = req.body;
     try {
       ctx.updateMemory(id, content, title, tags, type, {
         relations,
-        addRelations,
-        removeRelations,
-        addTargets,
-        removeTargets,
+        addRelations: addRelations || add_relations,
+        removeRelations: removeRelations || remove_relations,
+        addTargets: addTargets || add_targets,
+        removeTargets: removeTargets || remove_targets,
         is_canonical: is_canonical !== undefined ? Boolean(is_canonical) : (isCanonical !== undefined ? Boolean(isCanonical) : undefined),
         git_branch: git_branch !== undefined ? git_branch : gitBranch
       });
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
+    }
+  }));
+
+  app.get('/api/branches', withContext(async (req, res, ctx) => {
+    try {
+      res.json({ branches: ctx.getBranches() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   }));
 
