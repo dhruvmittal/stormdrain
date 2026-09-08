@@ -118,6 +118,15 @@ def get_git_info(cwd: Optional[str] = None) -> Tuple[Optional[str], Optional[str
             except Exception:
                 pass
 
+        if not branch:
+            branch = (
+                os.getenv("GITHUB_HEAD_REF")
+                or os.getenv("GITHUB_REF_NAME")
+                or os.getenv("CI_COMMIT_REF_NAME")
+                or os.getenv("CI_COMMIT_BRANCH")
+                or os.getenv("GIT_BRANCH")
+            )
+
     if len(_GIT_CACHE) >= _GIT_CACHE_MAX:
         _GIT_CACHE.clear()
     _GIT_CACHE[target_dir] = {"root": root, "branch": branch, "ts": now}
@@ -657,9 +666,25 @@ class StormDrainMcpServer:
             if not mid:
                 return {"isError": True, "content": [{"type": "text", "text": "Argument 'id' is required for sd_update."}]}
             payload = {}
-            for field in ("title", "content", "tags", "type", "is_canonical"):
+            for field in (
+                "title", "content", "tags", "type", "is_canonical",
+                "add_targets", "remove_targets", "relations",
+                "add_relations", "remove_relations"
+            ):
                 if field in arguments and arguments[field] is not None:
                     payload[field] = arguments[field]
+
+            if "add_targets" in payload and isinstance(payload["add_targets"], list):
+                payload["add_targets"] = [
+                    normalize_client_path(t, git_root) if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")) else t
+                    for t in payload["add_targets"]
+                ]
+            if "remove_targets" in payload and isinstance(payload["remove_targets"], list):
+                payload["remove_targets"] = [
+                    normalize_client_path(t, git_root) if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")) else t
+                    for t in payload["remove_targets"]
+                ]
+
             status, data = self.client.request("PUT", "/api/memories/{}".format(mid), data=payload, context=context)
             if status != 200:
                 err_msg = data.get("error", "Failed to update memory") if isinstance(data, dict) else str(data)
@@ -678,7 +703,11 @@ class StormDrainMcpServer:
 
         elif name == "sd_relate":
             target = arguments.get("target")
-            if target and not target.startswith("mem-") and not target.startswith("node-"):
+            if target and not (
+                target.startswith("mem_") or target.startswith("file_") or
+                target.startswith("node_") or target.startswith("mem-") or
+                target.startswith("node-")
+            ):
                 target = normalize_client_path(target, git_root)
             payload = {
                 "source": arguments.get("source_id"),

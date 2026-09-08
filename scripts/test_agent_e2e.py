@@ -188,6 +188,35 @@ def main():
             assert param_data.get("success") is True
             assert param_data.get("branch") == "standard-branch"
 
+        # Step J: Test GET /api/branches
+        print("Testing GET /api/branches...")
+        branches_req = urllib.request.Request(f"{server_url}/api/branches")
+        with urllib.request.urlopen(branches_req, timeout=2) as r:
+            assert r.getcode() == 200
+            b_data = json.loads(r.read().decode("utf-8"))
+            assert "branches" in b_data
+            assert isinstance(b_data["branches"], list)
+
+        # Step K: Test sd_update with add_targets forwarding
+        print("Testing sd_update with add_targets...")
+        res_up = call_tool(9, "sd_update", {
+            "id": mem_id,
+            "add_targets": ["sim/kernel2.cu"]
+        })
+        up_content = res_up.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Successfully updated memory" in up_content
+
+        # Step L: Test sd_relate with mem_ ID without path mangling
+        print("Testing sd_relate with memory ID target...")
+        res_rel = call_tool(10, "sd_relate", {
+            "source_id": mem_id,
+            "target": "mem_dummy123456",
+            "relation_type": "related_to"
+        })
+        rel_content = res_rel.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Successfully linked" in rel_content
+        assert "mem_dummy123456" in rel_content
+
         print("\nALL CLIENT-SERVER INTEGRATION TESTS PASSED SUCCESSFULLY!")
 
     finally:
