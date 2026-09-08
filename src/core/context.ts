@@ -44,6 +44,19 @@ export class ContextManager {
     return path.join(this.memoriesPath, `${safeId}.md`);
   }
 
+  public getWorkspaceRoots(): string[] {
+    try {
+      const cfg = new ConfigManager();
+      const ctx = cfg.getContext(this.name);
+      const roots = (ctx?.paths || []).map(p => path.resolve(p));
+      const cwd = path.resolve(process.cwd());
+      if (!roots.includes(cwd)) roots.push(cwd);
+      return roots;
+    } catch {
+      return [path.resolve(process.cwd())];
+    }
+  }
+
   public resolveTargetId(target: string): string {
     const trimmed = target.trim();
     if (!trimmed) return '';
@@ -57,8 +70,8 @@ export class ContextManager {
         return trimmed;
       }
     } catch {}
-    // Otherwise treat as a file path
-    return makeFileVertexId(trimmed);
+    // Otherwise treat as a file path normalized against workspace roots
+    return makeFileVertexId(trimmed, this.getWorkspaceRoots());
   }
 
   public addMemory(
@@ -331,7 +344,7 @@ export class ContextManager {
     if (trimmed.startsWith('file_')) {
       targetId = trimmed;
     } else if (trimmed.includes('/') || trimmed.includes('.') || !trimmed.startsWith('mem_')) {
-      targetId = makeFileVertexId(trimmed);
+      targetId = this.resolveTargetId(trimmed);
     }
 
     // Try fetching memory with targetId or trimmed
@@ -748,7 +761,7 @@ export class ContextManager {
     targetFileOrId: string,
     options?: { memory_ids?: string[] } | string[]
   ): { consolidatedId: string; mergedCount: number } {
-    const targetId = targetFileOrId.startsWith('file_') ? targetFileOrId : makeFileVertexId(targetFileOrId);
+    const targetId = this.resolveTargetId(targetFileOrId);
 
     // Find non-codemap memories attached to this target vertex
     const relations = this.db.prepare(`
@@ -867,7 +880,7 @@ export class ContextManager {
         startNodeId = rel.target_id;
       }
     } else if (fileOrMemoryId.includes('/') || fileOrMemoryId.includes('.')) {
-      startNodeId = makeFileVertexId(fileOrMemoryId);
+      startNodeId = this.resolveTargetId(fileOrMemoryId);
     } else {
       try {
         const memExists = this.db.prepare('SELECT id FROM memories WHERE id = ?').get(fileOrMemoryId);

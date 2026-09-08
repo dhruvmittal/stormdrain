@@ -394,7 +394,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
 
       if (target) {
-        const normTarget = normalizeRepoPath(target);
+        const normTarget = normalizeRepoPath(target, ctx.getWorkspaceRoots());
         const multiHop = ctx.recallMultiHop(normTarget, {
           maxDepth: isNaN(depth) ? 3 : depth,
           maxResults: isNaN(limit) ? 10 : limit,
@@ -477,7 +477,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
         res.status(400).json({ error: 'target parameter is required' });
         return;
       }
-      const target = normalizeRepoPath(rawTarget);
+      const target = normalizeRepoPath(rawTarget, ctx.getWorkspaceRoots());
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
       const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || null;

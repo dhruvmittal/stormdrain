@@ -55,6 +55,18 @@ describe('Git Branch Provenance & Path Normalization', () => {
       // Sibling folder with same prefix should NOT have its name mutilated
       expect(normalizeRepoPath('/home/repo-other/src/core.ts', root)).toBe('home/repo-other/src/core.ts');
     });
+
+    it('achieves path parity between relative and absolute workspace paths', () => {
+      const root = '/home/user/project';
+      const relId = makeFileVertexId('src/index.ts');
+      const absId = makeFileVertexId('/home/user/project/src/index.ts', root);
+      expect(absId).toBe(relId);
+      expect(absId).toBe('file_src_index_ts');
+
+      const cwdAbsPath = path.resolve(process.cwd(), 'src/core/context.ts');
+      expect(ctx.resolveTargetId(cwdAbsPath)).toBe('file_src_core_context_ts');
+      expect(ctx.resolveTargetId('src/core/context.ts')).toBe('file_src_core_context_ts');
+    });
   });
 
   describe('Database Schema Migration Idempotency', () => {

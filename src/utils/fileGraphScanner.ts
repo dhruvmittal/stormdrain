@@ -38,16 +38,30 @@ export interface ScanOptions {
   submodulePolicies?: Record<string, SubmodulePolicy> | SubmodulePolicy;
 }
 
-export function normalizeRepoPath(filePath: string, workspaceRoot?: string): string {
+export function normalizeRepoPath(filePath: string, workspaceRoot?: string | string[]): string {
   if (!filePath) return '';
   let p = filePath.replace(/\\/g, '/');
-  if (workspaceRoot) {
-    const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-    if (p === root) return '';
+  const roots = (Array.isArray(workspaceRoot) ? workspaceRoot : (workspaceRoot ? [workspaceRoot] : []))
+    .filter(Boolean)
+    .map(r => r.replace(/\\/g, '/').replace(/\/+$/, ''));
+
+  if (roots.length === 0 && path.isAbsolute(filePath)) {
+    roots.push(process.cwd().replace(/\\/g, '/').replace(/\/+$/, ''));
+  }
+
+  // Longest match first
+  roots.sort((a, b) => b.length - a.length);
+  for (const root of roots) {
+    if (p === root) {
+      p = '';
+      break;
+    }
     if (p.startsWith(root + '/')) {
       p = p.slice(root.length + 1);
+      break;
     }
   }
+
   // Strip leading slashes or ./
   p = p.replace(/^(\.\/|\/)+/, '');
 
@@ -70,8 +84,8 @@ export function normalizeRepoPath(filePath: string, workspaceRoot?: string): str
   return resolved.join('/');
 }
 
-export function makeFileVertexId(relativePath: string): string {
-  const normalized = normalizeRepoPath(relativePath);
+export function makeFileVertexId(relativePath: string, workspaceRoot?: string | string[]): string {
+  const normalized = normalizeRepoPath(relativePath, workspaceRoot);
   const sanitized = normalized.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
   return `file_${sanitized}`;
 }
