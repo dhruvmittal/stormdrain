@@ -1,4 +1,4 @@
-export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence' | 'concept';
+export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence' | 'concept' | 'invariant' | 'decision' | 'learning';
 
 export type RelationType = 
   | 'affects' 
@@ -29,7 +29,7 @@ export interface MemoryMetadata {
   updated: string; // ISO format
   accessed: string; // ISO format
   access_count: number;
-  source: 'conversation' | 'indexer' | 'manual' | 'promotion';
+  source: string;
   expires: string | null; // ISO format
   superseded_by: string | null; // id of superseding memory
   relations: MemoryRelation[];

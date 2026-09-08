@@ -229,7 +229,7 @@ export class ContextManager {
     this.saveMemory(memory, `[stormdrain] update: ${memory.metadata.type} "${memory.metadata.title}"`);
   }
 
-  public addRelation(sourceId: string, target: string, type: string = 'related_to'): boolean {
+  public addRelation(sourceId: string, target: string, type: RelationType = 'related_to'): boolean {
     const memory = this.getMemory(sourceId);
     if (!memory) throw new Error(`Source memory "${sourceId}" not found.`);
 
@@ -274,7 +274,7 @@ export class ContextManager {
     const resolvedId = this.resolveTargetId(memoryId);
     const outgoingRows = this.db.prepare(`
       SELECT target_id as target, type FROM relations WHERE source_id = ?
-    `).all(resolvedId) as Array<{ target: string; type: string }>;
+    `).all(resolvedId) as MemoryRelation[];
 
     const incomingRows = this.db.prepare(`
       SELECT source_id as source, type FROM relations WHERE target_id = ?
@@ -652,7 +652,7 @@ export class ContextManager {
           for (const rel of attachedRelations) {
             const attachedMem = this.getMemory(rel.source_id);
             if (attachedMem && attachedMem.metadata.type !== 'codemap') {
-              const memCanonical = attachedMem.metadata.is_canonical === 1 || Boolean(attachedMem.metadata.is_canonical);
+              const memCanonical = Boolean(attachedMem.metadata.is_canonical);
               const memBranch = attachedMem.metadata.git_branch;
 
               // Branch-segmented decay guard:
@@ -1490,14 +1490,14 @@ export class ContextManager {
     return candidates;
   }
 
-  public recallTopMemories(limit = 10) {
+  public recallTopMemories(limit = 10): MemoryDbRow[] {
     const stmt = this.db.prepare(`
       SELECT * FROM memories 
       WHERE expires IS NULL OR expires > datetime('now')
       ORDER BY confidence DESC, accessed DESC
       LIMIT ?
     `);
-    return stmt.all(limit);
+    return stmt.all(limit) as MemoryDbRow[];
   }
 
   public markAccessed(id: string) {

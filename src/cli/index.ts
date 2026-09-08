@@ -13,6 +13,7 @@ import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
+import { MemoryType } from '../types';
 
 
 const program = new Command();
@@ -864,7 +865,7 @@ program
   });
 
 // Setup tab autocompletion via @bomb.sh/tab
-const completeContexts = (complete: (val: string, desc?: string) => void) => {
+const completeContexts = (complete: any) => {
   try {
     const contexts = config.getContexts();
     for (const name of Object.keys(contexts)) {
@@ -873,7 +874,7 @@ const completeContexts = (complete: (val: string, desc?: string) => void) => {
   } catch {}
 };
 
-const completeMemoryTypes = (complete: (val: string, desc?: string) => void) => {
+const completeMemoryTypes = (complete: any) => {
   complete('concept', 'Mental models & abstract cross-cutting knowledge');
   complete('fact', 'System invariants & configuration rules');
   complete('lesson', 'Post-incident takeaways & debugging lessons');
@@ -883,7 +884,7 @@ const completeMemoryTypes = (complete: (val: string, desc?: string) => void) => 
   complete('sequence', 'Step-by-step procedures');
 };
 
-const completeRelationTypes = (complete: (val: string, desc?: string) => void) => {
+const completeRelationTypes = (complete: any) => {
   complete('affects', 'Impacts target file or system component');
   complete('applies_to', 'Applies to specific scope or architecture');
   complete('supports', 'Validates or reinforces evidence');
@@ -896,13 +897,13 @@ const completeRelationTypes = (complete: (val: string, desc?: string) => void) =
   complete('distilled_from', 'Super-memory provenance');
 };
 
-const completeSubmodulePolicies = (complete: (val: string, desc?: string) => void) => {
+const completeSubmodulePolicies = (complete: any) => {
   complete('dive', 'Index all files inside submodules');
   complete('sum', 'Generate single codemap summary');
   complete('ask', 'Prompt interactively when submodules are detected');
 };
 
-const completeMemoryIds = (complete: (val: string, desc?: string) => void) => {
+const completeMemoryIds = (complete: any) => {
   try {
     const targetCtx = config.resolveContext(undefined, process.cwd());
     const ctx = new ContextManager(targetCtx);

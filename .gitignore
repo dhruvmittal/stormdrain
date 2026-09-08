@@ -49,3 +49,5 @@ coverage/
 /tmp/
 .temp/
 .tokensave
+profiler/
+scratch/

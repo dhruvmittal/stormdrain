@@ -11,7 +11,7 @@ import {
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
-import { MemoryType } from '../types';
+import { MemoryType, RelationType } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
@@ -688,7 +688,7 @@ export class StormDrainMcpServer {
           }
           const resolvedTarget = ctx.resolveTargetId(args.target);
           const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
-          const relType = args.type || defaultType;
+          const relType = (args.type || defaultType) as RelationType;
           const added = ctx.addRelation(args.source_id, args.target, relType);
           if (added) {
             return { content: [{ type: 'text', text: `Successfully linked memory ${args.source_id} -> ${resolvedTarget} with relation "${relType}" in context "${targetContext}".` }] };

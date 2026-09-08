@@ -157,7 +157,7 @@ export class ConfigManager {
     return merged;
   }
 
-  public updateSettings(partial: Partial<StormDrainSettings>): StormDrainSettings {
+  public updateSettings(partial: any): StormDrainSettings {
     this.loadConfig();
     const current = this.getSettings();
 

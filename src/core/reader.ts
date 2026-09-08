@@ -235,8 +235,8 @@ export class FileReader {
       
       const branchBadge = (!mem.is_canonical && mem.git_branch) ? ` [Branch: ${mem.git_branch}]` : '';
       let item = `- [${mem.type.toUpperCase()}] ${mem.title} (ID: ${mem.id}${depthBadge}, ${confBadge})${branchBadge}${tagStr}\n`;
-      if (mem.content) {
-        const snippet = mem.content.length > 180 ? `${mem.content.substring(0, 180)}...` : mem.content;
+      if (mem.content_snippet) {
+        const snippet = mem.content_snippet.length > 180 ? `${mem.content_snippet.substring(0, 180)}...` : mem.content_snippet;
         item += `  ${snippet.split('\n').join('\n  ')}\n`;
       }
 

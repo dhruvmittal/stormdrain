@@ -168,9 +168,9 @@ func NewServer() *Server {}
 
   it('should honor invariant token budget limits and format headers gracefully', () => {
     const mockMemories: MultiHopMemoryResult[] = [
-      { id: 'mem_1', type: 'warning', title: 'Critical Warning 1', content: 'Do not mutate shared state directly', confidence: 0.95, depth: 0, tags: ['safety'] },
-      { id: 'mem_2', type: 'lesson', title: 'Async Handling Lesson', content: 'Always await promises inside try-catch', confidence: 0.85, depth: 1, tags: ['async'] },
-      { id: 'mem_3', type: 'fact', title: 'Cache Strategy', content: 'Uses LRU eviction', confidence: 0.75, depth: 2, tags: ['perf'] }
+      { id: 'mem_1', type: 'warning', title: 'Critical Warning 1', content_snippet: 'Do not mutate shared state directly', confidence: 0.95, depth: 0, direction: 'direct', relevanceScore: 1.0, tags: ['safety'] },
+      { id: 'mem_2', type: 'lesson', title: 'Async Handling Lesson', content_snippet: 'Always await promises inside try-catch', confidence: 0.85, depth: 1, direction: 'direct', relevanceScore: 0.8, tags: ['async'] },
+      { id: 'mem_3', type: 'fact', title: 'Cache Strategy', content_snippet: 'Uses LRU eviction', confidence: 0.75, depth: 2, direction: 'direct', relevanceScore: 0.6, tags: ['perf'] }
     ];
 
     // Very small token budget (~30 tokens -> ~120 chars)

@@ -415,7 +415,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
           maxDepth: isNaN(depth) ? 3 : depth,
           maxResults: isNaN(limit) ? 10 : limit,
           cumulativeThreshold: 0.98,
-          branch: branch || null
+          branch: branch || undefined
         });
 
         if (multiHop.all.length === 0) {
@@ -496,7 +496,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const target = normalizeRepoPath(rawTarget, ctx.getWorkspaceRoots());
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
-      const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || null;
+      const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || undefined;
 
       let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops, branch);
       if (graphResults.length === 0 && path.basename(target) !== target) {

@@ -24,7 +24,7 @@ export class TsParser implements LanguageParser {
       const scriptKind = ext === '.tsx' ? ts.ScriptKind?.TSX || 4 : ext === '.jsx' ? ts.ScriptKind?.JSX || 2 : ext === '.js' ? ts.ScriptKind?.JS || 1 : ts.ScriptKind?.TS || 3;
       const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget?.Latest || 99, true, scriptKind);
 
-      const visitNode = (node: ts.Node) => {
+      const visitNode = (node: any) => {
         if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
           if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
             this.resolveCandidateImport(node.moduleSpecifier.text, options.fileDir, options.allFiles, importedFiles);
@@ -70,10 +70,10 @@ export class TsParser implements LanguageParser {
       const scriptKind = ext === '.tsx' ? ts.ScriptKind?.TSX || 4 : ext === '.jsx' ? ts.ScriptKind?.JSX || 2 : ext === '.js' ? ts.ScriptKind?.JS || 1 : ts.ScriptKind?.TS || 3;
       const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget?.Latest || 99, true, scriptKind);
 
-      const isExported = (node: ts.Node): boolean => {
+      const isExported = (node: any): boolean => {
         if (!ts.canHaveModifiers(node)) return false;
         const modifiers = ts.getModifiers(node);
-        return Boolean(modifiers && modifiers.some(m => m.kind === ts.SyntaxKind.ExportKeyword));
+        return Boolean(modifiers && modifiers.some((m: any) => m.kind === ts.SyntaxKind.ExportKeyword));
       };
 
       for (const statement of sourceFile.statements) {
