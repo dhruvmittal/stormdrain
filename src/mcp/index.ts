@@ -11,7 +11,7 @@ import {
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
-import { MemoryType } from '../types';
+import { MemoryType, RelationType } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
@@ -106,6 +106,14 @@ export class StormDrainMcpServer {
               end_line: {
                 type: 'number',
                 description: 'Optional end line number (1-indexed)'
+              },
+              offset: {
+                type: 'number',
+                description: 'Optional start line offset (alias for start_line)'
+              },
+              limit: {
+                type: 'number',
+                description: 'Optional line count limit'
               },
               include_invariants: {
                 type: 'boolean',
@@ -419,6 +427,8 @@ export class StormDrainMcpServer {
             startLine?: number;
             end_line?: number;
             endLine?: number;
+            offset?: number;
+            limit?: number;
             include_invariants?: boolean;
             includeInvariants?: boolean;
             include_symbols?: boolean;
@@ -431,8 +441,14 @@ export class StormDrainMcpServer {
             throw new Error('Argument "path" is required for sd_read.');
           }
 
-          const startLine = args.start_line !== undefined ? args.start_line : args.startLine;
-          const endLine = args.end_line !== undefined ? args.end_line : args.endLine;
+          let startLine = args.start_line !== undefined ? args.start_line : args.startLine;
+          let endLine = args.end_line !== undefined ? args.end_line : args.endLine;
+          if (startLine === undefined && args.offset !== undefined) {
+            startLine = Math.max(1, args.offset);
+          }
+          if (endLine === undefined && args.limit !== undefined && startLine !== undefined) {
+            endLine = startLine + args.limit - 1;
+          }
           const includeInvariants = args.include_invariants !== undefined ? args.include_invariants : args.includeInvariants;
           const includeSymbols = args.include_symbols !== undefined ? args.include_symbols : args.includeSymbols;
 
@@ -597,7 +613,7 @@ export class StormDrainMcpServer {
         }
 
         if (request.params.name === 'sd_consolidation_candidates') {
-          const threshold = request.params.arguments?.threshold as number | undefined;
+          const threshold = (request.params.arguments?.threshold ?? request.params.arguments?.min_memories) as number | undefined;
           const candidates = ctx.findConsolidationCandidates(threshold);
 
           if (candidates.length === 0) {
@@ -682,13 +698,14 @@ export class StormDrainMcpServer {
             source_id: string;
             target: string;
             type?: string;
+            relation_type?: string;
           };
           if (!args.source_id || !args.target) {
             throw new Error('Arguments "source_id" and "target" are required for sd_relate.');
           }
           const resolvedTarget = ctx.resolveTargetId(args.target);
           const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
-          const relType = args.type || defaultType;
+          const relType = (args.type || args.relation_type || defaultType) as RelationType;
           const added = ctx.addRelation(args.source_id, args.target, relType);
           if (added) {
             return { content: [{ type: 'text', text: `Successfully linked memory ${args.source_id} -> ${resolvedTarget} with relation "${relType}" in context "${targetContext}".` }] };

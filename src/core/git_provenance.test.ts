@@ -149,14 +149,14 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(mem?.metadata.is_canonical).toBe(false);
     });
 
-    it('filters feature branch memories from other branches during recallMultiHop', () => {
+    it('recalls memories across branches without silent amnesia in recallMultiHop', () => {
       const targetFile = 'src/service.ts';
       const vertexId = makeFileVertexId(targetFile);
 
       // Add target file vertex
       ctx.addMemory('codemap', targetFile, 'service codemap', ['file-vertex'], 'indexer', vertexId);
 
-      // Add memory on feature-a (non-canonical)
+      // Add memory on feature-a
       const memA = ctx.addMemory(
         'decision',
         'Feature A Decision',
@@ -167,11 +167,10 @@ describe('Git Branch Provenance & Path Normalization', () => {
         targetFile,
         'affects',
         undefined,
-        'feature-a',
-        false
+        'feature-a'
       );
 
-      // Add canonical memory on main
+      // Add memory on main
       const memMain = ctx.addMemory(
         'fact',
         'Main Architecture Rule',
@@ -182,8 +181,7 @@ describe('Git Branch Provenance & Path Normalization', () => {
         targetFile,
         'affects',
         undefined,
-        'main',
-        true
+        'main'
       );
 
       // Recalling on feature-a should see both memA and memMain
@@ -192,16 +190,16 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(idsA).toContain(memA);
       expect(idsA).toContain(memMain);
 
-      // Recalling on main should NOT see memA, but should see memMain
+      // Recalling on main should also see both memA and memMain
       const recallMain = ctx.recallMultiHop(targetFile, { branch: 'main' });
       const idsMain = recallMain.all.map(m => m.id);
-      expect(idsMain).not.toContain(memA);
+      expect(idsMain).toContain(memA);
       expect(idsMain).toContain(memMain);
 
-      // Recalling without specifying branch defaults to canonical/baseline view
+      // Recalling without specifying branch also sees both
       const recallNoBranch = ctx.recallMultiHop(targetFile);
       const idsNoBranch = recallNoBranch.all.map(m => m.id);
-      expect(idsNoBranch).not.toContain(memA);
+      expect(idsNoBranch).toContain(memA);
       expect(idsNoBranch).toContain(memMain);
     });
 
@@ -314,13 +312,13 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(details?.is_canonical).toBe(false);
     });
 
-    it('propagates branch through recallGraph to filter branch-specific memories', () => {
+    it('recalls all file-attached memories through recallGraph regardless of branch', () => {
       const targetFile = 'src/api/auth.ts';
       const vertexId = makeFileVertexId(targetFile);
       ctx.addMemory('codemap', targetFile, 'auth codemap', ['file-vertex'], 'indexer', vertexId);
 
-      const memBranch = ctx.addMemory('fact', 'Branch Auth Rule', 'Auth details', [], 'manual', undefined, targetFile, 'affects', undefined, 'feature-auth', false);
-      const memMain = ctx.addMemory('fact', 'Main Auth Rule', 'Main details', [], 'manual', undefined, targetFile, 'affects', undefined, 'main', true);
+      const memBranch = ctx.addMemory('fact', 'Branch Auth Rule', 'Auth details', [], 'manual', undefined, targetFile, 'affects', undefined, 'feature-auth');
+      const memMain = ctx.addMemory('fact', 'Main Auth Rule', 'Main details', [], 'manual', undefined, targetFile, 'affects', undefined, 'main');
 
       // recallGraph on feature-auth
       const resultsBranch = ctx.recallGraph(targetFile, 2, 'feature-auth');
@@ -328,10 +326,10 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(idsBranch).toContain(memBranch);
       expect(idsBranch).toContain(memMain);
 
-      // recallGraph on main
+      // recallGraph on main also sees both
       const resultsMain = ctx.recallGraph(targetFile, 2, 'main');
       const idsMain = resultsMain.map(m => m.id);
-      expect(idsMain).not.toContain(memBranch);
+      expect(idsMain).toContain(memBranch);
       expect(idsMain).toContain(memMain);
     });
   });
@@ -416,14 +414,14 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(protoIds).toContain(unpromotedInvariant);
       expect(protoIds).toContain(canonicalInvariant);
 
-      // On main: unpromoted invariant MUST BE HIDDEN
+      // On main: both invariants are visible for the file
       const mainRecall = ctx.recallMultiHop(targetFile, { branch: 'main' });
       const mainIds = mainRecall.all.map(m => m.id);
-      expect(mainIds).not.toContain(unpromotedInvariant);
+      expect(mainIds).toContain(unpromotedInvariant);
       expect(mainIds).toContain(canonicalInvariant);
     });
 
-    it('allows observation plane memories tagged with #environment to cross branch boundaries', () => {
+    it('recalls lessons across branches for the target file without requiring special tags', () => {
       const targetFile = 'src/core/testRunner.ts';
       const vertexId = makeFileVertexId(targetFile);
       ctx.addMemory('codemap', targetFile, 'runner codemap', ['file-vertex'], 'indexer', vertexId);
@@ -458,11 +456,11 @@ describe('Git Branch Provenance & Path Normalization', () => {
         false
       );
 
-      // On main: envLesson is visible, domainLesson is hidden
+      // On main: both lessons are recalled for the target file
       const mainRecall = ctx.recallMultiHop(targetFile, { branch: 'main' });
       const mainIds = mainRecall.all.map(m => m.id);
       expect(mainIds).toContain(envLesson);
-      expect(mainIds).not.toContain(domainLesson);
+      expect(mainIds).toContain(domainLesson);
     });
   });
 

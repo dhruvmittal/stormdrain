@@ -118,6 +118,15 @@ def get_git_info(cwd: Optional[str] = None) -> Tuple[Optional[str], Optional[str
             except Exception:
                 pass
 
+        if not branch:
+            branch = (
+                os.getenv("GITHUB_HEAD_REF")
+                or os.getenv("GITHUB_REF_NAME")
+                or os.getenv("CI_COMMIT_REF_NAME")
+                or os.getenv("CI_COMMIT_BRANCH")
+                or os.getenv("GIT_BRANCH")
+            )
+
     if len(_GIT_CACHE) >= _GIT_CACHE_MAX:
         _GIT_CACHE.clear()
     _GIT_CACHE[target_dir] = {"root": root, "branch": branch, "ts": now}
@@ -263,6 +272,14 @@ class StormDrainMcpServer:
                             "type": "number",
                             "description": "Optional end line number (1-indexed)"
                         },
+                        "offset": {
+                            "type": "number",
+                            "description": "Optional start line offset (alias for start_line)"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Optional line count limit"
+                        },
                         "include_invariants": {
                             "type": "boolean",
                             "description": "Whether to query central server for architectural invariants (default: true)"
@@ -289,6 +306,18 @@ class StormDrainMcpServer:
                         "limit": {
                             "type": "number",
                             "description": "Maximum number of memories to recall (default: 10)"
+                        },
+                        "max_depth": {
+                            "type": "number",
+                            "description": "Optional maximum graph hop depth (default: 3)"
+                        },
+                        "depth": {
+                            "type": "number",
+                            "description": "Optional maximum graph hop depth (alias for max_depth)"
+                        },
+                        "include_codemaps": {
+                            "type": "boolean",
+                            "description": "Whether to include codemap symbol outlines"
                         },
                         "context": context_prop
                     }
@@ -343,7 +372,7 @@ class StormDrainMcpServer:
                     "properties": {
                         "type": {
                             "type": "string",
-                            "enum": ["decision", "invariant", "gotcha", "lesson", "pattern", "performance", "anti-pattern", "concept", "warning"],
+                            "enum": ["fact", "pattern", "lesson", "warning", "guide", "codemap", "sequence", "concept"],
                             "description": "Semantic type of the memory"
                         },
                         "title": {
@@ -366,9 +395,29 @@ class StormDrainMcpServer:
                         "targets": {
                             "description": "Optional target file or array of targets"
                         },
+                        "relations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "string"},
+                                    "type": {"type": "string"}
+                                },
+                                "required": ["target"]
+                            },
+                            "description": "Explicit typed relation edges to other memories or files"
+                        },
                         "relation_type": {
                             "type": "string",
                             "description": "Relation type: affects, applies_to, depends_on, implements, related_to (default: affects)"
+                        },
+                        "git_branch": {
+                            "type": "string",
+                            "description": "Optional Git branch provenance override"
+                        },
+                        "is_canonical": {
+                            "type": "boolean",
+                            "description": "Whether to mark memory as canonical baseline repository knowledge"
                         },
                         "context": context_prop
                     },
@@ -389,6 +438,32 @@ class StormDrainMcpServer:
                         "content": {"type": "string"},
                         "tags": {"type": "array", "items": {"type": "string"}},
                         "type": {"type": "string"},
+                        "add_targets": {
+                            "description": "Target file paths or memory IDs to add"
+                        },
+                        "remove_targets": {
+                            "description": "Target file paths or memory IDs to remove"
+                        },
+                        "relations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "string"},
+                                    "type": {"type": "string"}
+                                },
+                                "required": ["target"]
+                            },
+                            "description": "Replace full relations list"
+                        },
+                        "add_relations": {
+                            "type": "array",
+                            "description": "Relations to add"
+                        },
+                        "remove_relations": {
+                            "type": "array",
+                            "description": "Relations to remove"
+                        },
                         "is_canonical": {
                             "type": "boolean",
                             "description": "Set to true to mark or promote as canonical repository baseline knowledge"
@@ -427,13 +502,59 @@ class StormDrainMcpServer:
                             "type": "string",
                             "description": "Target file path or memory ID"
                         },
+                        "type": {
+                            "type": "string",
+                            "description": "Semantic relation type (alias for relation_type)"
+                        },
                         "relation_type": {
                             "type": "string",
-                            "description": "Relation type (default: related_to)"
+                            "description": "Semantic relation type (default: related_to for memories, affects for files)"
                         },
                         "context": context_prop
                     },
                     "required": ["source_id", "target"]
+                }
+            },
+            {
+                "name": "sd_scan",
+                "description": "GRAPH SYNC TOOL: Scan workspace source files (TypeScript, Python, C++, Go, Rust, MATLAB) to synchronize the codebase dependency DAG edges and file vertices in persistent memory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Optional workspace directory path to scan (defaults to current working directory)"
+                        },
+                        "submodule_policy": {
+                            "type": "string",
+                            "enum": ["dive", "sum"],
+                            "description": "How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum"
+                        },
+                        "context": context_prop
+                    }
+                }
+            },
+            {
+                "name": "sd_init",
+                "description": "INITIALIZATION TOOL: Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Context name (e.g. project name). Note: 'global' and '_global' are reserved."
+                        },
+                        "directory": {
+                            "type": "string",
+                            "description": "Optional directory path to bind and scan (defaults to current working directory)"
+                        },
+                        "submodule_policy": {
+                            "type": "string",
+                            "enum": ["dive", "sum"],
+                            "description": "How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum"
+                        }
+                    },
+                    "required": ["name"]
                 }
             },
             {
@@ -465,6 +586,24 @@ class StormDrainMcpServer:
                         "threshold": {
                             "type": "number",
                             "description": "Minimum micro-memory count threshold (default: 3)"
+                        },
+                        "min_memories": {
+                            "type": "number",
+                            "description": "Minimum micro-memory count threshold (alias for threshold)"
+                        },
+                        "context": context_prop
+                    }
+                }
+            },
+            {
+                "name": "sd_prune",
+                "description": "GRAPH PRUNE TOOL: Prune leaked or orphaned codemap file vertices from the DAG that do not belong to the workspace.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Optional directory path to validate against (defaults to context bound paths)"
                         },
                         "context": context_prop
                     }
@@ -498,8 +637,14 @@ class StormDrainMcpServer:
             all_lines = file_content.splitlines()
             total_lines = len(all_lines)
 
-            start_line = arguments.get("start_line") or 1
-            end_line = arguments.get("end_line") or total_lines
+            start_line = arguments.get("start_line") or arguments.get("startLine")
+            end_line = arguments.get("end_line") or arguments.get("endLine")
+            if start_line is None and "offset" in arguments and arguments["offset"] is not None:
+                start_line = max(1, int(arguments["offset"]))
+            if end_line is None and "limit" in arguments and arguments["limit"] is not None and start_line is not None:
+                end_line = start_line + int(arguments["limit"]) - 1
+            start_line = start_line or 1
+            end_line = end_line or total_lines
             start_line = max(1, min(start_line, total_lines if total_lines > 0 else 1))
             end_line = max(start_line, min(end_line, total_lines))
 
@@ -552,6 +697,9 @@ class StormDrainMcpServer:
             target = arguments.get("target_file") or arguments.get("target")
             limit = arguments.get("limit", 10)
             params = {"limit": limit}
+            depth = arguments.get("max_depth") or arguments.get("depth") or arguments.get("maxDepth")
+            if depth:
+                params["depth"] = depth
             if target:
                 params["target"] = normalize_client_path(target, git_root)
             if current_branch:
@@ -627,9 +775,9 @@ class StormDrainMcpServer:
                 target_file = normalize_client_path(target_file, git_root)
             targets = arguments.get("targets")
             if isinstance(targets, list):
-                targets = [normalize_client_path(t, git_root) if isinstance(t, str) else t for t in targets]
+                targets = [normalize_client_path(t, git_root) if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")) else t for t in targets]
             elif isinstance(targets, str):
-                targets = normalize_client_path(targets, git_root)
+                targets = normalize_client_path(targets, git_root) if not (targets.startswith("mem_") or targets.startswith("file_") or targets.startswith("node_")) else targets
 
             payload = {
                 "type": arguments.get("type"),
@@ -639,10 +787,22 @@ class StormDrainMcpServer:
                 "targetFile": target_file,
                 "targets": targets,
                 "relationType": arguments.get("relation_type", "affects"),
-                "gitBranch": current_branch,
+                "gitBranch": arguments.get("git_branch") or current_branch,
             }
             if "is_canonical" in arguments:
                 payload["isCanonical"] = arguments["is_canonical"]
+
+            if "relations" in arguments and isinstance(arguments["relations"], list):
+                norm_relations = []
+                for r in arguments["relations"]:
+                    if isinstance(r, dict) and "target" in r:
+                        t = r["target"]
+                        if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")):
+                            t = normalize_client_path(t, git_root)
+                        norm_relations.append({"target": t, "type": r.get("type", "affects")})
+                    else:
+                        norm_relations.append(r)
+                payload["relations"] = norm_relations
 
             status, data = self.client.request("POST", "/api/memories", data=payload, context=context)
             if status not in (200, 201):
@@ -657,9 +817,36 @@ class StormDrainMcpServer:
             if not mid:
                 return {"isError": True, "content": [{"type": "text", "text": "Argument 'id' is required for sd_update."}]}
             payload = {}
-            for field in ("title", "content", "tags", "type", "is_canonical"):
+            for field in (
+                "title", "content", "tags", "type", "is_canonical",
+                "add_targets", "remove_targets", "relations",
+                "add_relations", "remove_relations"
+            ):
                 if field in arguments and arguments[field] is not None:
                     payload[field] = arguments[field]
+
+            if "add_targets" in payload and isinstance(payload["add_targets"], list):
+                payload["add_targets"] = [
+                    normalize_client_path(t, git_root) if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")) else t
+                    for t in payload["add_targets"]
+                ]
+            if "remove_targets" in payload and isinstance(payload["remove_targets"], list):
+                payload["remove_targets"] = [
+                    normalize_client_path(t, git_root) if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")) else t
+                    for t in payload["remove_targets"]
+                ]
+            if "relations" in payload and isinstance(payload["relations"], list):
+                norm_relations = []
+                for r in payload["relations"]:
+                    if isinstance(r, dict) and "target" in r:
+                        t = r["target"]
+                        if isinstance(t, str) and not (t.startswith("mem_") or t.startswith("file_") or t.startswith("node_")):
+                            t = normalize_client_path(t, git_root)
+                        norm_relations.append({"target": t, "type": r.get("type", "affects")})
+                    else:
+                        norm_relations.append(r)
+                payload["relations"] = norm_relations
+
             status, data = self.client.request("PUT", "/api/memories/{}".format(mid), data=payload, context=context)
             if status != 200:
                 err_msg = data.get("error", "Failed to update memory") if isinstance(data, dict) else str(data)
@@ -678,12 +865,17 @@ class StormDrainMcpServer:
 
         elif name == "sd_relate":
             target = arguments.get("target")
-            if target and not target.startswith("mem-") and not target.startswith("node-"):
+            if target and not (
+                target.startswith("mem_") or target.startswith("file_") or
+                target.startswith("node_") or target.startswith("mem-") or
+                target.startswith("node-")
+            ):
                 target = normalize_client_path(target, git_root)
+            rel_type = arguments.get("type") or arguments.get("relation_type", "related_to")
             payload = {
                 "source": arguments.get("source_id"),
                 "target": target,
-                "type": arguments.get("relation_type", "related_to")
+                "type": rel_type
             }
             status, data = self.client.request("POST", "/api/relations", data=payload, context=context)
             if status != 200:
@@ -708,7 +900,7 @@ class StormDrainMcpServer:
             return {"content": [{"type": "text", "text": "Successfully consolidated {} micro-memories into super-memory {}".format(count, cid)}]}
 
         elif name == "sd_consolidation_candidates":
-            thresh = arguments.get("threshold", 3)
+            thresh = arguments.get("threshold") or arguments.get("min_memories", 3)
             status, data = self.client.request("GET", "/api/consolidation-candidates", params={"threshold": thresh}, context=context)
             if status != 200:
                 err_msg = data.get("error", "Failed to fetch candidates") if isinstance(data, dict) else str(data)
@@ -737,8 +929,138 @@ class StormDrainMcpServer:
 
             return {"content": [{"type": "text", "text": "\n".join(sections)}]}
 
+        elif name == "sd_scan":
+            dir_arg = arguments.get("directory")
+            if dir_arg:
+                dir_arg = os.path.abspath(dir_arg)
+            policy = arguments.get("submodule_policy", "sum")
+            payload = {"directory": dir_arg, "submodule_policy": policy}
+            status, data = self.client.request("POST", "/api/scan", data=payload, context=context)
+            if status != 200:
+                err_msg = data.get("error", "Scan failed") if isinstance(data, dict) else str(data)
+                return {"isError": True, "content": [{"type": "text", "text": "Error: {}".format(err_msg)}]}
+            target_ctx = context or self.client.context or "default"
+            created = data.get("createdCount", 0)
+            decayed = data.get("decayedCount", 0)
+            scanned_dir = data.get("directory", dir_arg or os.getcwd())
+            return {"content": [{"type": "text", "text": "Successfully scanned workspace \"{}\" and updated {} file vertices ({} memories decayed) in context \"{}\".".format(scanned_dir, created, decayed, target_ctx)}]}
+
+        elif name == "sd_init":
+            ctx_name = arguments.get("name")
+            if not ctx_name:
+                return {"isError": True, "content": [{"type": "text", "text": "Argument 'name' is required for sd_init."}]}
+            dir_arg = arguments.get("directory")
+            if dir_arg:
+                dir_arg = os.path.abspath(dir_arg)
+            else:
+                dir_arg = os.getcwd()
+            policy = arguments.get("submodule_policy", "sum")
+            payload = {"name": ctx_name, "directory": dir_arg, "submodule_policy": policy}
+            status, data = self.client.request("POST", "/api/init", data=payload)
+            if status != 200:
+                err_msg = data.get("error", "Init failed") if isinstance(data, dict) else str(data)
+                return {"isError": True, "content": [{"type": "text", "text": "Error: {}".format(err_msg)}]}
+            created = data.get("createdCount", 0)
+            return {"content": [{"type": "text", "text": "Successfully initialized context \"{}\", bound path \"{}\", scaffolded AGENTS.md, and created {} file vertices in DAG skeleton.".format(ctx_name, dir_arg, created)}]}
+
+        elif name == "sd_prune":
+            dir_arg = arguments.get("directory")
+            if dir_arg:
+                dir_arg = os.path.abspath(dir_arg)
+            payload = {"directory": dir_arg}
+            status, data = self.client.request("POST", "/api/prune", data=payload, context=context)
+            if status != 200:
+                err_msg = data.get("error", "Prune failed") if isinstance(data, dict) else str(data)
+                return {"isError": True, "content": [{"type": "text", "text": "Error: {}".format(err_msg)}]}
+            target_ctx = context or self.client.context or "default"
+            pruned = data.get("prunedCount", 0)
+            return {"content": [{"type": "text", "text": "Successfully pruned {} orphaned codemap vertices from context \"{}\".".format(pruned, target_ctx)}]}
+
         else:
             return {"isError": True, "content": [{"type": "text", "text": "Tool not found: {}".format(name)}]}
+
+    def get_prompt_definitions(self) -> List[Dict[str, Any]]:
+        status, data = self.client.request("GET", "/api/prompts")
+        if status == 200 and isinstance(data, dict) and "prompts" in data:
+            return data["prompts"]
+        return [
+            {
+                "name": "sd_curate",
+                "description": "Holistic memory curation prompt: guided review to consolidate micro-memories, promote generalized rules to _global, and link or prune graph concepts.",
+                "arguments": [
+                    {
+                        "name": "target",
+                        "description": "Optional target file path or memory ID to focus curation on. Leave empty for a prioritized graph-wide sweep.",
+                        "required": False,
+                    },
+                    {
+                        "name": "threshold",
+                        "description": "Optional micro-memory threshold for consolidation candidate detection (default: 3).",
+                        "required": False,
+                    },
+                    {
+                        "name": "context",
+                        "description": "Optional context namespace override (defaults to active workspace context).",
+                        "required": False,
+                    },
+                ],
+            },
+            {
+                "name": "sd_harvest",
+                "description": "Discovery harvest prompt: extracts and persists architectural invariants, gotchas, decisions, and patterns discovered during recent work.",
+                "arguments": [
+                    {
+                        "name": "limit",
+                        "description": "Optional maximum number of recent commits and files to inspect (default: 5).",
+                        "required": False,
+                    },
+                    {
+                        "name": "context",
+                        "description": "Optional context namespace override (defaults to active workspace context).",
+                        "required": False,
+                    },
+                ],
+            },
+        ]
+
+    def handle_prompt_get(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        raw_ctx = arguments.get("context") if arguments else None
+        if name == "sd_curate":
+            payload = {
+                "target": arguments.get("target") if arguments else None,
+                "threshold": arguments.get("threshold") if arguments else None,
+                "maxCandidates": (arguments.get("max_candidates") or arguments.get("maxCandidates")) if arguments else None
+            }
+            status, data = self.client.request("POST", "/api/prompts/curate", data=payload, context=raw_ctx)
+            if status != 200:
+                err_msg = data.get("error", "Failed to generate curate prompt") if isinstance(data, dict) else str(data)
+                raise Exception(err_msg)
+            return data
+        elif name == "sd_harvest":
+            client_diff = ""
+            try:
+                diff_res = subprocess.run(
+                    ["git", "diff", "HEAD"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=3
+                )
+                if diff_res.returncode == 0:
+                    client_diff = diff_res.stdout
+            except Exception:
+                pass
+            payload = {
+                "limit": arguments.get("limit") if arguments else None,
+                "gitDiff": client_diff
+            }
+            status, data = self.client.request("POST", "/api/prompts/harvest", data=payload, context=raw_ctx)
+            if status != 200:
+                err_msg = data.get("error", "Failed to generate harvest prompt") if isinstance(data, dict) else str(data)
+                raise Exception(err_msg)
+            return data
+        else:
+            raise Exception("Unknown prompt: {}".format(name))
 
     def run_stdio(self):
         """Standard JSON-RPC 2.0 stdio server loop."""
@@ -796,7 +1118,10 @@ class StormDrainMcpServer:
                 if method == "initialize":
                     resp["result"] = {
                         "protocolVersion": "2024-11-05",
-                        "capabilities": {"tools": {}},
+                        "capabilities": {
+                            "tools": {},
+                            "prompts": {}
+                        },
                         "serverInfo": {
                             "name": "stormdrain-agent",
                             "version": "1.0.0"
@@ -810,6 +1135,12 @@ class StormDrainMcpServer:
                     tool_name = params.get("name")
                     tool_args = params.get("arguments", {})
                     resp["result"] = self.handle_tool_call(tool_name, tool_args)
+                elif method == "prompts/list":
+                    resp["result"] = {"prompts": self.get_prompt_definitions()}
+                elif method == "prompts/get":
+                    prompt_name = params.get("name")
+                    prompt_args = params.get("arguments", {})
+                    resp["result"] = self.handle_prompt_get(prompt_name, prompt_args)
                 else:
                     resp["error"] = {
                         "code": -32601,

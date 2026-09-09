@@ -452,7 +452,8 @@ describe('Web API Server', () => {
         type: 'concept',
         title: 'Feature Branch Work',
         content: 'Some feature branch concept',
-        gitBranch: 'feature/auth-v2'
+        gitBranch: 'feature/auth-v2',
+        isCanonical: false
       })
     });
 
@@ -466,6 +467,101 @@ describe('Web API Server', () => {
     expect(promoteData.success).toBe(true);
     expect(promoteData.branch).toBe('feature/auth-v2');
     expect(promoteData.promotedCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should initialize context and scaffold AGENTS.md via POST /api/init', async () => {
+    const projDir = path.join(testDir, 'init-test-proj');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'index.ts'), 'export const hello = "world";');
+
+    const res = await fetch(`${baseUrl}/api/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'init-test-ctx',
+        directory: projDir
+      })
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.name).toBe('init-test-ctx');
+    expect(data.createdCount).toBeGreaterThanOrEqual(1);
+    expect(fs.existsSync(path.join(projDir, 'AGENTS.md'))).toBe(true);
+  });
+
+  it('should scan workspace and sync file graph via POST /api/scan', async () => {
+    const scanDir = path.join(testDir, 'scan-test-proj');
+    fs.mkdirSync(scanDir, { recursive: true });
+    fs.writeFileSync(path.join(scanDir, 'calc.py'), 'def add(a, b):\n    return a + b\n');
+
+    const res = await fetch(`${baseUrl}/api/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directory: scanDir
+      })
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.createdCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should prune orphan codemaps via POST /api/prune', async () => {
+    const pruneDir = path.join(testDir, 'prune-test-proj');
+    fs.mkdirSync(pruneDir, { recursive: true });
+
+    const res = await fetch(`${baseUrl}/api/prune`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directory: pruneDir
+      })
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(typeof data.prunedCount).toBe('number');
+  });
+
+  it('should return prompts list via GET /api/prompts and support curate/harvest prompts', async () => {
+    // 1. GET /api/prompts
+    const listRes = await fetch(`${baseUrl}/api/prompts`);
+    expect(listRes.status).toBe(200);
+    const listData = await listRes.json();
+    expect(listData.prompts).toHaveLength(2);
+    expect(listData.prompts.map((p: any) => p.name)).toContain('sd_curate');
+    expect(listData.prompts.map((p: any) => p.name)).toContain('sd_harvest');
+
+    // 2. POST /api/prompts/curate
+    const curateRes = await fetch(`${baseUrl}/api/prompts/curate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threshold: 2 })
+    });
+    expect(curateRes.status).toBe(200);
+    const curateData = await curateRes.json();
+    expect(curateData.messages).toBeDefined();
+    expect(curateData.messages[0].content.text).toContain('StormDrain');
+
+    // 3. POST /api/prompts/harvest
+    const harvestRes = await fetch(`${baseUrl}/api/prompts/harvest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 3, gitDiff: 'diff --git a/foo.ts b/foo.ts' })
+    });
+    expect(harvestRes.status).toBe(200);
+    const harvestData = await harvestRes.json();
+    expect(harvestData.messages).toBeDefined();
+    expect(harvestData.messages[0].content.text).toContain('Client Working Copy Diff');
+  });
+
+  it('should support depth and max_depth in GET /api/recall', async () => {
+    const res = await fetch(`${baseUrl}/api/recall?max_depth=2&limit=5`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.text).toBeDefined();
   });
 });
 

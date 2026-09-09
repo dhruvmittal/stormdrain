@@ -28,7 +28,7 @@ export const createMemoryMetadata = (
   context: string,
   tags: string[] = [],
   relations: any[] = [],
-  source: 'conversation' | 'indexer' | 'manual' | 'promotion' = 'manual',
+  source: string = 'manual',
   git_branch?: string | null,
   is_canonical?: boolean
 ): MemoryMetadata => {

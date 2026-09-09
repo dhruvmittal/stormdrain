@@ -9,6 +9,8 @@ import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
 import { MultiHopMemoryResult, MemoryType } from '../types';
 import { normalizeRepoPath } from '../utils/fileGraphScanner';
+import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
+import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
 export const startWebServer = (port: number = 3456, host: string = process.env.STORMDRAIN_HOST || '127.0.0.1') => {
   const app = express();
@@ -141,6 +143,48 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       res.json({ success: true, active: config.getActiveContext() });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/init', async (req, res) => {
+    try {
+      const { name, directory, submodule_policy } = req.body || {};
+      if (!name || typeof name !== 'string') {
+        res.status(400).json({ error: 'Context name is required' });
+        return;
+      }
+      if (!isValidContextName(name)) {
+        res.status(400).json({ error: 'Invalid context name: must contain only alphanumeric characters, dashes, or underscores' });
+        return;
+      }
+      let dir = directory ? path.resolve(String(directory)) : process.cwd();
+      if (ConfigManager.isSystemOrHomeRoot(dir) && name !== '_global') {
+        res.status(400).json({ error: `Cannot initialize context "${name}" on root or home directory "${dir}". Please specify a project sub-directory.` });
+        return;
+      }
+
+      const existing = config.getContext(name);
+      if (!existing) {
+        config.addContext(name, [dir]);
+      } else {
+        config.bindPathToContext(name, dir);
+      }
+      config.setActiveContext(name);
+
+      scaffoldAgentsMd(dir);
+
+      const targetCtx = getContext(name);
+      const submodulePolicy = (submodule_policy as 'dive' | 'sum') || 'sum';
+      const { createdCount } = targetCtx.syncFileGraph(dir, { submodulePolicies: submodulePolicy });
+
+      res.json({
+        success: true,
+        name,
+        directory: dir,
+        createdCount
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -406,7 +450,8 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
     try {
       const target = (req.query.target || req.query.targetFile || req.query.file) as string | undefined;
       const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 10;
-      const depth = req.query.depth ? parseInt(String(req.query.depth), 10) : 3;
+      const rawDepth = req.query.depth || req.query.max_depth || req.query.maxDepth;
+      const depth = rawDepth ? parseInt(String(rawDepth), 10) : 3;
       const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
 
       if (target) {
@@ -415,7 +460,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
           maxDepth: isNaN(depth) ? 3 : depth,
           maxResults: isNaN(limit) ? 10 : limit,
           cumulativeThreshold: 0.98,
-          branch: branch || null
+          branch: branch || undefined
         });
 
         if (multiHop.all.length === 0) {
@@ -496,7 +541,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const target = normalizeRepoPath(rawTarget, ctx.getWorkspaceRoots());
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
-      const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || null;
+      const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || undefined;
 
       let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops, branch);
       if (graphResults.length === 0 && path.basename(target) !== target) {
@@ -578,6 +623,166 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       res.json({ success: true, removed });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/scan', withContext(async (req, res, ctx) => {
+    try {
+      let dir = req.body?.directory || (req.query.directory ? String(req.query.directory) : undefined);
+      const targetContext = ctx.getContextName();
+      if (!dir) {
+        const ctxConfig = config.getContext(targetContext);
+        const validBound = ctxConfig?.paths?.find(p => !ConfigManager.isSystemOrHomeRoot(p));
+        if (validBound && fs.existsSync(validBound)) {
+          dir = validBound;
+        } else if (!ConfigManager.isSystemOrHomeRoot(process.cwd())) {
+          dir = process.cwd();
+        } else {
+          res.status(400).json({ error: 'No workspace directory specified for scan, and current working directory is home/root directory.' });
+          return;
+        }
+      }
+      dir = path.resolve(dir);
+      const submodulePolicy = (req.body?.submodule_policy || req.query.submodule_policy || 'sum') as 'dive' | 'sum';
+      const { createdCount, decayedCount } = ctx.syncFileGraph(dir, { submodulePolicies: submodulePolicy });
+      res.json({
+        success: true,
+        directory: dir,
+        createdCount,
+        decayedCount
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/prune', withContext(async (req, res, ctx) => {
+    try {
+      const dir = req.body?.directory || (req.query.directory ? String(req.query.directory) : undefined);
+      const targetContext = ctx.getContextName();
+      const ctxConfig = config.getContext(targetContext);
+      const validRoots = dir
+        ? [path.resolve(dir)]
+        : (ctxConfig?.paths || [process.cwd()]).filter(p => !ConfigManager.isSystemOrHomeRoot(p)).map(p => path.resolve(p));
+
+      if (validRoots.length === 0) {
+        res.status(400).json({ error: 'No valid workspace roots found to prune against. Please specify a directory.' });
+        return;
+      }
+
+      const { prunedCount } = ctx.pruneOrphanCodemaps(validRoots);
+      res.json({
+        success: true,
+        prunedCount
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  app.get('/api/prompts', (req, res) => {
+    res.json({
+      prompts: [
+        {
+          name: 'sd_curate',
+          description: 'Holistic memory curation prompt: guided review to consolidate micro-memories, promote generalized rules to _global, and link or prune graph concepts.',
+          arguments: [
+            {
+              name: 'target',
+              description: 'Optional target file path or memory ID to focus curation on. Leave empty for a prioritized graph-wide sweep.',
+              required: false,
+            },
+            {
+              name: 'threshold',
+              description: 'Optional micro-memory threshold for consolidation candidate detection (default: 3).',
+              required: false,
+            },
+            {
+              name: 'context',
+              description: 'Optional context namespace override (defaults to active workspace context).',
+              required: false,
+            },
+          ],
+        },
+        {
+          name: 'sd_harvest',
+          description: 'Discovery harvest prompt: extracts and persists architectural invariants, gotchas, decisions, and patterns discovered during recent work.',
+          arguments: [
+            {
+              name: 'limit',
+              description: 'Optional maximum number of recent commits and files to inspect (default: 5).',
+              required: false,
+            },
+            {
+              name: 'context',
+              description: 'Optional context namespace override (defaults to active workspace context).',
+              required: false,
+            },
+          ],
+        },
+      ]
+    });
+  });
+
+  app.post('/api/prompts/curate', withContext(async (req, res, ctx) => {
+    try {
+      const threshold = req.body?.threshold ? parseInt(String(req.body.threshold), 10) : 3;
+      const target = req.body?.target ? String(req.body.target).trim() : undefined;
+      const maxCandidates = req.body?.maxCandidates ? parseInt(String(req.body.maxCandidates), 10) : undefined;
+
+      const curateResult = await generateCuratePrompt(ctx, {
+        target: target || undefined,
+        threshold: isNaN(threshold) ? 3 : threshold,
+        maxCandidates
+      });
+
+      res.json({
+        description: curateResult.description,
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: curateResult.promptText,
+            },
+          },
+        ],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  app.post('/api/prompts/harvest', withContext(async (req, res, ctx) => {
+    try {
+      const limit = req.body?.limit ? parseInt(String(req.body.limit), 10) : 5;
+      const workspaceDir = req.body?.workspaceDir ? String(req.body.workspaceDir) : undefined;
+      const gitDiff = req.body?.gitDiff ? String(req.body.gitDiff) : undefined;
+
+      const harvestResult = await generateHarvestPrompt(ctx, {
+        limit: isNaN(limit) ? 5 : limit,
+        workspaceDir: workspaceDir || process.cwd(),
+      });
+
+      let promptText = harvestResult.promptText;
+      if (gitDiff && gitDiff.trim()) {
+        promptText += `\n\n### 📝 Client Working Copy Diff (Uncommitted Changes)\n\`\`\`diff\n${gitDiff.trim().substring(0, 10000)}\n\`\`\``;
+      }
+
+      res.json({
+        description: harvestResult.description,
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: promptText,
+            },
+          },
+        ],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   }));
 

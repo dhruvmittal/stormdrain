@@ -10,7 +10,7 @@ export interface MemoryDbRow {
   updated: string;
   accessed: string;
   access_count: number;
-  source: 'conversation' | 'indexer' | 'manual' | 'promotion';
+  source: string;
   expires: string | null;
   superseded_by: string | null;
   content: string;
