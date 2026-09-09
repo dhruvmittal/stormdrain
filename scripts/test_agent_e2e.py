@@ -59,8 +59,14 @@ def main():
         text=True
     )
 
+    def send_rpc(payload):
+        agent_proc.stdin.write(json.dumps(payload) + "\n")
+        agent_proc.stdin.flush()
+        line = agent_proc.stdout.readline()
+        return json.loads(line)
+
     def call_tool(req_id, tool_name, args):
-        payload = {
+        return send_rpc({
             "jsonrpc": "2.0",
             "id": req_id,
             "method": "tools/call",
@@ -68,13 +74,43 @@ def main():
                 "name": tool_name,
                 "arguments": args
             }
-        }
-        agent_proc.stdin.write(json.dumps(payload) + "\n")
-        agent_proc.stdin.flush()
-        line = agent_proc.stdout.readline()
-        return json.loads(line)
+        })
 
     try:
+        # Step 0: Initialize & check capabilities
+        print("Testing MCP initialize...")
+        init_res = send_rpc({"jsonrpc": "2.0", "id": "init-1", "method": "initialize", "params": {}})
+        assert init_res.get("result", {}).get("capabilities", {}).get("prompts") is not None, "Prompts capability missing"
+        assert init_res.get("result", {}).get("capabilities", {}).get("tools") is not None, "Tools capability missing"
+
+        # Step 0b: Test tools/list has all 13 tools
+        print("Testing tools/list...")
+        tools_res = send_rpc({"jsonrpc": "2.0", "id": "tools-1", "method": "tools/list", "params": {}})
+        tool_names = [t["name"] for t in tools_res.get("result", {}).get("tools", [])]
+        print("Tools returned:", tool_names)
+        assert len(tool_names) == 13, f"Expected 13 tools, got {len(tool_names)}: {tool_names}"
+        for expected in ["sd_read", "sd_recall", "sd_search", "sd_get", "sd_delete", "sd_consolidation_candidates", "sd_add", "sd_update", "sd_relate", "sd_scan", "sd_init", "sd_consolidate", "sd_prune"]:
+            assert expected in tool_names, f"Missing tool: {expected}"
+
+        # Step 0c: Test prompts/list
+        print("Testing prompts/list...")
+        prompts_res = send_rpc({"jsonrpc": "2.0", "id": "prompts-1", "method": "prompts/list", "params": {}})
+        prompt_names = [p["name"] for p in prompts_res.get("result", {}).get("prompts", [])]
+        print("Prompts returned:", prompt_names)
+        assert "sd_curate" in prompt_names
+        assert "sd_harvest" in prompt_names
+
+        # Step 0d: Test prompts/get
+        print("Testing prompts/get for sd_harvest...")
+        harvest_prompt = send_rpc({"jsonrpc": "2.0", "id": "prompts-2", "method": "prompts/get", "params": {"name": "sd_harvest", "arguments": {"limit": 2}}})
+        assert harvest_prompt.get("result", {}).get("messages") is not None
+        assert "StormDrain" in harvest_prompt["result"]["messages"][0]["content"]["text"]
+
+        print("Testing prompts/get for sd_curate...")
+        curate_prompt = send_rpc({"jsonrpc": "2.0", "id": "prompts-3", "method": "prompts/get", "params": {"name": "sd_curate", "arguments": {"threshold": 2}}})
+        assert curate_prompt.get("result", {}).get("messages") is not None
+        assert "StormDrain" in curate_prompt["result"]["messages"][0]["content"]["text"]
+
         # Step A: Add a memory (non-canonical on feature/cuda branch)
         print("Testing sd_add...")
         res = call_tool(1, "sd_add", {
@@ -216,6 +252,78 @@ def main():
         rel_content = res_rel.get("result", {}).get("content", [{}])[0].get("text", "")
         assert "Successfully linked" in rel_content
         assert "mem_dummy123456" in rel_content
+
+        # Step M: Test sd_read with offset and limit
+        print("Testing sd_read with offset and limit...")
+        res_read_slice = call_tool(11, "sd_read", {
+            "path": "sim/kernel.cu",
+            "offset": 2,
+            "limit": 2
+        })
+        read_slice_text = res_read_slice.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Lines 2-3 of" in read_slice_text
+
+        # Step N: Test sd_recall with max_depth
+        print("Testing sd_recall with max_depth...")
+        res_recall_depth = call_tool(12, "sd_recall", {
+            "target_file": "sim/kernel.cu",
+            "max_depth": 2
+        })
+        recall_depth_text = res_recall_depth.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Matrix Multiplication Block Size" in recall_depth_text
+
+        # Step O: Test sd_relate with 'type' parameter alias
+        print("Testing sd_relate with 'type' parameter...")
+        res_rel2 = call_tool(13, "sd_relate", {
+            "source_id": mem_id,
+            "target": "sim/kernel2.cu",
+            "type": "affects"
+        })
+        rel2_content = res_rel2.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Successfully linked" in rel2_content or "already exists" in rel2_content
+
+        # Step P: Test sd_consolidation_candidates with 'min_memories' alias
+        print("Testing sd_consolidation_candidates with min_memories...")
+        res_cand = call_tool(14, "sd_consolidation_candidates", {
+            "min_memories": 1
+        })
+        cand_text = res_cand.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Consolidation Candidates" in cand_text or "No consolidation candidates" in cand_text
+
+        # Step Q: Test sd_init
+        print("Testing sd_init...")
+        init_proj_dir = os.path.join(test_dir, "e2e_init_proj")
+        os.makedirs(init_proj_dir, exist_ok=True)
+        with open(os.path.join(init_proj_dir, "app.py"), "w") as f:
+            f.write("def main(): pass\n")
+        res_init = call_tool(15, "sd_init", {
+            "name": "e2e-init-context",
+            "directory": init_proj_dir
+        })
+        init_text = res_init.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_init result:", init_text)
+        assert "Successfully initialized context" in init_text
+        assert os.path.exists(os.path.join(init_proj_dir, "AGENTS.md"))
+
+        # Step R: Test sd_scan
+        print("Testing sd_scan...")
+        res_scan = call_tool(16, "sd_scan", {
+            "directory": init_proj_dir,
+            "context": "e2e-init-context"
+        })
+        scan_text = res_scan.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_scan result:", scan_text)
+        assert "Successfully scanned workspace" in scan_text
+
+        # Step S: Test sd_prune
+        print("Testing sd_prune...")
+        res_prune = call_tool(17, "sd_prune", {
+            "directory": init_proj_dir,
+            "context": "e2e-init-context"
+        })
+        prune_text = res_prune.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_prune result:", prune_text)
+        assert "Successfully pruned" in prune_text
 
         print("\nALL CLIENT-SERVER INTEGRATION TESTS PASSED SUCCESSFULLY!")
 
