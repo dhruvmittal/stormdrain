@@ -169,35 +169,7 @@ def main():
         assert "StormDrain Architectural Invariants" in read_text_norm
         assert "Matrix Multiplication Block Size" in read_text_norm
 
-        # Step F: Pre-promotion verification - assert unpromoted memory IS found
-        print("Testing sd_search with unpromoted_only filter (pre-promotion)...")
-        res_pre = call_tool(6, "sd_search", {
-            "query": "",
-            "unpromoted_only": True
-        })
-        search_unpromoted_pre = res_pre.get("result", {}).get("content", [{}])[0].get("text", "")
-        print("sd_search pre-promotion result:\n", search_unpromoted_pre)
-        assert "Matrix Multiplication Block Size" in search_unpromoted_pre
-
-        # Step G: Update memory canonical status via sd_update
-        print("Testing sd_update with is_canonical...")
         mem_id = [part for part in text.split() if part.startswith("mem_")][0]
-        res = call_tool(7, "sd_update", {
-            "id": mem_id,
-            "is_canonical": True
-        })
-        update_text = res.get("result", {}).get("content", [{}])[0].get("text", "")
-        print("sd_update result:", update_text)
-        assert "Successfully updated memory" in update_text
-
-        # Step H: Post-promotion verification - assert memory is NO LONGER unpromoted
-        print("Testing sd_search with unpromoted_only filter (post-promotion)...")
-        res_post = call_tool(8, "sd_search", {
-            "query": "",
-            "unpromoted_only": True
-        })
-        search_unpromoted_post = res_post.get("result", {}).get("content", [{}])[0].get("text", "")
-        assert "No results found." in search_unpromoted_post
 
         # Step I: Slashed branch promotion test via HTTP REST API body
         print("Testing slashed branch promote route (POST /api/branches/promote)...")

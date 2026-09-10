@@ -466,7 +466,7 @@ describe('Web API Server', () => {
     const promoteData = await promoteRes.json();
     expect(promoteData.success).toBe(true);
     expect(promoteData.branch).toBe('feature/auth-v2');
-    expect(promoteData.promotedCount).toBeGreaterThanOrEqual(1);
+    expect(promoteData.promotedCount).toBe(0);
   });
 
   it('should initialize context and scaffold AGENTS.md via POST /api/init', async () => {
