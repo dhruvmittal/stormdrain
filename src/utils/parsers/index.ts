@@ -5,11 +5,13 @@ import { MatlabParser } from './matlabParser';
 import { CppParser } from './cppParser';
 import { PythonParser } from './pythonParser';
 import { GenericParser } from './genericParser';
+import { HaskellParser } from './haskellParser';
 
 const tsParser = new TsParser();
 const matlabParser = new MatlabParser();
 const cppParser = new CppParser();
 const pythonParser = new PythonParser();
+const haskellParser = new HaskellParser();
 const genericParser = new GenericParser();
 
 export function getParserForFile(filePath: string): LanguageParser {
@@ -27,6 +29,9 @@ export function getParserForFile(filePath: string): LanguageParser {
   if (ext === '.py') {
     return pythonParser;
   }
+  if (['.hs', '.lhs'].includes(ext)) {
+    return haskellParser;
+  }
 
   return genericParser;
 }
@@ -37,3 +42,4 @@ export * from './matlabParser';
 export * from './cppParser';
 export * from './pythonParser';
 export * from './genericParser';
+export * from './haskellParser';

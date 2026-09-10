@@ -311,12 +311,10 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
-    const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
     const type = req.query.type as MemoryType | undefined;
-    const unpromotedOnly = req.query.unpromoted === 'true' || req.query.unpromoted === '1';
 
-    if (query || branch || type || unpromotedOnly) {
-      const results = ctx.searchMemories(query, true, { branch, type, unpromotedOnly });
+    if (query || type) {
+      const results = ctx.searchMemories(query, true, { type });
       res.json(results);
     } else {
       const memories = ctx.getDb().prepare(`SELECT id, type, title, confidence, created, updated, accessed, access_count, source, git_branch, is_canonical FROM memories ORDER BY updated DESC`).all();
@@ -325,17 +323,13 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   }));
 
   app.post('/api/memories', withContext(async (req, res, ctx) => {
-    const { type, title, content, tags, target, targets, targetFile, relationType, relations, gitBranch, git_branch, isCanonical, is_canonical } = req.body;
+    const { type, title, content, tags, target, targets, targetFile, relationType, relations } = req.body;
     if (!type || !title || !content) {
       res.status(400).json({ error: 'Missing required fields: type, title, and content are required' });
       return;
     }
     try {
       const targetArg = targets || target || targetFile;
-      const branchHeader = req.headers['x-stormdrain-branch'] as string | undefined;
-      const explicitBranch = gitBranch !== undefined ? gitBranch : git_branch;
-      const effectiveBranch = explicitBranch !== undefined ? explicitBranch : (branchHeader || null);
-      const effectiveCanonical = isCanonical !== undefined ? Boolean(isCanonical) : (is_canonical !== undefined ? Boolean(is_canonical) : undefined);
 
       const id = ctx.addMemory(
         type,
@@ -346,9 +340,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
         undefined,
         targetArg,
         relationType || 'affects',
-        relations,
-        effectiveBranch,
-        effectiveCanonical
+        relations
       );
       res.status(201).json({ success: true, id });
     } catch (err: any) {
@@ -381,8 +373,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
     const {
       title, content, tags, type, relations,
       addRelations, removeRelations, add_relations, remove_relations,
-      addTargets, removeTargets, add_targets, remove_targets,
-      is_canonical, isCanonical, git_branch, gitBranch
+      addTargets, removeTargets, add_targets, remove_targets
     } = req.body;
     try {
       ctx.updateMemory(id, content, title, tags, type, {
@@ -390,9 +381,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
         addRelations: addRelations || add_relations,
         removeRelations: removeRelations || remove_relations,
         addTargets: addTargets || add_targets,
-        removeTargets: removeTargets || remove_targets,
-        is_canonical: is_canonical !== undefined ? Boolean(is_canonical) : (isCanonical !== undefined ? Boolean(isCanonical) : undefined),
-        git_branch: git_branch !== undefined ? git_branch : gitBranch
+        removeTargets: removeTargets || remove_targets
       });
       res.json({ success: true });
     } catch (err: any) {
@@ -400,26 +389,13 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
     }
   }));
 
-  app.get('/api/branches', withContext(async (req, res, ctx) => {
-    try {
-      res.json({ branches: ctx.getBranches() });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
+  app.get('/api/branches', withContext(async (_req, res) => {
+    res.json({ branches: [] });
   }));
 
-  app.post('/api/branches/promote', withContext(async (req, res, ctx) => {
-    const branch = req.body.branch || req.query.branch;
-    if (!branch) {
-      res.status(400).json({ error: 'Field "branch" is required in request body or query' });
-      return;
-    }
-    try {
-      const count = ctx.promoteBranch(String(branch));
-      res.json({ success: true, branch, promotedCount: count });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
+  app.post('/api/branches/promote', withContext(async (req, res) => {
+    const branch = req.body.branch || req.query.branch || '';
+    res.json({ success: true, branch, promotedCount: 0 });
   }));
 
   app.delete('/api/memories/:id', withContext(async (req, res, ctx) => {
@@ -452,15 +428,13 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 10;
       const rawDepth = req.query.depth || req.query.max_depth || req.query.maxDepth;
       const depth = rawDepth ? parseInt(String(rawDepth), 10) : 3;
-      const branch = (req.query.branch || req.headers['x-stormdrain-branch']) as string | undefined;
 
       if (target) {
         const normTarget = normalizeRepoPath(target, ctx.getWorkspaceRoots());
         const multiHop = ctx.recallMultiHop(normTarget, {
           maxDepth: isNaN(depth) ? 3 : depth,
           maxResults: isNaN(limit) ? 10 : limit,
-          cumulativeThreshold: 0.98,
-          branch: branch || undefined
+          cumulativeThreshold: 0.98
         });
 
         if (multiHop.all.length === 0) {
@@ -541,11 +515,9 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const target = normalizeRepoPath(rawTarget, ctx.getWorkspaceRoots());
       const tokenBudget = req.query.tokenBudget ? parseInt(String(req.query.tokenBudget), 10) : 500;
       const hops = req.query.maxHops ? parseInt(String(req.query.maxHops), 10) : 2;
-      const branch = ((req.query.branch || req.headers['x-stormdrain-branch']) as string) || undefined;
-
-      let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops, branch);
+      let graphResults = ctx.recallGraph(target, isNaN(hops) ? 2 : hops);
       if (graphResults.length === 0 && path.basename(target) !== target) {
-        const baseNameRes = ctx.recallGraph(path.basename(target), isNaN(hops) ? 2 : hops, branch);
+        const baseNameRes = ctx.recallGraph(path.basename(target), isNaN(hops) ? 2 : hops);
         if (baseNameRes.length > 0) {
           graphResults = baseNameRes;
         }

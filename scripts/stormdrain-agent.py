@@ -175,10 +175,6 @@ class StormDrainApiClient:
         body_bytes = None
         headers = {"Accept": "application/json"}
 
-        _, branch = get_git_info()
-        if branch:
-            headers["X-StormDrain-Branch"] = branch
-
         if data is not None:
             body_bytes = json.dumps(data).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -333,17 +329,9 @@ class StormDrainMcpServer:
                             "type": "string",
                             "description": "Search query terms (optional if metadata filters are provided)"
                         },
-                        "branch": {
-                            "type": "string",
-                            "description": "Optional git branch filter"
-                        },
                         "type": {
                             "type": "string",
                             "description": "Optional memory type filter (decision, lesson, pattern, etc.)"
-                        },
-                        "unpromoted_only": {
-                            "type": "boolean",
-                            "description": "If true, returns only unpromoted (non-canonical) memories"
                         },
                         "context": context_prop
                     }
@@ -410,14 +398,6 @@ class StormDrainMcpServer:
                         "relation_type": {
                             "type": "string",
                             "description": "Relation type: affects, applies_to, depends_on, implements, related_to (default: affects)"
-                        },
-                        "git_branch": {
-                            "type": "string",
-                            "description": "Optional Git branch provenance override"
-                        },
-                        "is_canonical": {
-                            "type": "boolean",
-                            "description": "Whether to mark memory as canonical baseline repository knowledge"
                         },
                         "context": context_prop
                     },
@@ -662,8 +642,6 @@ class StormDrainMcpServer:
             if include_invariants:
                 norm_inv_target = normalize_client_path(file_path, git_root)
                 inv_params = {"target": norm_inv_target, "tokenBudget": 500}
-                if current_branch:
-                    inv_params["branch"] = current_branch
                 status, inv_data = self.client.request(
                     "GET",
                     "/api/invariants",
@@ -702,8 +680,6 @@ class StormDrainMcpServer:
                 params["depth"] = depth
             if target:
                 params["target"] = normalize_client_path(target, git_root)
-            if current_branch:
-                params["branch"] = current_branch
             status, data = self.client.request(
                 "GET",
                 "/api/recall",
@@ -717,16 +693,10 @@ class StormDrainMcpServer:
 
         elif name == "sd_search":
             query = arguments.get("query", "")
-            branch = arguments.get("branch")
             type_filter = arguments.get("type")
-            unpromoted_only = arguments.get("unpromoted_only")
             params = {"q": query}
-            if branch:
-                params["branch"] = branch
             if type_filter:
                 params["type"] = type_filter
-            if unpromoted_only is not None:
-                params["unpromoted"] = "true" if unpromoted_only else "false"
 
             status, data = self.client.request(
                 "GET",
@@ -787,10 +757,7 @@ class StormDrainMcpServer:
                 "targetFile": target_file,
                 "targets": targets,
                 "relationType": arguments.get("relation_type", "affects"),
-                "gitBranch": arguments.get("git_branch") or current_branch,
             }
-            if "is_canonical" in arguments:
-                payload["isCanonical"] = arguments["is_canonical"]
 
             if "relations" in arguments and isinstance(arguments["relations"], list):
                 norm_relations = []
@@ -818,7 +785,7 @@ class StormDrainMcpServer:
                 return {"isError": True, "content": [{"type": "text", "text": "Argument 'id' is required for sd_update."}]}
             payload = {}
             for field in (
-                "title", "content", "tags", "type", "is_canonical",
+                "title", "content", "tags", "type",
                 "add_targets", "remove_targets", "relations",
                 "add_relations", "remove_relations"
             ):

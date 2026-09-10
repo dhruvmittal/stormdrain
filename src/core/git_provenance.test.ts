@@ -5,7 +5,7 @@ import * as os from 'os';
 import Database from 'better-sqlite3';
 import { ContextManager } from './context';
 import { normalizeRepoPath, makeFileVertexId } from '../utils/fileGraphScanner';
-import { getCurrentGitBranch, isBranchMergedInto } from '../utils/gitUtils';
+import { getCurrentGitBranch } from '../utils/gitUtils';
 import { initSchema } from '../db/schema';
 
 describe('Git Branch Provenance & Path Normalization', () => {
@@ -260,28 +260,6 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(updated?.metadata.is_canonical).toBe(true);
     });
 
-    it('promotes entire branch via promoteBranch', () => {
-      const mem1 = ctx.addMemory('fact', 'Branch Fact 1', 'Content 1', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-p', false);
-      const mem2 = ctx.addMemory('decision', 'Branch Decision 2', 'Content 2', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-p', false);
-      const memOther = ctx.addMemory('fact', 'Other Branch Fact', 'Content 3', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-other', false);
-
-      const promotedCount = ctx.promoteBranch('feature-p');
-      expect(promotedCount).toBe(2);
-
-      expect(ctx.getMemory(mem1)?.metadata.is_canonical).toBe(true);
-      expect(ctx.getMemory(mem2)?.metadata.is_canonical).toBe(true);
-      expect(ctx.getMemory(memOther)?.metadata.is_canonical).toBe(false);
-    });
-
-    it('promotes and isolates slashed branch names like feature/login', () => {
-      const slashedBranch = 'feature/login';
-      const mem = ctx.addMemory('fact', 'Login Flow', 'Content', [], 'manual', undefined, undefined, 'affects', undefined, slashedBranch, false);
-
-      expect(ctx.getMemory(mem)?.metadata.is_canonical).toBe(false);
-      const promoted = ctx.promoteBranch(slashedBranch);
-      expect(promoted).toBe(1);
-      expect(ctx.getMemory(mem)?.metadata.is_canonical).toBe(true);
-    });
 
     it('allows unsetting git_branch to null without retaining old branch in SQLite', () => {
       const mem = ctx.addMemory('fact', 'Branch Fact', 'Content', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-to-clear', false);
@@ -352,23 +330,42 @@ describe('Git Branch Provenance & Path Normalization', () => {
   });
 
   describe('Search & Empty Query Crash Guard', () => {
-    it('handles empty query string with branch and unpromotedOnly filters safely without FTS syntax error', () => {
+    it('handles empty query string safely without FTS syntax error', () => {
       ctx.addMemory('fact', 'Unpromoted Fact', 'Specific fact', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-f', false);
-      ctx.addMemory('fact', 'Canonical Fact', 'Universal fact', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-f', true);
+      ctx.addMemory('decision', 'Canonical Decision', 'Universal fact', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-f', true);
 
-      // Empty query with unpromotedOnly filter should not throw FTS syntax error
-      const resultsUnpromoted = ctx.searchMemories('', true, { branch: 'feature-f', unpromotedOnly: true });
-      expect(resultsUnpromoted.length).toBe(1);
-      expect(resultsUnpromoted[0].title).toBe('Unpromoted Fact');
+      // Empty query with type filter should not throw FTS syntax error
+      const resultsType = ctx.searchMemories('', true, { type: 'decision' });
+      expect(resultsType.length).toBe(1);
+      expect(resultsType[0].title).toBe('Canonical Decision');
 
-      // Whitespace query with branch filter
-      const resultsBranch = ctx.searchMemories('   ', true, { branch: 'feature-f' });
-      expect(resultsBranch.length).toBe(2);
+      // Whitespace query with no type returns empty safely
+      const resultsEmpty = ctx.searchMemories('   ', true);
+      expect(resultsEmpty.length).toBe(0);
 
-      // Normal text query with branch filter
-      const resultsText = ctx.searchMemories('Specific', true, { branch: 'feature-f' });
+      // Normal text query returns matching memories
+      const resultsText = ctx.searchMemories('Specific', true);
       expect(resultsText.length).toBe(1);
       expect(resultsText[0].title).toBe('Unpromoted Fact');
+    });
+
+    it('searches across all memories universally without branch amnesia', () => {
+      // Memory with no branch (null)
+      ctx.addMemory('fact', 'General Fact', 'General database rule', [], 'manual', undefined, undefined, 'affects', undefined, null, false);
+      // Canonical memory on main
+      ctx.addMemory('invariant', 'Main Production Invariant', 'Production database rule', [], 'manual', undefined, undefined, 'affects', undefined, 'main', true);
+      // Memory on feature-x
+      ctx.addMemory('fact', 'Feature Fact', 'Feature database rule', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-x', false);
+      // Memory on feature-y
+      ctx.addMemory('fact', 'Other Feature Fact', 'Other database rule', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-y', false);
+
+      // Searching database returns all memories matching query universally
+      const searchRes = ctx.searchMemories('database', true);
+      const titles = searchRes.map(r => r.title);
+      expect(titles).toContain('General Fact');
+      expect(titles).toContain('Main Production Invariant');
+      expect(titles).toContain('Feature Fact');
+      expect(titles).toContain('Other Feature Fact');
     });
   });
 
@@ -464,47 +461,6 @@ describe('Git Branch Provenance & Path Normalization', () => {
     });
   });
 
-  describe('Automated PR / Squash Merge Promotion', () => {
-    it('automatically detects merged branches and promotes them in autoPromoteMergedBranches', () => {
-      const repoDir = path.join(testDir, 'auto-promote-repo');
-      fs.mkdirSync(repoDir, { recursive: true });
-      const exec = (cmd: string) => require('child_process').execSync(cmd, { cwd: repoDir, stdio: 'pipe' });
-
-      exec('git init -b main');
-      exec('git config user.email "test@example.com"');
-      exec('git config user.name "Test Runner"');
-      fs.writeFileSync(path.join(repoDir, 'README.md'), '# Initial');
-      exec('git add . && git commit -m "Initial commit"');
-
-      // Add unpromoted memory for branch feature/auth-squash
-      ctx.addMemory(
-        'concept',
-        'Auth Architecture',
-        'Details of auth overhaul',
-        ['auth'],
-        'manual',
-        undefined,
-        undefined,
-        'affects',
-        undefined,
-        'feature/auth-squash',
-        false
-      );
-
-      // Simulate a GitHub squash-merge commit on main referencing the PR branch
-      fs.writeFileSync(path.join(repoDir, 'auth.ts'), 'export const auth = true;');
-      exec('git add . && git commit -m "feat: auth overhaul (#42)\n\nMerged from branch feature/auth-squash"');
-
-      // Check autoPromoteMergedBranches
-      const promoted = ctx.autoPromoteMergedBranches(repoDir);
-      expect(promoted).toContain('feature/auth-squash');
-
-      // Verify in SQLite that memory is now is_canonical = 1
-      const row = ctx.getDb().prepare("SELECT is_canonical FROM memories WHERE git_branch = 'feature/auth-squash'").get() as any;
-      expect(row.is_canonical).toBe(1);
-    });
-  });
-
   describe('CI Detached HEAD Resolution', () => {
     it('resolves active branch from GITHUB_HEAD_REF when HEAD is detached', () => {
       const repoDir = path.join(testDir, 'ci-detached-repo');
@@ -532,8 +488,8 @@ describe('Git Branch Provenance & Path Normalization', () => {
     });
   });
 
-  describe('Branch-Segmented Hash Decay Guard', () => {
-    it('does not decay canonical memories when file is modified on a feature branch', () => {
+  describe('File Hash Change Decay & Extensionless Target Recall', () => {
+    it('decays memories attached to modified files on hash mismatch in syncFileGraph', () => {
       const repoDir = path.join(testDir, 'decay-guard-repo');
       fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
       const exec = (cmd: string) => require('child_process').execSync(cmd, { cwd: repoDir, stdio: 'pipe' });
@@ -545,10 +501,10 @@ describe('Git Branch Provenance & Path Normalization', () => {
       fs.writeFileSync(testFile, 'export const version = 1;\n');
       exec('git add . && git commit -m "Initial service"');
 
-      // Initial scan on main
+      // Initial scan
       ctx.syncFileGraph(repoDir);
 
-      // Add a canonical memory attached to service.ts
+      // Add a memory attached to service.ts
       const canonMemId = ctx.addMemory(
         'fact',
         'Canonical Service Rule',
@@ -557,27 +513,21 @@ describe('Git Branch Provenance & Path Normalization', () => {
         'manual',
         undefined,
         'src/service.ts',
-        'affects',
-        undefined,
-        'main',
-        true
+        'affects'
       );
       const initialConf = (ctx.getMemory(canonMemId) as any).metadata.confidence;
       expect(initialConf).toBe(1.0);
 
-      // Now switch git branch to feature/experiment
-      exec('git checkout -b feature/experiment');
-
-      // Mutate file on feature branch
+      // Mutate file
       fs.writeFileSync(testFile, 'export const version = 2;\nexport const proto = true;\n');
 
-      // Run syncFileGraph while on feature/experiment
-      const scanResult = ctx.syncFileGraph(repoDir);
+      // Run syncFileGraph
+      ctx.syncFileGraph(repoDir);
 
-      // Canonical memory should NOT have decayed!
+      // Attached memory decays on file change
       const canonMemAfter = ctx.getMemory(canonMemId) as any;
-      expect(canonMemAfter.metadata.confidence).toBe(1.0);
-      expect(canonMemAfter.metadata.tags).not.toContain('stale');
+      expect(canonMemAfter.metadata.confidence).toBeLessThan(1.0);
+      expect(canonMemAfter.metadata.tags).toContain('stale');
     });
 
     it('handles extensionless files (Makefile, Dockerfile) in recallMultiHop', () => {
@@ -598,15 +548,6 @@ describe('Git Branch Provenance & Path Normalization', () => {
       const recallResults = ctx.recallMultiHop('Makefile');
       expect(recallResults.all.length).toBeGreaterThan(0);
       expect(recallResults.all[0].title).toBe('Make Rule');
-    });
-
-    it('is immune to shell command injection in isBranchMergedInto', () => {
-      const canaryFile = path.join(testDir, 'vuln_canary.txt');
-      const maliciousBranch = `$(touch ${canaryFile})`;
-
-      // Should return false safely without executing subshell
-      expect(isBranchMergedInto(maliciousBranch, 'HEAD', testDir)).toBe(false);
-      expect(fs.existsSync(canaryFile)).toBe(false);
     });
   });
 });

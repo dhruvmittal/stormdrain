@@ -10,7 +10,6 @@ import { GitManager } from './git';
 import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
-import { getCurrentGitBranch, isBranchMergedInto } from '../utils/gitUtils';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
 import { asyncDiskQueue } from '../utils/asyncDiskQueue';
 
@@ -132,8 +131,8 @@ export class ContextManager {
       }
     }
 
-    const effectiveBranch = gitBranch !== undefined ? gitBranch : (getCurrentGitBranch() || null);
-    const effectiveCanonical = isCanonical !== undefined ? isCanonical : true;
+    const effectiveBranch = gitBranch ?? null;
+    const effectiveCanonical = isCanonical ?? true;
 
     const memory: Memory = {
       metadata: createMemoryMetadata(id, type, title, this.name, tags, relations, source, effectiveBranch, effectiveCanonical),
@@ -578,51 +577,14 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  /**
-   * Automatically detect unpromoted branches in SQLite that have merged into targetRef (default: HEAD).
-   * Supports squash-merges, PR merges, and direct fast-forward/merge commits.
-   */
-  public autoPromoteMergedBranches(cwd: string = process.cwd()): string[] {
-    try {
-      const unpromotedRows = this.db.prepare(`
-        SELECT DISTINCT git_branch 
-        FROM memories 
-        WHERE is_canonical = 0 
-          AND git_branch IS NOT NULL 
-          AND git_branch != '' 
-          AND git_branch NOT IN ('main', 'master')
-      `).all() as Array<{ git_branch: string }>;
-
-      if (!unpromotedRows || unpromotedRows.length === 0) {
-        return [];
-      }
-
-      const promoted: string[] = [];
-      for (const row of unpromotedRows) {
-        const branch = row.git_branch;
-        if (isBranchMergedInto(branch, 'HEAD', cwd)) {
-          const count = this.promoteBranch(branch);
-          if (count > 0) {
-            promoted.push(branch);
-          }
-        }
-      }
-      return promoted;
-    } catch {
-      return [];
-    }
+  public autoPromoteMergedBranches(_cwd: string = process.cwd()): string[] {
+    return [];
   }
 
   public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number; autoPromotedBranches?: string[] } {
-    // 1. Auto-promote any unpromoted branches that have merged into the current branch / HEAD
-    const autoPromotedBranches = this.autoPromoteMergedBranches(workspaceDir);
-
     const vertices = generateWorkspaceFileVertices(workspaceDir, scanOptions);
     let createdCount = 0;
     let decayedCount = 0;
-
-    const activeBranch = getCurrentGitBranch(workspaceDir);
-    const isScanningCanonical = !activeBranch || activeBranch === 'main' || activeBranch === 'master';
 
     for (const v of vertices) {
       const existing = this.getMemory(v.id);
@@ -652,19 +614,6 @@ export class ContextManager {
           for (const rel of attachedRelations) {
             const attachedMem = this.getMemory(rel.source_id);
             if (attachedMem && attachedMem.metadata.type !== 'codemap') {
-              const memCanonical = Boolean(attachedMem.metadata.is_canonical);
-              const memBranch = attachedMem.metadata.git_branch;
-
-              // Branch-segmented decay guard:
-              // - Canonical memories are only decayed when scanning on a canonical branch.
-              // - Non-canonical feature memories are only decayed if they match the active branch.
-              if (memCanonical && !isScanningCanonical) {
-                continue; // Do not let feature branch edits decay production canonical memories
-              }
-              if (!memCanonical && memBranch && activeBranch && memBranch !== activeBranch) {
-                continue; // Do not decay other branch's memories
-              }
-
               const oldConf = attachedMem.metadata.confidence;
               attachedMem.metadata.confidence = Math.max(0.3, Math.round(oldConf * 0.75 * 100) / 100);
               attachedMem.metadata.updated = new Date().toISOString();
@@ -1295,21 +1244,14 @@ export class ContextManager {
     const doSearch = (db: Database.Database, ctxName: string) => {
       try {
         if (!safeQuery) {
-          if (!options || (!options.branch && !options.type && !options.unpromotedOnly)) {
+          if (!options || !options.type) {
             return [];
           }
           let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap'";
           const params: any[] = [];
-          if (options?.branch) {
-            sql += ' AND m.git_branch = ?';
-            params.push(options.branch);
-          }
           if (options?.type) {
             sql += ' AND m.type = ?';
             params.push(options.type);
-          }
-          if (options?.unpromotedOnly) {
-            sql += ' AND (m.is_canonical = 0 OR m.is_canonical IS NULL)';
           }
           sql += ' ORDER BY m.updated DESC LIMIT 20';
           const rows = db.prepare(sql).all(...params) as Array<MemoryDbRow & { content_snippet: string }>;
@@ -1323,16 +1265,9 @@ export class ContextManager {
           WHERE memories_fts MATCH ?
         `;
         const params: any[] = [safeQuery];
-        if (options?.branch) {
-          sql += ' AND m.git_branch = ?';
-          params.push(options.branch);
-        }
         if (options?.type) {
           sql += ' AND m.type = ?';
           params.push(options.type);
-        }
-        if (options?.unpromotedOnly) {
-          sql += ' AND (m.is_canonical = 0 OR m.is_canonical IS NULL)';
         }
         sql += ' ORDER BY rank LIMIT 20';
 
@@ -1374,34 +1309,11 @@ export class ContextManager {
   }
 
   public getBranches(): Array<{ git_branch: string; count: number; canonical_count: number; unpromoted_count: number }> {
-    const rows = this.db.prepare(`
-      SELECT git_branch, COUNT(*) as count, SUM(CASE WHEN is_canonical = 1 THEN 1 ELSE 0 END) as canonical_count
-      FROM memories
-      WHERE git_branch IS NOT NULL AND git_branch != ''
-      GROUP BY git_branch
-    `).all() as Array<{ git_branch: string; count: number; canonical_count: number }>;
-    return rows.map(r => ({ ...r, unpromoted_count: r.count - r.canonical_count }));
+    return [];
   }
 
-  public promoteBranch(branch: string): number {
-    const rows = this.db.prepare(
-      'SELECT id FROM memories WHERE git_branch = ? AND (is_canonical = 0 OR is_canonical IS NULL)'
-    ).all(branch) as Array<{ id: string }>;
-    if (rows.length === 0) return 0;
-
-    this.db.prepare('UPDATE memories SET is_canonical = 1 WHERE git_branch = ?').run(branch);
-    for (const { id } of rows) {
-      try {
-        const mem = this.getMemory(id);
-        if (mem) {
-          mem.metadata.is_canonical = true;
-          this.saveMemory(mem, `[stormdrain] promote: memory ${id} on branch ${branch}`);
-        }
-      } catch (err) {
-        console.warn(`[stormdrain] Failed to write memory ${id} markdown during promote:`, err);
-      }
-    }
-    return rows.length;
+  public promoteBranch(_branch: string): number {
+    return 0;
   }
 
   public findConsolidationCandidates(threshold?: number): ConsolidationCandidate[] {

@@ -156,17 +156,9 @@ export class StormDrainMcpServer {
                 type: 'string',
                 description: 'Search query (optional if metadata filters are provided)'
               },
-              branch: {
-                type: 'string',
-                description: 'Optional git branch filter'
-              },
               type: {
                 type: 'string',
                 description: 'Optional memory type filter (decision, lesson, pattern, etc.)'
-              },
-              unpromoted_only: {
-                type: 'boolean',
-                description: 'If true, returns only unpromoted (non-canonical) memories'
               },
               context: contextProp
             }
@@ -266,14 +258,6 @@ export class StormDrainMcpServer {
                 type: 'string',
                 description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
               },
-              git_branch: {
-                type: 'string',
-                description: 'Optional Git branch provenance override (defaults to current git branch)'
-              },
-              is_canonical: {
-                type: 'boolean',
-                description: 'Whether to mark memory as canonical baseline repository knowledge (defaults to true for main/master, false for feature branches)'
-              },
               context: contextProp
             },
             required: ['type', 'title', 'content']
@@ -303,10 +287,6 @@ export class StormDrainMcpServer {
                   required: ['target']
                 },
                 description: 'Replace full relations list'
-              },
-              is_canonical: {
-                type: 'boolean',
-                description: 'Set to true to mark or promote as canonical repository baseline knowledge'
               },
               context: contextProp
             },
@@ -521,11 +501,9 @@ export class StormDrainMcpServer {
 
         if (request.params.name === 'sd_search') {
           const query = (request.params.arguments?.query as string) || '';
-          const branch = request.params.arguments?.branch as string | undefined;
           const memType = request.params.arguments?.type as MemoryType | undefined;
-          const unpromotedOnly = Boolean(request.params.arguments?.unpromoted_only);
 
-          const results = ctx.searchMemories(query, true, { branch, type: memType, unpromotedOnly }) as Array<{ type: string; title: string; id: string; content_snippet?: string; context?: string; git_branch?: string; is_canonical?: boolean | number }>;
+          const results = ctx.searchMemories(query, true, { type: memType }) as Array<{ type: string; title: string; id: string; content_snippet?: string; context?: string }>;
           
           if (results.length === 0) {
             return { content: [{ type: 'text', text: 'No results found.' }] };
@@ -645,8 +623,6 @@ export class StormDrainMcpServer {
             targets?: string[] | string;
             relations?: Array<{ target: string; type?: RelationType }>;
             relation_type?: RelationType;
-            git_branch?: string;
-            is_canonical?: boolean;
           };
           const targets = args.targets || args.target_file;
           const id = ctx.addMemory(
@@ -658,9 +634,7 @@ export class StormDrainMcpServer {
             undefined,
             targets,
             args.relation_type || 'affects',
-            args.relations,
-            args.git_branch,
-            args.is_canonical
+            args.relations
           );
           const mem = ctx.getMemory(id);
           let linkMsg = '';
@@ -682,13 +656,11 @@ export class StormDrainMcpServer {
             relations?: Array<{ target: string; type: RelationType }>;
             add_targets?: string[] | string;
             remove_targets?: string[] | string;
-            is_canonical?: boolean;
           };
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
             relations: args.relations,
             addTargets: args.add_targets,
-            removeTargets: args.remove_targets,
-            is_canonical: args.is_canonical
+            removeTargets: args.remove_targets
           });
           return { content: [{ type: 'text', text: `Successfully updated memory ${args.id} in context "${targetContext}"` }] };
         }

@@ -30,7 +30,7 @@ export const createMemoryMetadata = (
   relations: any[] = [],
   source: string = 'manual',
   git_branch?: string | null,
-  is_canonical?: boolean
+  is_canonical: boolean = true
 ): MemoryMetadata => {
   const now = new Date().toISOString();
   return {
@@ -48,7 +48,7 @@ export const createMemoryMetadata = (
     expires: null,
     superseded_by: null,
     relations,
-    git_branch: typeof git_branch === 'string' ? git_branch : (git_branch ? String(git_branch) : null),
-    is_canonical: Boolean(is_canonical)
+    git_branch: git_branch ?? null,
+    is_canonical: is_canonical ?? true
   };
 };
