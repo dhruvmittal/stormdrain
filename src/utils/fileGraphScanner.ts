@@ -20,10 +20,11 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.cpp', '.hpp', '.cc', '.cxx', '.c', '.h', '.hh',
   '.m',
   '.py',
-  '.ts', '.tsx', '.js', '.jsx',
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.rs',
   '.go',
-  '.java', '.cs', '.vb'
+  '.java', '.cs', '.vb',
+  '.hs', '.lhs'
 ]);
 
 const IGNORED_DIRS = new Set([
@@ -267,7 +268,7 @@ export function generateWorkspaceFileVertices(
     try {
       const content = fs.readFileSync(fullPath, 'utf8');
       const lines = content.split('\n').slice(0, 15);
-      const commentLines = lines.filter(l => l.trim().startsWith('//') || l.trim().startsWith('#') || l.trim().startsWith('*') || l.trim().startsWith('%'));
+      const commentLines = lines.filter(l => l.trim().startsWith('//') || l.trim().startsWith('#') || l.trim().startsWith('*') || l.trim().startsWith('%') || l.trim().startsWith('--') || l.trim().startsWith('{-'));
       if (commentLines.length > 0) {
         summaryText += `\n\n### Top Comments / Header Summary\n${commentLines.join('\n')}`;
       }
