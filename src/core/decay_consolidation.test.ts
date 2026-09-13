@@ -91,7 +91,7 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
     );
 
     const mem2 = ctx.addMemory(
-      'lesson',
+      'warning',
       'Stream Chunking Optimization',
       'Chunk size of 64KB yields best throughput.',
       ['perf'],
@@ -144,7 +144,7 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
 
     // 1. Add other memories to link to/from
     const otherMem1 = ctx.addMemory('concept', 'IP Addressing', 'Content', [], 'manual');
-    const otherMem2 = ctx.addMemory('pattern', 'Retry Mechanism', 'Content', [], 'manual');
+    const otherMem2 = ctx.addMemory('concept', 'Retry Mechanism', 'Content', [], 'manual');
 
     // 2. Add micro-memories glommed onto network_helper.ts with relations
     const mem1 = ctx.addMemory(
@@ -160,7 +160,7 @@ describe('Memory Decay & Neighborhood Consolidation Engine', () => {
     ctx.addRelation(mem1, otherMem1, 'supports');
 
     const mem2 = ctx.addMemory(
-      'lesson',
+      'warning',
       'Socket Buffering',
       'Use direct buffers.',
       ['buffer'],

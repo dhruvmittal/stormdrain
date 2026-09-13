@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
-import { MultiHopMemoryResult, MemoryType } from '../types';
+import { MultiHopMemoryResult, MemoryType, toCanonicalType } from '../types';
 import { normalizeRepoPath } from '../utils/fileGraphScanner';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
@@ -224,10 +224,11 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
     // Type counts breakdown
     const typeRows = db.prepare(`SELECT type, COUNT(*) as count FROM memories GROUP BY type`).all() as Array<{ type: string; count: number }>;
-    const counts: Record<string, number> = { total: 0, concept: 0, pattern: 0, guide: 0, lesson: 0, fact: 0, warning: 0, codemap: 0, sequence: 0 };
+    const counts: Record<string, number> = { total: 0, fact: 0, decision: 0, guide: 0, warning: 0, concept: 0, codemap: 0 };
     typeRows.forEach(r => {
-      counts[r.type] = r.count;
-      if (r.type !== 'codemap') counts.total += r.count;
+      const canonicalType = toCanonicalType(r.type);
+      counts[canonicalType] = (counts[canonicalType] || 0) + r.count;
+      if (canonicalType !== 'codemap') counts.total += r.count;
     });
 
     // Time calculations

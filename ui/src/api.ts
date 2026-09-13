@@ -208,17 +208,21 @@ export interface ReadToolSettings {
   highlightAsPrimary: boolean;
 }
 
+export const MEMORY_TYPES = ['all', 'fact', 'decision', 'guide', 'warning', 'concept', 'codemap'] as const;
+export type MemoryTypeFilter = typeof MEMORY_TYPES[number];
+
+export const CREATABLE_MEMORY_TYPES = ['fact', 'decision', 'guide', 'warning', 'concept'] as const;
+export type CreatableMemoryType = typeof CREATABLE_MEMORY_TYPES[number];
+
 export interface GraphColorSettings {
   nodes: {
-    concept: string;
-    pattern: string;
-    guide: string;
-    lesson: string;
-    warning: string;
     fact: string;
+    decision: string;
+    warning: string;
+    concept: string;
+    guide: string;
     codemap: string;
-    sequence: string;
-    [key: string]: string;
+    [key: string]: string | undefined;
   };
   edges: {
     affects: string;
@@ -342,14 +346,13 @@ export interface DashboardStats {
   graphHealthScore: number;
   counts: {
     total: number;
-    concept: number;
-    pattern: number;
-    guide: number;
-    lesson: number;
     fact: number;
+    decision: number;
+    guide: number;
     warning: number;
+    concept: number;
     codemap: number;
-    sequence: number;
+    [key: string]: number | undefined;
   };
   velocity: {
     last24h: number;

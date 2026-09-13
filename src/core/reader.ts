@@ -215,9 +215,9 @@ export class FileReader {
       return '';
     }
 
-    // Sort: warnings/lessons first, then high confidence / direct depth
+    // Sort: warnings first, then facts/decisions/guides, then high confidence / direct depth
     const sorted = [...memories].sort((a, b) => {
-      const typeScore = (t: string) => (t === 'warning' ? 3 : t === 'lesson' ? 2 : 1);
+      const typeScore = (t: string) => (t === 'warning' ? 5 : t === 'fact' ? 4 : t === 'decision' ? 3 : t === 'guide' ? 2 : 1);
       const scoreDiff = typeScore(b.type) - typeScore(a.type);
       if (scoreDiff !== 0) return scoreDiff;
       if (a.depth !== b.depth) return a.depth - b.depth;

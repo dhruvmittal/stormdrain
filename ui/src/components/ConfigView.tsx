@@ -20,14 +20,12 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
     desc: 'Electric blues, cyans, ambers, and purples',
     colors: {
       nodes: {
-        concept: '#38bdf8',
-        codemap: '#06b6d4',
         fact: '#10b981',
-        lesson: '#f59e0b',
-        pattern: '#8b5cf6',
+        decision: '#3b82f6',
         warning: '#ef4444',
+        concept: '#38bdf8',
         guide: '#ec4899',
-        sequence: '#6366f1'
+        codemap: '#06b6d4'
       },
       edges: {
         imports: '#38bdf8',
@@ -51,14 +49,12 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
     desc: 'Deep marine blues, teals, emeralds, and aquas',
     colors: {
       nodes: {
-        concept: '#0284c7',
-        codemap: '#0d9488',
         fact: '#059669',
-        lesson: '#d97706',
-        pattern: '#0369a1',
+        decision: '#0284c7',
         warning: '#e11d48',
+        concept: '#38bdf8',
         guide: '#2dd4bf',
-        sequence: '#2563eb'
+        codemap: '#0d9488'
       },
       edges: {
         imports: '#0d9488',
@@ -82,14 +78,12 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
     desc: 'Warm ambers, corals, crimsons, and golden sands',
     colors: {
       nodes: {
-        concept: '#f97316',
-        codemap: '#fb923c',
         fact: '#84cc16',
-        lesson: '#eab308',
-        pattern: '#a855f7',
+        decision: '#f97316',
         warning: '#dc2626',
+        concept: '#fb923c',
         guide: '#f43f5e',
-        sequence: '#d97706'
+        codemap: '#d97706'
       },
       edges: {
         imports: '#fb923c',
@@ -113,14 +107,12 @@ const PALETTE_PRESETS: Array<{ name: string; desc: string; colors: GraphColorSet
     desc: 'Minimal high-contrast slates and silvers',
     colors: {
       nodes: {
-        concept: '#94a3b8',
-        codemap: '#cbd5e1',
         fact: '#64748b',
-        lesson: '#e2e8f0',
-        pattern: '#94a3b8',
+        decision: '#94a3b8',
         warning: '#f87171',
+        concept: '#e2e8f0',
         guide: '#f1f5f9',
-        sequence: '#475569'
+        codemap: '#cbd5e1'
       },
       edges: {
         imports: '#cbd5e1',
@@ -180,14 +172,12 @@ const DEFAULT_SETTINGS: StormDrainSettings = {
   },
   colors: {
     nodes: {
-      concept: '#38bdf8',
-      codemap: '#06b6d4',
       fact: '#10b981',
-      lesson: '#f59e0b',
-      pattern: '#8b5cf6',
+      decision: '#3b82f6',
       warning: '#ef4444',
+      concept: '#38bdf8',
       guide: '#ec4899',
-      sequence: '#6366f1'
+      codemap: '#06b6d4'
     },
     edges: {
       imports: '#38bdf8',
@@ -1078,14 +1068,12 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ dataVersion = 0, onConfi
             </div>
             <div className="colors-grid">
               {[
-                { key: 'concept', label: 'Concept', desc: 'Mental models & abstract knowledge' },
+                { key: 'fact', label: 'Fact', desc: 'Hard structural invariants & system truths (tag #invariant)' },
+                { key: 'decision', label: 'Decision', desc: 'Architectural design decisions & ADR trade-offs' },
+                { key: 'warning', label: 'Warning', desc: 'Critical failure modes, traps, and gotchas' },
+                { key: 'concept', label: 'Concept', desc: 'High-level mental models & core domain abstractions' },
+                { key: 'guide', label: 'Guide', desc: 'Consolidated workflows, procedures & sequences' },
                 { key: 'codemap', label: 'Codemap (Source File)', desc: 'Source file vertices in codebase DAG' },
-                { key: 'fact', label: 'Fact', desc: 'Invariants & configuration rules' },
-                { key: 'lesson', label: 'Lesson', desc: 'Post-incident takeaways' },
-                { key: 'pattern', label: 'Pattern', desc: 'Design blueprints & architectural recipes' },
-                { key: 'warning', label: 'Warning', desc: 'Failure modes, traps & gotchas' },
-                { key: 'guide', label: 'Guide', desc: 'Consolidated super-memories' },
-                { key: 'sequence', label: 'Sequence', desc: 'Step-by-step procedures' },
               ].map((item) => {
                 const nodeColors = settings.colors?.nodes || DEFAULT_SETTINGS.colors!.nodes;
                 const currentColor = (nodeColors as any)[item.key] || '#38bdf8';

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { api } from '../api';
+import { api, MEMORY_TYPES } from '../api';
 import MemoryEditor from './MemoryEditor';
 import { Search, Plus, ArrowUp, ArrowDown, ArrowUpDown, X } from 'lucide-react';
 
@@ -10,8 +10,6 @@ interface MemoryBrowserProps {
 
 type SortField = 'type' | 'title' | 'confidence' | 'updated' | 'accessed';
 type SortDirection = 'asc' | 'desc';
-
-const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
 const ROW_HEIGHT = 48;
 const OVERSCAN = 5;

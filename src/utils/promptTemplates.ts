@@ -297,7 +297,7 @@ export interface HarvestPromptResult {
 /**
  * Generate a structured discovery harvest prompt for an AI agent or developer.
  * Inspects recent git commits and modified files, cross-references existing memories,
- * and prompts for high-signal discoveries (warning, fact, lesson, pattern, sequence, guide).
+ * and prompts for high-signal discoveries (warning, fact, decision, guide, concept).
  */
 export async function generateHarvestPrompt(
   ctx: ContextManager,
@@ -414,13 +414,12 @@ Do NOT review code quality or audit PRs. Capture **concrete discoveries already 
 | Memory Type | Core Question to Ask | Example Discovery |
 | :--- | :--- | :--- |
 | **\`warning\`** | *What footgun, subtle hazard, or anti-pattern must future sessions avoid?* | *"Do not use \`git branch --merged\` for squash merges; squash merges produce new commit hashes."* |
-| **\`fact\`** | *What hard structural invariant or caller contract did you establish or uncover?* | *"Memories on feature branches must have \`is_canonical == 1\` to cross into \`main\`."* |
-| **\`lesson\`** | *What tricky bug or unexpected failure mode did you diagnose and solve?* | *"In NixOS, Vitest subprocesses need \`nix develop --command\` to link shared libraries."* |
-| **\`pattern\`** | *What reusable structural pattern or convention was adopted in this codebase?* | *"Use parent directory walking to find Git root instead of spawning shell subprocesses."* |
-| **\`sequence\`** | *What strict ordering of steps or lifecycle protocol is required here?* | *"Promotion order: 1. Check reachability, 2. Execute SQL update, 3. Invalidate memory cache."* |
-| **\`guide\`** | *What end-to-end procedural workflow or subsystem rule was formulated?* | *"Guide on testing git branch provenance across mock git worktrees."* |
+| **\`fact\`** | *What hard structural invariant or caller contract did you establish or uncover? (Tag with \`#invariant\` for hard invariants)* | *"Memories on feature branches must have \`is_canonical == 1\` to cross into \`main\`."* |
+| **\`decision\`** | *What architectural decision, design trade-off, or rationale was chosen?* | *"Use SQLite startup convergence over manual CLI migration commands."* |
+| **\`guide\`** | *What end-to-end procedural workflow, multi-step sequence, or lifecycle protocol was formulated?* | *"Promotion order: 1. Check reachability, 2. Execute SQL update, 3. Invalidate memory cache."* |
+| **\`concept\`** | *What high-level mental model or core domain abstraction connects multiple files?* | *"State machine lifecycle uniting engine interface and transport worker."* |
 
-*(Note: High-level architectural \`concept\` nodes and AST \`codemap\` files are managed separately; do not create them during this harvest.)*
+*(Note: AST \`codemap\` files are scanner-managed; do not create them during this harvest.)*
 
 ---
 
@@ -435,7 +434,7 @@ For any genuine discovery not already recorded above, immediately call \`sd_add(
 
 \`\`\`json
 sd_add({
-  "type": "warning" | "fact" | "lesson" | "pattern" | "sequence" | "guide",
+  "type": "fact" | "decision" | "guide" | "warning" | "concept",
   "title": "<Concise summary>",
   "content": "<Detailed mechanism, rationale, or reproduction>",
   "target_file": "<path/to/primary/file>",

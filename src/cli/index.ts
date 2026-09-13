@@ -832,13 +832,11 @@ const completeContexts = (complete: any) => {
 };
 
 const completeMemoryTypes = (complete: any) => {
-  complete('concept', 'Mental models & abstract cross-cutting knowledge');
-  complete('fact', 'System invariants & configuration rules');
-  complete('lesson', 'Post-incident takeaways & debugging lessons');
-  complete('pattern', 'Design blueprints & architectural recipes');
-  complete('warning', 'Critical gotchas, failure modes & anti-patterns');
-  complete('guide', 'Consolidated comprehensive knowledge guides');
-  complete('sequence', 'Step-by-step procedures');
+  complete('fact', 'Hard structural invariants, system truths & rules (tag #invariant)');
+  complete('decision', 'Architectural decisions & ADR rationale');
+  complete('warning', 'Critical gotchas, failure modes, anti-patterns & pitfalls');
+  complete('concept', 'High-level mental models & core domain abstractions');
+  complete('guide', 'Procedures, workflows & multi-step sequences');
 };
 
 const completeRelationTypes = (complete: any) => {

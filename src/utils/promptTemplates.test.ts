@@ -36,7 +36,7 @@ describe('Prompt Templates Engine: /sd_curate', () => {
       'src/core/context.ts'
     );
     ctx.addMemory(
-      'pattern',
+      'concept',
       'Transaction Rollback Pattern',
       'Always wrap SQLite updates in immediate transactions.',
       ['#pattern', '#sqlite'],
@@ -45,7 +45,7 @@ describe('Prompt Templates Engine: /sd_curate', () => {
       'src/core/context.ts'
     );
     ctx.addMemory(
-      'lesson',
+      'warning',
       'FTS Index Desync Gotcha',
       'Deleting memory requires explicit FTS purge.',
       ['#lesson', '#fts'],
@@ -74,7 +74,7 @@ describe('Prompt Templates Engine: /sd_curate', () => {
   it('generates graph-wide sweep curation prompt identifying consolidation candidates, promotion candidates, and orphans', async () => {
     // 1. Target with 3 micro-memories
     ctx.addMemory(
-      'pattern',
+      'concept',
       'Scanner Pattern 1',
       'First scanner pattern',
       [],
@@ -83,7 +83,7 @@ describe('Prompt Templates Engine: /sd_curate', () => {
       'src/utils/scanner.ts'
     );
     ctx.addMemory(
-      'pattern',
+      'concept',
       'Scanner Pattern 2',
       'Second scanner pattern',
       [],
@@ -92,7 +92,7 @@ describe('Prompt Templates Engine: /sd_curate', () => {
       'src/utils/scanner.ts'
     );
     ctx.addMemory(
-      'pattern',
+      'concept',
       'Scanner Pattern 3',
       'Third scanner pattern',
       [],
@@ -111,7 +111,7 @@ describe('Prompt Templates Engine: /sd_curate', () => {
 
     // 3. Orphan memory
     ctx.addMemory(
-      'lesson',
+      'warning',
       'Floating Lesson Without Targets',
       'Some standalone observation without links.'
     );
@@ -174,15 +174,14 @@ describe('Prompt Templates Engine: /sd_harvest', () => {
     expect(result.promptText).toContain('feat: implement login service');
     expect(result.promptText).toContain('src/auth.ts');
     expect(result.promptText).toContain('src/token.ts');
-    // Ensure all 6 memory types are highlighted
+    // Ensure all 5 user-creatable memory types are highlighted
     expect(result.promptText).toContain('`warning`');
     expect(result.promptText).toContain('`fact`');
-    expect(result.promptText).toContain('`lesson`');
-    expect(result.promptText).toContain('`pattern`');
-    expect(result.promptText).toContain('`sequence`');
+    expect(result.promptText).toContain('`decision`');
     expect(result.promptText).toContain('`guide`');
-    // Ensure concepts/codemaps are explicitly excluded
-    expect(result.promptText).toContain('High-level architectural `concept` nodes and AST `codemap` files are managed separately; do not create them');
+    expect(result.promptText).toContain('`concept`');
+    // Ensure codemaps are explicitly excluded
+    expect(result.promptText).toContain('AST `codemap` files are scanner-managed; do not create them');
     expect(result.promptText).toContain('sd_add({');
   });
 

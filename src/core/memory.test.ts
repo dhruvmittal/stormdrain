@@ -25,10 +25,31 @@ This is the content.`;
 
     const memory = parseMemory(raw);
     expect(memory.metadata.id).toBe('mem_123');
-    expect(memory.metadata.type).toBe('lesson');
+    expect(memory.metadata.type).toBe('warning');
     expect(memory.metadata.title).toBe('Test Title');
     expect(memory.metadata.tags).toContain('testing');
     expect(memory.content.trim()).toBe('This is the content.');
+
+    // Verify invariant normalizes to fact
+    const invRaw = `---
+id: mem_inv
+type: invariant
+title: Hard Rule
+context: global
+tags: []
+confidence: 1.0
+created: '2026-08-01T00:00:00.000Z'
+updated: '2026-08-01T00:00:00.000Z'
+accessed: '2026-08-01T00:00:00.000Z'
+access_count: 0
+source: manual
+expires: null
+superseded_by: null
+relations: []
+---
+Rule content`;
+    const invMem = parseMemory(invRaw);
+    expect(invMem.metadata.type).toBe('fact');
   });
 
   it('should throw an error for invalid memory format without frontmatter', () => {

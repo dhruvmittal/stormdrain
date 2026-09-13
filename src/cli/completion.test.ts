@@ -74,13 +74,15 @@ describe('StormDrain CLI Tab Completion', () => {
 
   it('should suggest memory types for add positional argument', () => {
     const output = runCli('complete -- add ""');
-    expect(output).toContain('concept');
     expect(output).toContain('fact');
-    expect(output).toContain('lesson');
-    expect(output).toContain('pattern');
+    expect(output).toContain('decision');
     expect(output).toContain('warning');
+    expect(output).toContain('concept');
     expect(output).toContain('guide');
-    expect(output).toContain('sequence');
+    expect(output).not.toMatch(/^lesson\t/m);
+    expect(output).not.toMatch(/^pattern\t/m);
+    expect(output).not.toMatch(/^sequence\t/m);
+    expect(output).not.toMatch(/^invariant\t/m);
   });
 
   it('should suggest graph actions for graph subcommand', () => {

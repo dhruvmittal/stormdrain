@@ -11,7 +11,7 @@ import {
 import { ConfigManager } from '../core/config';
 import { ContextManager } from '../core/context';
 import { FileReader } from '../core/reader';
-import { MemoryType, RelationType } from '../types';
+import { MemoryType, RelationType, USER_CREATABLE_TYPES } from '../types';
 import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 
@@ -216,8 +216,8 @@ export class StormDrainMcpServer {
             properties: {
               type: {
                 type: 'string',
-                enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'],
-                description: 'Type of memory: "concept" (cross-cutting architecture/theory), "pattern" (reusable structural idiom), "lesson" (debugging/incident takeaway), "warning" (critical gotcha/anti-pattern), "guide" (procedural workflow), "fact" (system invariant)'
+                enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
+                description: 'Type of memory: "fact" (hard structural invariant or system truth; tag with #invariant for hard constraints), "decision" (architectural decision/ADR), "warning" (critical gotcha/hazard/pitfall to avoid), "concept" (high-level mental model or core domain concept), "guide" (procedural workflow or multi-step sequence)'
               },
               title: {
                 type: 'string',
@@ -273,7 +273,7 @@ export class StormDrainMcpServer {
               title: { type: 'string' },
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
-              type: { type: 'string', enum: ['fact', 'pattern', 'lesson', 'warning', 'guide', 'codemap', 'sequence', 'concept'] },
+              type: { type: 'string', enum: ['fact', 'decision', 'guide', 'warning', 'concept'] },
               add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
               remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
               relations: {
@@ -624,6 +624,9 @@ export class StormDrainMcpServer {
             relations?: Array<{ target: string; type?: RelationType }>;
             relation_type?: RelationType;
           };
+          if (!args.type || !(USER_CREATABLE_TYPES as readonly string[]).includes(args.type)) {
+            throw new Error(`Invalid memory type "${args.type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}. (Tip: Use 'fact' with tag '#invariant' for rules, or 'warning' for pitfalls/gotchas).`);
+          }
           const targets = args.targets || args.target_file;
           const id = ctx.addMemory(
             args.type,
@@ -657,6 +660,9 @@ export class StormDrainMcpServer {
             add_targets?: string[] | string;
             remove_targets?: string[] | string;
           };
+          if (args.type && !(USER_CREATABLE_TYPES as readonly string[]).includes(args.type)) {
+            throw new Error(`Invalid memory type "${args.type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}.`);
+          }
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
             relations: args.relations,
             addTargets: args.add_targets,

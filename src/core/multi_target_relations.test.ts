@@ -61,7 +61,7 @@ describe('Multi-Target & Memory-to-Memory Graph Relations', () => {
       try {
         // Create base architectural concept
         const baseId = ctx.addMemory(
-          'pattern',
+          'concept',
           'Event Sourcing Architecture',
           'All domain state changes are recorded as append-only event streams.',
           ['architecture', 'events']
@@ -104,7 +104,7 @@ describe('Multi-Target & Memory-to-Memory Graph Relations', () => {
       const ctx = new ContextManager('relation-helpers-ctx');
       try {
         const memA = ctx.addMemory('fact', 'Memory A', 'Content A');
-        const memB = ctx.addMemory('lesson', 'Memory B', 'Content B');
+        const memB = ctx.addMemory('warning', 'Memory B', 'Content B');
 
         // Add relation
         const added1 = ctx.addRelation(memA, memB, 'supports');
@@ -141,7 +141,7 @@ describe('Multi-Target & Memory-to-Memory Graph Relations', () => {
       const ctx = new ContextManager('update-rel-ctx');
       try {
         const id1 = ctx.addMemory('fact', 'Mem 1', 'Content 1', [], 'manual', undefined, 'src/a.ts');
-        const id2 = ctx.addMemory('pattern', 'Mem 2', 'Content 2');
+        const id2 = ctx.addMemory('concept', 'Mem 2', 'Content 2');
 
         // Update adding targets and relations
         ctx.updateMemory(id1, undefined, undefined, undefined, undefined, {
@@ -203,7 +203,7 @@ describe('Multi-Target & Memory-to-Memory Graph Relations', () => {
 
         // Add conceptual pattern linked to the file invariant
         const conceptMemId = ctx.addMemory(
-          'pattern',
+          'concept',
           'Token Bucket Algorithm',
           'Use token buckets for rate limiting distributed calls.',
           ['rate-limit', 'algorithms'],
@@ -335,7 +335,7 @@ describe('Multi-Target & Memory-to-Memory Graph Relations', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'lesson',
+          type: 'warning',
           title: 'Database Locking Behavior',
           content: 'Row-level locking is preferred over table locking.',
           targets: ['src/db/pool.ts', 'src/db/query.ts']
@@ -349,7 +349,7 @@ describe('Multi-Target & Memory-to-Memory Graph Relations', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'pattern',
+          type: 'concept',
           title: 'Pessimistic vs Optimistic Locking',
           content: 'Use optimistic locking with version columns.'
         })

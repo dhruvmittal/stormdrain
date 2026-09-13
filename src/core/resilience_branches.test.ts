@@ -170,7 +170,7 @@ describe('Context & Graph Resilience Tests', () => {
       expect(res0.mergedCount).toBe(0);
 
       // 1 memory (threshold is >= 2)
-      ctx.addMemory('lesson', 'Single Lesson', 'Detail', ['tag'], 'manual', undefined, 'lonely.ts');
+      ctx.addMemory('fact', 'Single Lesson', 'Detail', ['tag'], 'manual', undefined, 'lonely.ts');
       const res1 = ctx.consolidateNeighborhood('lonely.ts');
       expect(res1.consolidatedId).toBe('');
       expect(res1.mergedCount).toBe(0);
@@ -182,7 +182,7 @@ describe('Context & Graph Resilience Tests', () => {
       ctx.syncFileGraph(tempDir);
 
       ctx.addMemory('warning', 'W1', 'Detail 1', ['tag1'], 'manual', undefined, 'multi.ts');
-      ctx.addMemory('lesson', 'L1', 'Detail 2', ['tag2'], 'manual', undefined, 'multi.ts');
+      ctx.addMemory('fact', 'L1', 'Detail 2', ['tag2'], 'manual', undefined, 'multi.ts');
 
       // First consolidation
       const resFirst = ctx.consolidateNeighborhood('multi.ts');
