@@ -217,7 +217,7 @@ export class StormDrainMcpServer {
               type: {
                 type: 'string',
                 enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
-                description: 'Type of memory: "fact" (hard structural invariant or system truth; tag with #invariant for hard constraints), "decision" (architectural decision/ADR), "warning" (critical gotcha/hazard/pitfall to avoid), "concept" (high-level mental model or core domain concept), "guide" (procedural workflow or multi-step sequence)'
+                description: 'Canonical type: "warning" (hazard/pitfall/anti-pattern), "fact" (verified invariant/caller contract), "decision" (ADR/trade-off), "guide" (workflow/runbook), "concept" (domain model)'
               },
               title: {
                 type: 'string',
@@ -273,7 +273,11 @@ export class StormDrainMcpServer {
               title: { type: 'string' },
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
-              type: { type: 'string', enum: ['fact', 'decision', 'guide', 'warning', 'concept'] },
+              type: {
+                type: 'string',
+                enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
+                description: 'Canonical type: "warning" (hazard/pitfall/anti-pattern), "fact" (verified invariant/caller contract), "decision" (ADR/trade-off), "guide" (workflow/runbook), "concept" (domain model)'
+              },
               add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
               remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
               relations: {
@@ -625,7 +629,7 @@ export class StormDrainMcpServer {
             relation_type?: RelationType;
           };
           if (!args.type || !(USER_CREATABLE_TYPES as readonly string[]).includes(args.type)) {
-            throw new Error(`Invalid memory type "${args.type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}. (Tip: Use 'fact' with tag '#invariant' for rules, or 'warning' for pitfalls/gotchas).`);
+            throw new Error(`Invalid memory type "${args.type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}. (Tip: 'warning' for gotchas/traps, 'fact' for verified invariants/contracts, 'decision' for ADRs, 'guide' for workflows, 'concept' for domain models).`);
           }
           const targets = args.targets || args.target_file;
           const id = ctx.addMemory(
@@ -661,7 +665,7 @@ export class StormDrainMcpServer {
             remove_targets?: string[] | string;
           };
           if (args.type && !(USER_CREATABLE_TYPES as readonly string[]).includes(args.type)) {
-            throw new Error(`Invalid memory type "${args.type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}.`);
+            throw new Error(`Invalid memory type "${args.type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}. (Tip: 'warning' for gotchas/traps, 'fact' for verified invariants/contracts, 'decision' for ADRs, 'guide' for workflows, 'concept' for domain models).`);
           }
           ctx.updateMemory(args.id, args.content, args.title, args.tags, args.type, {
             relations: args.relations,
