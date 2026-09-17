@@ -1,4 +1,26 @@
-export type MemoryType = 'fact' | 'pattern' | 'lesson' | 'warning' | 'guide' | 'codemap' | 'sequence' | 'concept' | 'invariant' | 'decision' | 'learning';
+export const USER_CREATABLE_TYPES = ['fact', 'decision', 'guide', 'warning', 'concept'] as const;
+export const CANONICAL_MEMORY_TYPES = [...USER_CREATABLE_TYPES, 'codemap'] as const;
+
+export type CanonicalMemoryType = typeof CANONICAL_MEMORY_TYPES[number];
+export type UserCreatableMemoryType = typeof USER_CREATABLE_TYPES[number];
+export type LegacyMemoryType = 'invariant' | 'pattern' | 'lesson' | 'sequence' | 'learning';
+
+export type MemoryType = CanonicalMemoryType | LegacyMemoryType;
+
+export const LEGACY_TYPE_MAP: Record<string, CanonicalMemoryType> = {
+  invariant: 'fact',
+  lesson: 'warning',
+  learning: 'warning',
+  pattern: 'concept',
+  sequence: 'guide',
+};
+
+export function toCanonicalType(type: string): CanonicalMemoryType {
+  const lower = (type || '').toLowerCase();
+  if (LEGACY_TYPE_MAP[lower]) return LEGACY_TYPE_MAP[lower];
+  if ((CANONICAL_MEMORY_TYPES as readonly string[]).includes(lower)) return lower as CanonicalMemoryType;
+  return 'fact';
+}
 
 export type RelationType = 
   | 'affects' 
@@ -114,14 +136,12 @@ export interface GitSettings {
 }
 
 export interface GraphNodeColors {
-  concept: string;
-  codemap: string;
   fact: string;
-  lesson: string;
-  pattern: string;
+  decision: string;
   warning: string;
+  concept: string;
   guide: string;
-  sequence: string;
+  codemap: string;
   [key: string]: string;
 }
 

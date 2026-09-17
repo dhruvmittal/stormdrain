@@ -210,10 +210,10 @@ describe('Git Branch Provenance & Path Normalization', () => {
 
       // Add canonical invariant on main
       const canonInv = ctx.addMemory(
-        'invariant',
+        'fact',
         'Critical Security Rule',
         'Never log credentials',
-        ['security'],
+        ['security', 'invariant'],
         'manual',
         undefined,
         targetFile,
@@ -238,7 +238,7 @@ describe('Git Branch Provenance & Path Normalization', () => {
   describe('Promotion Workflow', () => {
     it('promotes single memory via updateMemory', () => {
       const memId = ctx.addMemory(
-        'learning',
+        'warning',
         'Discovered Edge Case',
         'Edge case details',
         ['gotcha'],
@@ -353,7 +353,7 @@ describe('Git Branch Provenance & Path Normalization', () => {
       // Memory with no branch (null)
       ctx.addMemory('fact', 'General Fact', 'General database rule', [], 'manual', undefined, undefined, 'affects', undefined, null, false);
       // Canonical memory on main
-      ctx.addMemory('invariant', 'Main Production Invariant', 'Production database rule', [], 'manual', undefined, undefined, 'affects', undefined, 'main', true);
+      ctx.addMemory('fact', 'Main Production Invariant', 'Production database rule', ['invariant'], 'manual', undefined, undefined, 'affects', undefined, 'main', true);
       // Memory on feature-x
       ctx.addMemory('fact', 'Feature Fact', 'Feature database rule', [], 'manual', undefined, undefined, 'affects', undefined, 'feature-x', false);
       // Memory on feature-y
@@ -377,10 +377,10 @@ describe('Git Branch Provenance & Path Normalization', () => {
 
       // Unpromoted invariant on feature-proto
       const unpromotedInvariant = ctx.addMemory(
-        'invariant',
+        'fact',
         'Proto Invariant: Skip Signature Check',
         'Do not verify signatures in proto',
-        [],
+        ['invariant'],
         'manual',
         undefined,
         targetFile,
@@ -392,10 +392,10 @@ describe('Git Branch Provenance & Path Normalization', () => {
 
       // Canonical invariant on main
       const canonicalInvariant = ctx.addMemory(
-        'invariant',
+        'fact',
         'Production Invariant: Strict Signature Check',
         'Always verify signatures with public key',
-        [],
+        ['invariant'],
         'manual',
         undefined,
         targetFile,
@@ -425,7 +425,7 @@ describe('Git Branch Provenance & Path Normalization', () => {
 
       // Empirical lesson tagged #environment on feature branch
       const envLesson = ctx.addMemory(
-        'lesson',
+        'warning',
         'Vitest Concurrency Quirk',
         'Worker threads exceed 8 on Linux 6.x causes deadlocks',
         ['#environment', 'testing'],
@@ -440,7 +440,7 @@ describe('Git Branch Provenance & Path Normalization', () => {
 
       // Standard feature-specific lesson without environment tag
       const domainLesson = ctx.addMemory(
-        'lesson',
+        'warning',
         'Feature Internal Detail',
         'Internal helper method details',
         ['internal'],
@@ -536,7 +536,7 @@ describe('Git Branch Provenance & Path Normalization', () => {
       expect(vertexId).toBe('file_makefile');
 
       ctx.addMemory(
-        'invariant',
+        'fact',
         'Make Rule',
         'Always run lint before build',
         ['build'],

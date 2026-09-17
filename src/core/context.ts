@@ -7,7 +7,7 @@ import { initDb } from '../db/schema';
 import { syncMemoryToDb, deleteMemoryFromDb } from '../db/sync';
 import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
-import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow } from '../types';
+import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow, USER_CREATABLE_TYPES, CANONICAL_MEMORY_TYPES, toCanonicalType } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
@@ -94,6 +94,10 @@ export class ContextManager {
     gitBranch?: string | null,
     isCanonical?: boolean
   ): string {
+    if (!(CANONICAL_MEMORY_TYPES as readonly string[]).includes(type)) {
+      throw new Error(`Invalid memory type "${type}". Allowed types are: ${CANONICAL_MEMORY_TYPES.join(', ')}. (Tip: Use 'fact' with tag '#invariant' for rules, or 'warning' for pitfalls/gotchas).`);
+    }
+
     const id = customId || `mem_${crypto.randomBytes(6).toString('hex')}`;
     const relations: MemoryRelation[] = [];
     const relationKeys = new Set<string>();
@@ -165,7 +169,12 @@ export class ContextManager {
     if (content !== undefined && content !== null) memory.content = content;
     if (title !== undefined && title !== null) memory.metadata.title = title;
     if (tags !== undefined && tags !== null) memory.metadata.tags = tags;
-    if (type !== undefined && type !== null) memory.metadata.type = type;
+    if (type !== undefined && type !== null) {
+      if (!(USER_CREATABLE_TYPES as readonly string[]).includes(type)) {
+        throw new Error(`Invalid memory type "${type}". Allowed types are: ${USER_CREATABLE_TYPES.join(', ')}.`);
+      }
+      memory.metadata.type = type;
+    }
 
     if (options) {
       if (options.is_canonical !== undefined) {
@@ -1026,14 +1035,12 @@ export class ContextManager {
 
       // 6. Fact Scoring with Consolidation Shield
       const typeWeights: Record<string, number> = {
-        guide: 1.25,
-        concept: 1.20,
-        warning: 1.15,
-        pattern: 1.0,
-        lesson: 1.0,
-        fact: 0.9,
-        sequence: 0.85,
-        codemap: 0.1,
+        warning: 1.25,
+        guide: 1.20,
+        decision: 1.15,
+        fact: 1.10,
+        concept: 1.05,
+        codemap: 0.10,
       };
 
       const finalMemories: MultiHopMemoryResult[] = [];
@@ -1097,13 +1104,13 @@ export class ContextManager {
             continue;
           }
 
-          const typeWeight = typeWeights[row.type] || 1.0;
+          const typeWeight = typeWeights[toCanonicalType(row.type)] || 1.0;
           const hopDecay = Math.pow(0.75, h);
           const score = row.confidence * psi * hopDecay * typeWeight;
 
           finalMemories.push({
             id: row.id,
-            type: row.type as MemoryType,
+            type: toCanonicalType(row.type),
             title: row.title,
             confidence: row.confidence,
             depth: h,
@@ -1131,7 +1138,7 @@ export class ContextManager {
             if (finalMemories.some(fm => fm.id === conn.id)) continue;
             const connTags = (conn.tags_str || '').split(',').filter(Boolean);
             if (connTags.includes('consolidated') || conn.superseded_by) continue;
-            const connTypeWeight = typeWeights[conn.type] || 1.0;
+            const connTypeWeight = typeWeights[toCanonicalType(conn.type)] || 1.0;
             const connHopDecay = Math.pow(0.75, h + 1);
             const connScore = conn.confidence * psi * connHopDecay * connTypeWeight * 0.85;
 
@@ -1241,17 +1248,19 @@ export class ContextManager {
       .map(term => `"${term}"`)
       .join(' AND ');
 
+    const filterType = options?.type ? toCanonicalType(options.type) : undefined;
+
     const doSearch = (db: Database.Database, ctxName: string) => {
       try {
         if (!safeQuery) {
-          if (!options || !options.type) {
+          if (!filterType) {
             return [];
           }
           let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap'";
           const params: any[] = [];
-          if (options?.type) {
+          if (filterType) {
             sql += ' AND m.type = ?';
-            params.push(options.type);
+            params.push(filterType);
           }
           sql += ' ORDER BY m.updated DESC LIMIT 20';
           const rows = db.prepare(sql).all(...params) as Array<MemoryDbRow & { content_snippet: string }>;
@@ -1265,9 +1274,9 @@ export class ContextManager {
           WHERE memories_fts MATCH ?
         `;
         const params: any[] = [safeQuery];
-        if (options?.type) {
+        if (filterType) {
           sql += ' AND m.type = ?';
-          params.push(options.type);
+          params.push(filterType);
         }
         sql += ' ORDER BY rank LIMIT 20';
 

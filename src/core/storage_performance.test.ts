@@ -32,15 +32,15 @@ describe('Storage Layer Performance & Functional Parity Test Suite', () => {
   });
 
   it('listMemories() should return exact metadata, tags, relations, and content as disk-parsed memories', () => {
-    const id1 = ctx.addMemory('pattern', 'Pattern 1', 'Content for pattern 1', ['tag-a', 'tag-b'], 'manual', undefined, 'file_src_main_ts', 'affects');
-    const id2 = ctx.addMemory('lesson', 'Lesson 2', 'Content for lesson 2', ['tag-b', 'tag-c'], 'manual', undefined, id1, 'related_to');
+    const id1 = ctx.addMemory('concept', 'Pattern 1', 'Content for pattern 1', ['tag-a', 'tag-b'], 'manual', undefined, 'file_src_main_ts', 'affects');
+    const id2 = ctx.addMemory('warning', 'Lesson 2', 'Content for lesson 2', ['tag-b', 'tag-c'], 'manual', undefined, id1, 'related_to');
 
     const memories = ctx.listMemories();
     expect(memories.length).toBe(2);
 
     const mem1 = memories.find(m => m.metadata.id === id1);
     expect(mem1).toBeDefined();
-    expect(mem1?.metadata.type).toBe('pattern');
+    expect(mem1?.metadata.type).toBe('concept');
     expect(mem1?.metadata.title).toBe('Pattern 1');
     expect(mem1?.metadata.tags).toEqual(['tag-a', 'tag-b']);
     expect(mem1?.content).toBe('Content for pattern 1');
@@ -49,7 +49,7 @@ describe('Storage Layer Performance & Functional Parity Test Suite', () => {
 
     const mem2 = memories.find(m => m.metadata.id === id2);
     expect(mem2).toBeDefined();
-    expect(mem2?.metadata.type).toBe('lesson');
+    expect(mem2?.metadata.type).toBe('warning');
     expect(mem2?.metadata.title).toBe('Lesson 2');
     expect(mem2?.metadata.tags).toEqual(['tag-b', 'tag-c']);
     expect(mem2?.content).toBe('Content for lesson 2');
@@ -93,7 +93,7 @@ describe('Storage Layer Performance & Functional Parity Test Suite', () => {
     const count = 100;
     for (let i = 0; i < count; i++) {
       ctx.addMemory(
-        i % 2 === 0 ? 'pattern' : 'fact',
+        i % 2 === 0 ? 'concept' : 'fact',
         `Benchmark Memory ${i}`,
         `Content for memory ${i}`,
         [`tag-${i % 5}`, 'benchmark'],

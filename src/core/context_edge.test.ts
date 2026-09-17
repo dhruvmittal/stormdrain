@@ -44,7 +44,7 @@ describe('ContextManager Edge Cases & Security', () => {
   });
 
   it('should prevent path traversal attacks on memory lookup and deletion', () => {
-    const id = ctx.addMemory('lesson', 'Path Traversal Guard', 'Safe Content');
+    const id = ctx.addMemory('warning', 'Path Traversal Guard', 'Safe Content');
     
     // Attempt relative traversal
     const memPathTraversal = ctx.getMemory(`../../${id}`);

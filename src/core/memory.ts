@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'yaml';
-import { Memory, MemoryMetadata, MemoryType } from '../types';
+import { Memory, MemoryMetadata, MemoryType, toCanonicalType } from '../types';
 
 export const parseMemory = (fileContent: string): Memory => {
   const match = fileContent.match(/^(?:---[\r\n]+)([\s\S]*?)(?:[\r\n]+---[\r\n]+)([\s\S]*)$/);
@@ -13,6 +13,9 @@ export const parseMemory = (fileContent: string): Memory => {
   const content = match[2];
   
   const metadata = yaml.parse(frontmatterStr) as MemoryMetadata;
+  if (metadata && metadata.type) {
+    metadata.type = toCanonicalType(metadata.type);
+  }
   return { metadata, content };
 };
 

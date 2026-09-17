@@ -59,7 +59,7 @@ describe('MCP Server Resilience & Failure Case Tests', () => {
 
     // 2. Add memories and recall with custom limit
     await callTool('sd_add', { type: 'fact', title: 'Fact 1', content: 'Content 1', context: 'mcp-resilience-ctx' });
-    await callTool('sd_add', { type: 'lesson', title: 'Lesson 2', content: 'Content 2', context: 'mcp-resilience-ctx' });
+    await callTool('sd_add', { type: 'warning', title: 'Lesson 2', content: 'Content 2', context: 'mcp-resilience-ctx' });
 
     const resLimit = await callTool('sd_recall', { limit: 1, context: 'mcp-resilience-ctx' });
     expect(resLimit.content[0].text).toContain('## [');

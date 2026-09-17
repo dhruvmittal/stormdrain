@@ -15,15 +15,13 @@ This project uses StormDrain for persistent cross-session architectural memory. 
 ### Mandatory Workflow:
 - **Primary Source Reader (MANDATORY)**: Always use `sd_read(path="path/to/file")` instead of default read tools. It automatically injects topological invariants, upstream caller constraints, and symbol outlines into the file stream.
 - **Pre-Edit Invariant Check**: Call `sd_recall(target_file="path/to/file")` before modifying or refactoring any file to inspect multi-hop caller contracts and dependency rules.
-- **Record High-Signal Discoveries**: Call `sd_add(type, title, content, target_file)` when discovering non-obvious bugs, architectural decisions, invariants, or reusable patterns.
-- **Harvest Session Discoveries (`/sd_harvest`)**: Run `/sd_harvest` (or CLI `stormdrain harvest`) at the end of a feature, bugfix, or coding session to capture and persist newly established invariants, gotchas, failure modes, or architectural decisions directly via `sd_add`.
-- **Curate, Consolidate & Promote (`/sd_curate`)**: Run `/sd_curate` to review candidate micro-memories for surgical consolidation (`sd_consolidate`), generalize and promote environment-wide knowledge to global (`sd_add(..., context="_global")`), or connect related concepts (`sd_relate`).
+- **Record Discoveries**: Call `sd_add(type, title, content, target_file)` on non-obvious invariants, gotchas, or architectural decisions (canonical types: `fact`, `decision`, `guide`, `warning`, `concept`).
+- **Harvest Session Discoveries (`/sd_harvest`)**: Run `/sd_harvest` (or CLI `stormdrain harvest`) at the end of a feature or coding session to capture newly established learnings.
+- **Curate & Consolidate (`/sd_curate`)**: Run `/sd_curate` to review candidate micro-memories for surgical consolidation (`sd_consolidate`).
 - **Sync Code Graph**: Call `sd_scan()` whenever new source files, exports, or imports are added or reorganized.
 
-### Memory Curation & Editorial Rubric:
-- **High-Signal (DO RECORD)**: Non-obvious invariants, architectural decisions (ADRs/trade-offs), edge-case gotchas, failure modes, negative findings (disproven hypotheses), and performance thresholds.
-- **Low-Signal (DO NOT RECORD)**: Routine implementation summaries, syntax notes, transient progress, or facts obvious from reading the code.
-- **Tags**: Use semantic tags like `#decision`, `#invariant`, `#hypothesis`, `#environment`, `#anti-pattern`, and `#performance` for precise filtering.
+### Editorial Rule:
+Record non-obvious invariants, architectural trade-offs, and critical gotchas/failure modes; do NOT record routine implementation summaries, syntax notes, or transient task progress.
 ## Tooling & Build Commands
 
 ### 1. Build & Compilation
@@ -37,7 +35,7 @@ npm --prefix ui run build
 
 ### 2. Testing & Verification
 ```bash
-# Run all Vitest test suites (15 test suites, 70+ tests)
+# Run all Vitest test suites (30 test suites, 230+ tests)
 npm test
 
 # Run a specific test suite

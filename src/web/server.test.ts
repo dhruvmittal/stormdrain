@@ -64,7 +64,7 @@ describe('Web API Server', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'lesson',
+        type: 'warning',
         title: 'API Test Memory',
         content: 'Content for API test',
         tags: ['test', 'api']
@@ -334,7 +334,7 @@ describe('Web API Server', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'invariant',
+        type: 'fact',
         title: 'Global Thread Safety Rule',
         content: 'Never lock mutex A while holding mutex B.'
       })
@@ -417,7 +417,7 @@ describe('Web API Server', () => {
         'Origin': 'http://evil-attacker.com'
       },
       body: JSON.stringify({
-        type: 'lesson',
+        type: 'warning',
         title: 'CSRF Attempt',
         content: 'Malicious payload'
       })
@@ -435,7 +435,7 @@ describe('Web API Server', () => {
         'Origin': 'http://localhost:5173'
       },
       body: JSON.stringify({
-        type: 'lesson',
+        type: 'warning',
         title: 'Legit Web UI Call',
         content: 'From Vite dev server'
       })

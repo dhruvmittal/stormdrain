@@ -32,7 +32,7 @@ describe('Memory Inspection, Management, Cross-Context Search & Surgical Consoli
       const ctx = new ContextManager('test-get-ctx');
       try {
         const memA = ctx.addMemory(
-          'pattern',
+          'concept',
           'Circuit Breaker Pattern',
           'Wrap external API calls in circuit breaker to prevent cascading failures.',
           ['resilience', 'api'],
@@ -57,7 +57,7 @@ describe('Memory Inspection, Management, Cross-Context Search & Surgical Consoli
         expect(detailsA).not.toBeNull();
         expect(detailsA?.id).toBe(memA);
         expect(detailsA?.nodeType).toBe('memory');
-        expect(detailsA?.type).toBe('pattern');
+        expect(detailsA?.type).toBe('concept');
         expect(detailsA?.title).toBe('Circuit Breaker Pattern');
         expect(detailsA?.tags).toEqual(['resilience', 'api']);
         expect(detailsA?.content).toContain('Wrap external API calls');
@@ -116,7 +116,7 @@ describe('Memory Inspection, Management, Cross-Context Search & Surgical Consoli
       const ctx = new ContextManager('test-del-ctx');
       try {
         const memA = ctx.addMemory('fact', 'Database Connection Pool', 'Pool size defaults to 20 connections.');
-        const memB = ctx.addMemory('lesson', 'Pool Exhaustion', 'High concurrency exhausts pool quickly.', [], 'manual', undefined, undefined, undefined, [
+        const memB = ctx.addMemory('warning', 'Pool Exhaustion', 'High concurrency exhausts pool quickly.', [], 'manual', undefined, undefined, undefined, [
           { target: memA, type: 'references' }
         ]);
 
@@ -183,7 +183,7 @@ describe('Memory Inspection, Management, Cross-Context Search & Surgical Consoli
         // Add 3 micro-memories to payment.ts
         ctx.addMemory('fact', 'Stripe API Key Rotation', 'Rotate keys every 90 days.', [], 'manual', undefined, 'payment.ts');
         ctx.addMemory('warning', 'Idempotency Key Requirement', 'Always pass idempotency key in charge request.', [], 'manual', undefined, 'payment.ts');
-        ctx.addMemory('lesson', 'Webhook Timeout Handling', 'Acknowledge webhooks within 2 seconds.', [], 'manual', undefined, 'payment.ts');
+        ctx.addMemory('warning', 'Webhook Timeout Handling', 'Acknowledge webhooks within 2 seconds.', [], 'manual', undefined, 'payment.ts');
 
         // Add 1 micro-memory to other file
         const otherPath = path.join(tempDir, 'other.ts');

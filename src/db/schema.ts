@@ -36,6 +36,7 @@ export const initSchema = (db: Database.Database): void => {
     db.exec('CREATE INDEX IF NOT EXISTS idx_memories_branch_canonical ON memories(git_branch, is_canonical)');
   } catch {}
 
+
   // Tags table
   db.exec(`
     CREATE TABLE IF NOT EXISTS tags (
@@ -66,6 +67,19 @@ export const initSchema = (db: Database.Database): void => {
       tokenize='trigram'
     );
   `);
+
+  // Idempotent taxonomy convergence: normalize legacy types to canonical types
+  try {
+    db.exec(`
+      INSERT OR IGNORE INTO tags (memory_id, tag)
+      SELECT id, 'invariant' FROM memories WHERE type = 'invariant';
+
+      UPDATE memories SET type = 'fact' WHERE type = 'invariant';
+      UPDATE memories SET type = 'warning' WHERE type IN ('lesson', 'learning');
+      UPDATE memories SET type = 'concept' WHERE type = 'pattern';
+      UPDATE memories SET type = 'guide' WHERE type = 'sequence';
+    `);
+  } catch {}
 };
 
 export const initDb = (dbPath: string): Database.Database => {

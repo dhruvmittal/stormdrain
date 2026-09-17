@@ -84,4 +84,12 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     expect(updated).toContain('## Other Appendix');
     expect(updated).not.toContain('Old outdated protocol text');
   });
+
+  it('ensures STORMDRAIN_AGENT_SECTION is lean (<25 lines) and includes canonical types', () => {
+    const lines = STORMDRAIN_AGENT_SECTION.trim().split('\n');
+    expect(lines.length).toBeLessThanOrEqual(25);
+    expect(STORMDRAIN_AGENT_SECTION).toContain('canonical types: `fact`, `decision`, `guide`, `warning`, `concept`');
+    expect(STORMDRAIN_AGENT_SECTION).toContain('Editorial Rule:');
+    expect(STORMDRAIN_AGENT_SECTION).not.toContain('Memory Curation & Editorial Rubric:');
+  });
 });

@@ -109,7 +109,7 @@ describe('StormDrainMcpServer Protocol', () => {
     const addRes = await client.callTool({
       name: 'sd_add',
       arguments: {
-        type: 'pattern',
+        type: 'concept',
         title: 'Original Title',
         content: 'Original Content'
       }
@@ -250,7 +250,7 @@ describe('StormDrainMcpServer Protocol', () => {
     await client.callTool({
       name: 'sd_add',
       arguments: {
-        type: 'pattern',
+        type: 'concept',
         title: 'MCP Caller Protocol',
         content: 'Caller rule',
         target_file: fileConsumer
@@ -260,7 +260,7 @@ describe('StormDrainMcpServer Protocol', () => {
     await client.callTool({
       name: 'sd_add',
       arguments: {
-        type: 'lesson',
+        type: 'warning',
         title: 'Git Subsystem Lesson',
         content: 'Git rule',
         target_file: fileDep
@@ -370,15 +370,16 @@ describe('StormDrainMcpServer Protocol', () => {
     fs.mkdirSync(wsDir, { recursive: true });
     fs.writeFileSync(path.join(wsDir, 'app.ts'), 'export const app = 1;', 'utf8');
 
-    // Add an orphan memory
-    await client.callTool({
-      name: 'sd_add',
-      arguments: {
-        type: 'codemap',
-        title: '[File] foreign/path.ts',
-        content: 'File Node: `foreign/path.ts`'
-      }
-    });
+    // Add an orphan codemap memory via storage engine
+    const mcpConfig = (mcpServer as any).config;
+    const resolvedContext = mcpConfig.resolveContext();
+    const { ContextManager } = await import('../core/context');
+    const dbCtx = new ContextManager(resolvedContext);
+    try {
+      dbCtx.addMemory('codemap', '[File] foreign/path.ts', 'File Node: `foreign/path.ts`');
+    } finally {
+      await dbCtx.close();
+    }
 
     const pruneRes = await client.callTool({
       name: 'sd_prune',
@@ -447,6 +448,19 @@ describe('StormDrainMcpServer Protocol', () => {
     const text = (promptRes.messages[0].content as any).text;
     expect(text).toContain('StormDrain Knowledge Curation: Target "src/core/store.ts"');
     expect(text).toContain('Target Guardrail');
+  });
+
+  it('should strictly reject sd_add with non-canonical types', async () => {
+    const res = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'invariant',
+        title: 'Legacy Invariant',
+        content: 'Should be rejected'
+      }
+    });
+    expect((res as any).isError).toBe(true);
+    expect(((res as any).content[0] as any).text).toContain('Invalid memory type "invariant"');
   });
 });
 

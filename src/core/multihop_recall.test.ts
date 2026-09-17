@@ -76,8 +76,8 @@ describe('Multi-Hop Topological Recall Engine', () => {
 
     // Attach domain memories
     const memDirect = ctx.addMemory('warning', 'Target Direct Rule', 'Context rule', ['core'], 'manual', undefined, fileTarget);
-    const memConsumer = ctx.addMemory('pattern', 'MCP Consumer Protocol', 'MCP caller constraint', ['mcp'], 'manual', undefined, fileConsumer);
-    const memDep = ctx.addMemory('lesson', 'Git Subsystem Lesson', 'Git lock handling', ['git'], 'manual', undefined, fileDep);
+    const memConsumer = ctx.addMemory('concept', 'MCP Consumer Protocol', 'MCP caller constraint', ['mcp'], 'manual', undefined, fileConsumer);
+    const memDep = ctx.addMemory('warning', 'Git Subsystem Lesson', 'Git lock handling', ['git'], 'manual', undefined, fileDep);
     const memSubDep = ctx.addMemory('fact', 'Config Defaults', 'Config paths invariant', ['config'], 'manual', undefined, fileSubDep);
 
     const res = ctx.recallMultiHop(fileTarget, { maxDepth: 3, cumulativeThreshold: 1.0 });
@@ -146,7 +146,7 @@ describe('Multi-Hop Topological Recall Engine', () => {
     const fileId = makeFileVertexId(file);
     ctx.addMemory('codemap', file, 'scanner', ['file-vertex'], 'indexer', fileId);
 
-    const memId = ctx.addMemory('pattern', 'Scanner Regex Pattern', 'Regex optimization', ['ast'], 'manual', undefined, file);
+    const memId = ctx.addMemory('concept', 'Scanner Regex Pattern', 'Regex optimization', ['ast'], 'manual', undefined, file);
 
     const res = ctx.recallMultiHop(memId);
     expect(res.direct.length).toBe(1);

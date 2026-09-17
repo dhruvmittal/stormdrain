@@ -46,8 +46,18 @@ describe('ContextManager', () => {
     expect((results[0] as any).id).toBe(id);
   });
 
+  it('should reject non-canonical memory types with an informative error', () => {
+    expect(() => {
+      ctx.addMemory('invariant' as any, 'Strict test', 'content');
+    }).toThrow('Invalid memory type "invariant"');
+
+    expect(() => {
+      ctx.addMemory('lesson' as any, 'Strict test', 'content');
+    }).toThrow('Invalid memory type "lesson"');
+  });
+
   it('should update a memory and search it via FTS', () => {
-    const id = ctx.addMemory('lesson', 'Original', 'content 1');
+    const id = ctx.addMemory('warning', 'Original', 'content 1');
     
     ctx.updateMemory(id, 'content updated', 'Updated Title', ['new-tag']);
     
@@ -63,7 +73,7 @@ describe('ContextManager', () => {
   });
 
   it('should correctly delete a memory', () => {
-    const id = ctx.addMemory('lesson', 'To be deleted', 'content');
+    const id = ctx.addMemory('warning', 'To be deleted', 'content');
     expect(ctx.getMemory(id)).not.toBeNull();
     
     ctx.deleteMemory(id);
@@ -108,6 +118,52 @@ describe('ContextManager', () => {
     expect(res.prunedCount).toBe(1);
     expect(ctx.getMemory(orphanId)).toBeNull();
     expect(ctx.getMemory('file_active_ts')).not.toBeNull();
+  });
+
+  it('should idempotently converge legacy database rows on startup and preserve invariant tags', async () => {
+    const legacyCtxName = 'legacy-migration-test';
+    const legacyCtx = new ContextManager(legacyCtxName);
+    const db = legacyCtx.getDb();
+
+    // Directly insert legacy rows bypassing addMemory validation
+    db.prepare(`
+      INSERT INTO memories (id, type, title, context, confidence, created, updated, accessed, access_count, source)
+      VALUES 
+        ('mem_leg_1', 'invariant', 'Old Invariant Rule', '${legacyCtxName}', 1.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 'manual'),
+        ('mem_leg_2', 'lesson', 'Old Lesson Gotcha', '${legacyCtxName}', 1.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 'manual'),
+        ('mem_leg_3', 'pattern', 'Old Pattern Model', '${legacyCtxName}', 1.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 'manual'),
+        ('mem_leg_4', 'sequence', 'Old Sequence Workflow', '${legacyCtxName}', 1.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 'manual')
+    `).run();
+
+    await legacyCtx.close();
+
+    // Reopen context (triggers initSchema convergence)
+    const reopenedCtx = new ContextManager(legacyCtxName);
+    try {
+      const mem1 = reopenedCtx.getDb().prepare("SELECT * FROM memories WHERE id = 'mem_leg_1'").get() as any;
+      const mem2 = reopenedCtx.getDb().prepare("SELECT * FROM memories WHERE id = 'mem_leg_2'").get() as any;
+      const mem3 = reopenedCtx.getDb().prepare("SELECT * FROM memories WHERE id = 'mem_leg_3'").get() as any;
+      const mem4 = reopenedCtx.getDb().prepare("SELECT * FROM memories WHERE id = 'mem_leg_4'").get() as any;
+
+      expect(mem1.type).toBe('fact');
+      expect(mem2.type).toBe('warning');
+      expect(mem3.type).toBe('concept');
+      expect(mem4.type).toBe('guide');
+
+      // Verify tag was preserved for invariant
+      const tags1 = reopenedCtx.getDb().prepare("SELECT tag FROM tags WHERE memory_id = 'mem_leg_1'").all() as any[];
+      expect(tags1.map(t => t.tag)).toContain('invariant');
+
+      // Verify search by canonical type works in SQLite
+      const factResults = reopenedCtx.searchMemories('', false, { type: 'fact' });
+      expect(factResults.some(r => r.id === 'mem_leg_1')).toBe(true);
+
+      // Verify search by legacy type alias also works
+      const legacySearch = reopenedCtx.searchMemories('', false, { type: 'invariant' as any });
+      expect(legacySearch.some(r => r.id === 'mem_leg_1')).toBe(true);
+    } finally {
+      await reopenedCtx.close();
+    }
   });
 });
 

@@ -8,14 +8,12 @@
   --accent-hover: #60a5fa;
   --border-color: #334155;
   
-  --color-concept: #38bdf8;
   --color-fact: #10b981;
-  --color-lesson: #f59e0b;
-  --color-pattern: #8b5cf6;
+  --color-decision: #3b82f6;
   --color-warning: #ef4444;
+  --color-concept: #38bdf8;
   --color-guide: #ec4899;
   --color-codemap: #06b6d4;
-  --color-sequence: #6366f1;
 }
 
 body {
@@ -947,15 +945,18 @@ tr:hover td {
   display: inline-block;
 }
 
-.badge-concept { background-color: color-mix(in srgb, var(--color-concept) 20%, transparent); color: var(--color-concept); }
 .badge-fact { background-color: color-mix(in srgb, var(--color-fact) 20%, transparent); color: var(--color-fact); }
-.badge-lesson { background-color: color-mix(in srgb, var(--color-lesson) 20%, transparent); color: var(--color-lesson); }
-.badge-pattern { background-color: color-mix(in srgb, var(--color-pattern) 20%, transparent); color: var(--color-pattern); }
+.badge-decision { background-color: color-mix(in srgb, var(--color-decision) 20%, transparent); color: var(--color-decision); }
 .badge-warning { background-color: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning); }
+.badge-concept { background-color: color-mix(in srgb, var(--color-concept) 20%, transparent); color: var(--color-concept); }
 .badge-guide { background-color: color-mix(in srgb, var(--color-guide) 20%, transparent); color: var(--color-guide); }
 .badge-codemap { background-color: color-mix(in srgb, var(--color-codemap) 20%, transparent); color: var(--color-codemap); }
-.badge-sequence { background-color: color-mix(in srgb, var(--color-sequence) 20%, transparent); color: var(--color-sequence); }
 .badge-default { background-color: var(--bg-surface-hover); color: var(--text-main); }
+/* Backward-compatible fallbacks */
+.badge-invariant { background-color: color-mix(in srgb, var(--color-fact) 20%, transparent); color: var(--color-fact); }
+.badge-lesson, .badge-learning { background-color: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning); }
+.badge-pattern { background-color: color-mix(in srgb, var(--color-concept) 20%, transparent); color: var(--color-concept); }
+.badge-sequence { background-color: color-mix(in srgb, var(--color-guide) 20%, transparent); color: var(--color-guide); }
 
 /* Filter Pills */
 .filter-pills-bar {

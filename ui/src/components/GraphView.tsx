@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
-import { api, applyThemeColors, type GraphColorSettings, type StormDrainSettings } from '../api';
+import { api, applyThemeColors, MEMORY_TYPES, type GraphColorSettings, type StormDrainSettings } from '../api';
 import MemoryEditor from './MemoryEditor';
 import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal, Orbit, Compass, Sparkles } from 'lucide-react';
 
@@ -11,8 +11,6 @@ interface GraphViewProps {
 }
 
 type ScopeDepth = 0 | 1 | 2;
-
-const MEMORY_TYPES = ['all', 'concept', 'pattern', 'guide', 'lesson', 'fact', 'warning', 'codemap', 'sequence'] as const;
 
 import { 
   getDegreeAwareLinkDistance, 
@@ -272,14 +270,12 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
 
   const [colorSettings, setColorSettings] = useState<GraphColorSettings>({
     nodes: {
-      concept: '#38bdf8',
-      codemap: '#06b6d4',
       fact: '#10b981',
-      lesson: '#f59e0b',
-      pattern: '#8b5cf6',
+      decision: '#3b82f6',
       warning: '#ef4444',
+      concept: '#38bdf8',
       guide: '#ec4899',
-      sequence: '#6366f1'
+      codemap: '#06b6d4'
     },
     edges: {
       affects: '#38bdf8',

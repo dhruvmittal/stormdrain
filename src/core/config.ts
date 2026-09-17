@@ -45,14 +45,12 @@ export const DEFAULT_SETTINGS: StormDrainSettings = {
   },
   colors: {
     nodes: {
-      concept: '#38bdf8',  // Sky Blue
-      codemap: '#06b6d4',  // Cyan (Source File DAG)
       fact: '#10b981',     // Emerald Green
-      lesson: '#f59e0b',   // Amber
-      pattern: '#8b5cf6',  // Purple
+      decision: '#3b82f6',  // Blue
       warning: '#ef4444',  // Red
+      concept: '#38bdf8',  // Sky Blue
       guide: '#ec4899',    // Pink
-      sequence: '#6366f1'  // Indigo
+      codemap: '#06b6d4'   // Cyan (Source File DAG)
     },
     edges: {
       imports: '#38bdf8',
