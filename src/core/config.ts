@@ -105,7 +105,9 @@ export class ConfigManager {
   }
 
   public saveConfig() {
-    fs.writeFileSync(this.configPath, JSON.stringify(this.config, null, 2));
+    const tmpPath = `${this.configPath}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(this.config, null, 2));
+    fs.renameSync(tmpPath, this.configPath);
   }
 
   public getSettings(): StormDrainSettings {
@@ -244,6 +246,17 @@ export class ConfigManager {
     }
 
     const normPath = path.resolve(workspacePath);
+
+    // Prevent duplicate identical path bindings across distinct non-global contexts
+    if (resolvedName !== '_global') {
+      const alreadyClaimed = Object.values(this.config.contexts).some(
+        c => c.name !== resolvedName && c.name !== '_global' && (c.paths || []).some(p => path.resolve(p) === normPath)
+      );
+      if (alreadyClaimed) {
+        return false;
+      }
+    }
+
     const existingPaths = this.config.contexts[resolvedName].paths || [];
 
     if (!existingPaths.includes(normPath)) {

@@ -45,6 +45,10 @@ export class ContextManager {
 
   private cachedWorkspaceRoots?: string[];
 
+  public clearCache(): void {
+    this.cachedWorkspaceRoots = undefined;
+  }
+
   public getWorkspaceRoots(): string[] {
     if (this.cachedWorkspaceRoots) {
       return this.cachedWorkspaceRoots;
@@ -54,11 +58,14 @@ export class ContextManager {
       const ctx = cfg.getContext(this.name);
       const roots = (ctx?.paths || []).map(p => path.resolve(p));
       const cwd = path.resolve(process.cwd());
-      if (!roots.includes(cwd)) roots.push(cwd);
+      if (roots.length === 0 && !ConfigManager.isSystemOrHomeRoot(cwd)) {
+        roots.push(cwd);
+      }
       this.cachedWorkspaceRoots = roots;
       return roots;
     } catch {
-      const roots = [path.resolve(process.cwd())];
+      const cwd = path.resolve(process.cwd());
+      const roots = ConfigManager.isSystemOrHomeRoot(cwd) ? [] : [cwd];
       this.cachedWorkspaceRoots = roots;
       return roots;
     }

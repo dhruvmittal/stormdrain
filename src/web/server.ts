@@ -89,12 +89,31 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   // Helper middleware wrapper
   const withContext = (handler: (req: express.Request, res: express.Response, ctx: ContextManager) => Promise<void>) => {
     return async (req: express.Request, res: express.Response) => {
-      const rawContext = req.query.context ? String(req.query.context) : undefined;
+      let rawContext = req.query.context ? String(req.query.context).trim() : undefined;
       if (rawContext !== undefined && !isValidContextName(rawContext)) {
         res.status(400).json({ error: 'Invalid context name: must contain only alphanumeric characters, dashes, or underscores' });
         return;
       }
+
+      // If context not in query, check target path clues from query or body
+      if (!rawContext) {
+        const candidate = (
+          (typeof req.query.target === 'string' && req.query.target) ||
+          (typeof req.body?.targetFile === 'string' && req.body.targetFile) ||
+          (typeof req.body?.target === 'string' && req.body.target) ||
+          (typeof req.body?.directory === 'string' && req.body.directory) ||
+          (Array.isArray(req.body?.targets) && typeof req.body.targets[0] === 'string' && req.body.targets[0])
+        );
+        if (candidate && !candidate.startsWith('mem_')) {
+          const matched = config.resolveContextByCwd(candidate);
+          if (matched) rawContext = matched;
+        }
+      }
+
+      const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method.toUpperCase());
+
       const active = rawContext || config.getActiveContext();
+
       try {
         const ctx = getContext(active);
         await handler(req, res, ctx);

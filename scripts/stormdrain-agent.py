@@ -1131,7 +1131,13 @@ def main():
     parser.add_argument("--timeout", "-t", type=int, default=DEFAULT_TIMEOUT, help="HTTP timeout in seconds (default: 10)")
     args = parser.parse_args()
 
-    client = StormDrainApiClient(base_url=args.server_url, context=args.context, timeout=args.timeout)
+    context = args.context
+    if not context:
+        git_root, _ = get_git_info()
+        if git_root:
+            context = os.path.basename(os.path.abspath(git_root))
+
+    client = StormDrainApiClient(base_url=args.server_url, context=context, timeout=args.timeout)
     server = StormDrainMcpServer(client)
     server.run_stdio()
 

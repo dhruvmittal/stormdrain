@@ -450,17 +450,123 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(text).toContain('Target Guardrail');
   });
 
-  it('should strictly reject sd_add with non-canonical types', async () => {
+  it('should strictly isolate mutating writes across multiple registered contexts by target path', async () => {
+    const configManager = (mcpServer as any).config;
+    const projADir = path.join(testDir, 'proj-a');
+    const projBDir = path.join(testDir, 'proj-b');
+    fs.mkdirSync(projADir, { recursive: true });
+    fs.mkdirSync(projBDir, { recursive: true });
+
+    configManager.addContext('tenant-a', [projADir]);
+    configManager.addContext('tenant-b', [projBDir]);
+
+    // Write targeting Project A
+    const resA = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'fact',
+        title: 'Project A Architectural Axiom',
+        content: 'Exclusive to Project A',
+        target_file: path.join(projADir, 'index.ts')
+      }
+    });
+    expect((resA as any).isError).toBeFalsy();
+    const textA = ((resA as any).content[0] as any).text;
+    expect(textA).toContain('to context "tenant-a"');
+
+    // Write targeting Project B
+    const resB = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'decision',
+        title: 'Project B Decision Record',
+        content: 'Exclusive to Project B',
+        target_file: path.join(projBDir, 'index.ts')
+      }
+    });
+    expect((resB as any).isError).toBeFalsy();
+    const textB = ((resB as any).content[0] as any).text;
+    expect(textB).toContain('to context "tenant-b"');
+
+    // Search Project A: should not see Project B
+    const searchA = await client.callTool({
+      name: 'sd_search',
+      arguments: {
+        query: 'Exclusive',
+        context: 'tenant-a'
+      }
+    });
+    const searchTextA = ((searchA as any).content[0] as any).text;
+    expect(searchTextA).toContain('Project A Architectural Axiom');
+    expect(searchTextA).not.toContain('Project B Decision Record');
+
+    // Search Project B: should not see Project A
+    const searchB = await client.callTool({
+      name: 'sd_search',
+      arguments: {
+        query: 'Exclusive',
+        context: 'tenant-b'
+      }
+    });
+    const searchTextB = ((searchB as any).content[0] as any).text;
+    expect(searchTextB).toContain('Project B Decision Record');
+    expect(searchTextB).not.toContain('Project A Architectural Axiom');
+  });
+
+  it('should fail closed when performing mutating operations on unmapped workspaces in a multi-tenant environment', async () => {
+    const configManager = (mcpServer as any).config;
+    configManager.addContext('some-active-tenant', [path.join(testDir, 'active-tenant')]);
+
+    const unmappedDir = path.join(testDir, 'completely-unmapped');
+    fs.mkdirSync(unmappedDir, { recursive: true });
+
     const res = await client.callTool({
       name: 'sd_add',
       arguments: {
-        type: 'invariant',
-        title: 'Legacy Invariant',
-        content: 'Should be rejected'
+        type: 'fact',
+        title: 'Unmapped Write Attempt',
+        content: 'Should fail closed',
+        target_file: path.join(unmappedDir, 'file.ts')
       }
     });
+
     expect((res as any).isError).toBe(true);
-    expect(((res as any).content[0] as any).text).toContain('Invalid memory type "invariant"');
+    const text = ((res as any).content[0] as any).text;
+    expect(text).toContain('Cannot perform mutating operation "sd_add"');
+    expect(text).toContain('workspace path does not belong to any registered StormDrain context');
+  });
+
+  it('should resolve context by probing memory ID in multi-tenant environments', async () => {
+    const configManager = (mcpServer as any).config;
+    const projCDir = path.join(testDir, 'proj-c');
+    fs.mkdirSync(projCDir, { recursive: true });
+    configManager.addContext('tenant-c', [projCDir]);
+
+    // Add memory to tenant-c
+    const addRes = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'fact',
+        title: 'Probed Memory',
+        content: 'Memory to probe by ID',
+        target_file: path.join(projCDir, 'module.ts')
+      }
+    });
+    const addText = ((addRes as any).content[0] as any).text;
+    const memId = addText.split('Successfully added memory ')[1].split(' ')[0].trim();
+
+    // Call sd_get with only memory ID and no context or path clues
+    const getRes = await client.callTool({
+      name: 'sd_get',
+      arguments: {
+        id: memId
+      }
+    });
+
+    expect((getRes as any).isError).toBeFalsy();
+    const getText = ((getRes as any).content[0] as any).text;
+    expect(getText).toContain('Probed Memory');
+    expect(getText).toContain('tenant-c');
   });
 });
 

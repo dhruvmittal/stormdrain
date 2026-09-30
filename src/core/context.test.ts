@@ -165,5 +165,19 @@ describe('ContextManager', () => {
       await reopenedCtx.close();
     }
   });
+
+  it('should strictly isolate getWorkspaceRoots and never append foreign CWD or home root', () => {
+    const boundPath = path.join(testDir, 'isolated-proj');
+    fs.mkdirSync(boundPath, { recursive: true });
+    config.bindPathToContext('test-context', boundPath);
+    
+    // Clear cache to pick up newly bound path
+    ctx.clearCache();
+    const roots = ctx.getWorkspaceRoots();
+
+    expect(roots).toContain(path.resolve(boundPath));
+    expect(roots).not.toContain(path.resolve(os.homedir()));
+    expect(roots.length).toBe(1);
+  });
 });
 

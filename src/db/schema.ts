@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 export const initSchema = (db: Database.Database): void => {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
 
   // Metadata table
   db.exec(`

@@ -705,10 +705,11 @@ program
   });
 
 program
-  .command('serve')
+  .command('serve [directory]')
+  .alias('mcp')
   .description('Start the StormDrain MCP server (stdio)')
-  .action(async () => {
-    const server = new StormDrainMcpServer();
+  .action(async (directory) => {
+    const server = new StormDrainMcpServer(directory);
     await server.run();
   });
 

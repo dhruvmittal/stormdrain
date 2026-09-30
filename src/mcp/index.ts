@@ -21,9 +21,26 @@ export class StormDrainMcpServer {
   private reader: FileReader;
   private contextCache: Map<string, ContextManager> = new Map();
 
-  constructor() {
+  private sessionWorkspaceDir?: string;
+  private readonly MUTATING_TOOLS = new Set([
+    'sd_add',
+    'sd_update',
+    'sd_relate',
+    'sd_delete',
+    'sd_consolidate',
+    'sd_scan',
+    'sd_prune'
+  ]);
+
+  constructor(workspaceDirectory?: string) {
     this.config = new ConfigManager();
     this.reader = new FileReader(this.config);
+
+    if (workspaceDirectory) {
+      this.sessionWorkspaceDir = path.resolve(workspaceDirectory);
+    } else if (!ConfigManager.isSystemOrHomeRoot(process.cwd())) {
+      this.sessionWorkspaceDir = path.resolve(process.cwd());
+    }
     
     this.server = new Server(
       {
@@ -41,14 +58,131 @@ export class StormDrainMcpServer {
     this.setupHandlers();
   }
 
-  private getContext(explicitContext?: string): { ctx: ContextManager; targetContext: string } {
-    const targetContext = this.config.resolveContext(explicitContext, process.cwd());
+  private getOrCreateContext(targetContext: string): { ctx: ContextManager; targetContext: string } {
     let ctx = this.contextCache.get(targetContext);
     if (!ctx) {
       ctx = new ContextManager(targetContext);
       this.contextCache.set(targetContext, ctx);
     }
     return { ctx, targetContext };
+  }
+
+  public getContext(explicitContext?: string): { ctx: ContextManager; targetContext: string } {
+    const ws = this.sessionWorkspaceDir || process.cwd();
+    const targetContext = this.config.resolveContext(explicitContext, ws);
+    return this.getOrCreateContext(targetContext);
+  }
+
+  private getContextForRequest(request: any): { ctx: ContextManager; targetContext: string } {
+    const toolName = request?.params?.name;
+    const args = request?.params?.arguments || {};
+    const isMutating = this.MUTATING_TOOLS.has(toolName);
+
+    // Tier 0: Explicit context argument
+    const explicitContext = (args.context || args.contextName) as string | undefined;
+    if (explicitContext) {
+      const resolvedExplicit = explicitContext === 'global' ? '_global' : explicitContext;
+      if (this.config.getContext(resolvedExplicit)) {
+        return this.getOrCreateContext(resolvedExplicit);
+      }
+    }
+
+    // Tier 1: Target path candidate introspection
+    const candidatePaths: string[] = [];
+    const collectCandidate = (val: any) => {
+      if (typeof val === 'string' && val.trim() && !val.trim().startsWith('mem_')) {
+        candidatePaths.push(val.trim());
+      } else if (Array.isArray(val)) {
+        for (const item of val) {
+          if (typeof item === 'string' && item.trim() && !item.trim().startsWith('mem_')) {
+            candidatePaths.push(item.trim());
+          }
+        }
+      }
+    };
+
+    collectCandidate(args.path);
+    collectCandidate(args.filePath);
+    collectCandidate(args.target_file);
+    collectCandidate(args.directory);
+    collectCandidate(args.target);
+    collectCandidate(args.targets);
+    collectCandidate(args.add_targets);
+
+    const baseDir = this.sessionWorkspaceDir || (!ConfigManager.isSystemOrHomeRoot(process.cwd()) ? process.cwd() : undefined);
+
+    for (const p of candidatePaths) {
+      if (path.isAbsolute(p)) {
+        const matched = this.config.resolveContextByCwd(p);
+        if (matched) return this.getOrCreateContext(matched);
+      } else {
+        if (baseDir) {
+          const abs = path.resolve(baseDir, p);
+          const matched = this.config.resolveContextByCwd(abs);
+          if (matched) return this.getOrCreateContext(matched);
+        }
+        for (const ctxCfg of Object.values(this.config.getContexts())) {
+          for (const root of ctxCfg.paths || []) {
+            try {
+              if (fs.existsSync(path.resolve(root, p))) {
+                return this.getOrCreateContext(ctxCfg.name);
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    // Tier 1b: Memory ID introspection (for sd_get, sd_update, sd_delete, sd_relate)
+    const candidateMemIds: string[] = [];
+    const collectMemId = (val: any) => {
+      if (typeof val === 'string' && val.trim().startsWith('mem_')) {
+        candidateMemIds.push(val.trim());
+      }
+    };
+    collectMemId(args.id);
+    collectMemId(args.source_id);
+    collectMemId(args.target);
+
+    if (candidateMemIds.length > 0) {
+      if (baseDir) {
+        const sessionCtxName = this.config.resolveContextByCwd(baseDir);
+        if (sessionCtxName) {
+          const { ctx: sCtx } = this.getOrCreateContext(sessionCtxName);
+          for (const mid of candidateMemIds) {
+            try {
+              const row = sCtx.getDb().prepare('SELECT 1 FROM memories WHERE id = ?').get(mid);
+              if (row) return this.getOrCreateContext(sessionCtxName);
+            } catch {}
+          }
+        }
+      }
+      for (const ctxCfg of Object.values(this.config.getContexts())) {
+        try {
+          const { ctx: pCtx } = this.getOrCreateContext(ctxCfg.name);
+          for (const mid of candidateMemIds) {
+            const row = pCtx.getDb().prepare('SELECT 1 FROM memories WHERE id = ?').get(mid);
+            if (row) return this.getOrCreateContext(ctxCfg.name);
+          }
+        } catch {}
+      }
+    }
+
+    // Tier 2: Session workspace matching
+    if (baseDir) {
+      const matched = this.config.resolveContextByCwd(baseDir);
+      if (matched) return this.getOrCreateContext(matched);
+    }
+
+    // Tier 3: Fail-closed on mutating operations if project contexts exist, safe fallback to _global on read queries
+    if (isMutating) {
+      const nonGlobalContexts = Object.keys(this.config.getContexts()).filter(k => k !== '_global' && k !== 'global');
+      if (nonGlobalContexts.length > 0) {
+        throw new Error(`Cannot perform mutating operation "${toolName}": workspace path does not belong to any registered StormDrain context. Please provide explicit "context" parameter or initialize with sd_init.`);
+      }
+    }
+
+    return this.getOrCreateContext('_global');
   }
 
   public async close(): Promise<void> {
@@ -399,10 +533,9 @@ export class StormDrainMcpServer {
 
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const explicitContext = request.params.arguments?.context as string | undefined;
-      const { ctx, targetContext } = this.getContext(explicitContext);
-
       try {
+        const { ctx, targetContext } = this.getContextForRequest(request);
+
         if (request.params.name === 'sd_read') {
           const args = request.params.arguments as {
             path?: string;
@@ -436,6 +569,11 @@ export class StormDrainMcpServer {
           const includeInvariants = args.include_invariants !== undefined ? args.include_invariants : args.includeInvariants;
           const includeSymbols = args.include_symbols !== undefined ? args.include_symbols : args.includeSymbols;
 
+          const ctxCfg = this.config.getContext(targetContext);
+          const contextRoot = (ctxCfg?.paths && ctxCfg.paths.length > 0)
+            ? ctxCfg.paths[0]
+            : (this.sessionWorkspaceDir || process.cwd());
+
           const result = await this.reader.readFile({
             filePath: targetPath,
             startLine,
@@ -443,7 +581,7 @@ export class StormDrainMcpServer {
             includeInvariants,
             includeSymbols,
             context: targetContext,
-            cwd: process.cwd()
+            cwd: contextRoot
           });
 
           return {
@@ -740,7 +878,7 @@ export class StormDrainMcpServer {
           } else {
             this.config.bindPathToContext(name, dir);
           }
-          this.config.setActiveContext(name);
+          this.sessionWorkspaceDir = path.resolve(dir);
 
           scaffoldAgentsMd(dir);
 
@@ -834,8 +972,8 @@ export class StormDrainMcpServer {
 
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      let rawContext = (args?.context as string | undefined)?.trim();
-      const { ctx } = this.getContext(rawContext);
+      const { ctx } = this.getContextForRequest(request);
+      const wsDir = this.sessionWorkspaceDir || (ctx.getWorkspaceRoots()[0] || process.cwd());
 
       if (name === 'sd_curate') {
         const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
@@ -864,7 +1002,7 @@ export class StormDrainMcpServer {
         const limit = args?.limit ? parseInt(args.limit as string, 10) : 5;
         const harvestResult = await generateHarvestPrompt(ctx, {
           limit: isNaN(limit) ? 5 : limit,
-          workspaceDir: process.cwd(),
+          workspaceDir: wsDir,
         });
 
         return {
@@ -890,15 +1028,12 @@ export class StormDrainMcpServer {
   }
 
   public async run() {
-    const cwd = process.cwd();
-    const resolvedContext = this.config.resolveContext(undefined, cwd);
-    if (!ConfigManager.isSystemOrHomeRoot(cwd)) {
-      this.config.bindPathToContext(resolvedContext, cwd);
-    }
+    const ws = this.sessionWorkspaceDir || process.cwd();
+    const resolvedContext = this.config.resolveContext(undefined, ws);
 
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error(`StormDrain MCP server running on stdio for workspace "${cwd}" [context: "${resolvedContext}"]`);
+    console.error(`StormDrain MCP server running on stdio for workspace "${ws}" [context: "${resolvedContext}"]`);
   }
 
 }
