@@ -34,11 +34,11 @@ This will install `stormdrain` globally on your system.
 
 ## 🔌 MCP Client Configuration
 
-StormDrain runs as an MCP server over `stdio`. Below are the configuration snippets to connect StormDrain to your favorite AI agent environments.
+StormDrain runs as an MCP server over `stdio`. It automatically routes requests to the correct project context by introspecting file paths, or can be explicitly pinned to a workspace root by passing a directory argument (`stormdrain serve [dir]` or alias `stormdrain mcp [dir]`).
 
 ### OpenCode
 
-Add the following to your `opencode.json` configuration file:
+Add to your global `opencode.json` or project-local `.opencode/opencode.json`:
 
 ```json
 {
@@ -50,11 +50,25 @@ Add the following to your `opencode.json` configuration file:
   }
 }
 ```
-*(If you didn't run `npm link`, replace the command with `"node"` and the args with `["/absolute/path/to/stormdrain/dist/index.js", "serve"]`)*
+
+To pin to the current workspace root in project-local configuration:
+
+```json
+{
+  "mcpServers": {
+    "stormdrain": {
+      "command": "stormdrain",
+      "args": ["serve", "."]
+    }
+  }
+}
+```
+
+*(If you didn't run `npm link`, replace `"stormdrain"` with `"node"` and `"serve"` with `"/path/to/stormdrain/dist/index.js", "serve"`)*
 
 ### Antigravity
 
-For Google's Antigravity, add this server block to your `~/.gemini/antigravity/mcp_config.json`:
+For Google's Antigravity, add to `~/.gemini/antigravity/mcp_config.json`:
 
 ```json
 {
@@ -62,6 +76,19 @@ For Google's Antigravity, add this server block to your `~/.gemini/antigravity/m
     "stormdrain": {
       "command": "stormdrain",
       "args": ["serve"]
+    }
+  }
+}
+```
+
+To pin to a specific workspace root:
+
+```json
+{
+  "mcpServers": {
+    "stormdrain": {
+      "command": "stormdrain",
+      "args": ["serve", "/path/to/project"]
     }
   }
 }
@@ -69,11 +96,25 @@ For Google's Antigravity, add this server block to your `~/.gemini/antigravity/m
 
 ### Claude Code
 
-For Anthropic's Claude Code, you can register the MCP server directly via the CLI:
+Register via the CLI (global or pinned to current workspace):
 
 ```bash
+# Global
 claude mcp add stormdrain -- stormdrain serve
+
+# Pinned to current workspace
+claude mcp add stormdrain -- stormdrain serve .
 ```
+
+### Remote Hosts (Python Thin Client)
+
+For remote VMs or environments without Node.js, StormDrain includes a zero-dependency Python client (`scripts/stormdrain-agent.py`, stock Python 3.6+) that connects to a central `stormdrain web` instance:
+
+```bash
+stormdrain export-agent > stormdrain-agent.py
+```
+
+See the **[Remote Setup Guide](docs/remote-client-setup.md)** for SSH tunneling and client configuration.
 
 ---
 
@@ -81,13 +122,17 @@ claude mcp add stormdrain -- stormdrain serve
 
 ### Command Line Interface
 
-StormDrain comes with a powerful CLI for human interaction:
+StormDrain comes with a powerful CLI for project setup and human interaction:
 
 ```bash
-# Manage contexts
-stormdrain context list
-stormdrain context create my-project
-stormdrain context use my-project
+# Initialize and bind a project repository
+stormdrain init my-project /path/to/project
+
+# Manage context path bindings
+stormdrain context list                              # List contexts and bound filesystem paths
+stormdrain context bind my-project /path/to/project  # Bind a workspace directory to a context
+stormdrain context unbind my-project /path/to/old    # Unbind a workspace directory
+stormdrain context use my-project                    # Set default context for interactive CLI commands
 
 # Manage memories
 stormdrain add lesson "NixOS mkDefault" "Always use mkDefault in NixOS module options to prevent priority conflicts."
@@ -95,8 +140,8 @@ stormdrain search "NixOS"
 stormdrain recall
 
 # Start servers
-stormdrain serve   # Starts the MCP stdio server (for agents)
-stormdrain web     # Starts the Web UI on http://localhost:3456 (for humans)
+stormdrain serve [dir]   # Starts MCP stdio server (alias: stormdrain mcp [dir])
+stormdrain web           # Starts Web UI on http://localhost:3456
 ```
 
 ### Shell Autocompletion
@@ -129,9 +174,9 @@ Then navigate to [http://localhost:3456](http://localhost:3456) in your browser 
 
 ## 🏗️ Architecture & Concepts
 
-1. **Memories**: Typed markdown files (`fact`, `pattern`, `lesson`, `warning`, `guide`, `codemap`) with YAML frontmatter containing metadata like confidence scores and relationships.
-2. **Contexts**: Separate namespaces stored under `~/.stormdrain/contexts/`. Each context contains its own Git repository and SQLite index.
-3. **The Engine**: Uses `better-sqlite3` to maintain an instantaneous FTS5 search index alongside the markdown source of truth.
+1. **Memories**: Typed markdown files (`fact`, `decision`, `guide`, `warning`, `concept`, `codemap`) with YAML frontmatter containing metadata like confidence scores and relationships.
+2. **Contexts & Isolation**: Separate namespaces under `~/.stormdrain/contexts/` with 1:1 project path bindings. Requests route via target path introspection, and mutating operations on unmapped directories fail closed to prevent cross-project crosstalk.
+3. **The Engine**: Uses `better-sqlite3` with WAL mode and `busy_timeout` to maintain an instantaneous FTS5 search index alongside the markdown source of truth.
 
 ---
 
