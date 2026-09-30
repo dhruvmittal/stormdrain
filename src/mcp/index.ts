@@ -76,7 +76,11 @@ export class StormDrainMcpServer {
   private getContextForRequest(request: any): { ctx: ContextManager; targetContext: string } {
     const toolName = request?.params?.name;
     const args = request?.params?.arguments || {};
-    const isMutating = this.MUTATING_TOOLS.has(toolName);
+    let isMutating = this.MUTATING_TOOLS.has(toolName);
+    if (toolName === 'sd_memory') {
+      const action = args.action;
+      isMutating = action === 'add' || action === 'delete' || action === 'consolidate';
+    }
 
     // Tier 0: Explicit context argument
     const explicitContext = (args.context || args.contextName) as string | undefined;
@@ -281,248 +285,58 @@ export class StormDrainMcpServer {
           }
         },
         {
-          name: 'sd_search',
-          description: 'SEARCH TOOL: Perform SQLite FTS5 full-text and semantic keyword search across memories. Automatically searches both the active workspace context and the global ("_global") context simultaneously, tagging each result with its originating context.',
+          name: 'sd_memory',
+          description: 'Manage memories in the knowledge graph: add invariants/decisions, search memories, inspect nodes, delete memories, or consolidate micro-memories.',
           inputSchema: {
             type: 'object',
             properties: {
-              query: {
+              action: {
                 type: 'string',
-                description: 'Search query (optional if metadata filters are provided)'
+                enum: ['add', 'search', 'get', 'delete', 'consolidate'],
+                description: 'The memory operation to execute: "add" to record knowledge, "search" to query, "get" to inspect full details, "delete" to remove, "consolidate" to merge micro-memories.'
               },
               type: {
                 type: 'string',
-                description: 'Optional memory type filter (decision, lesson, pattern, etc.)'
-              },
-              context: contextProp
-            }
-          }
-        },
-        {
-          name: 'sd_get',
-          description: 'NODE INSPECTION TOOL: Retrieve the complete, unabridged record for any graph node—including memories (full markdown content, metadata, confidence, tags, incoming/outgoing relation links) and codemap file vertices (AST symbol outlines, imports, callers, and attached micro-memories). Accepts a memory ID (e.g. "mem_123456"), codemap ID (e.g. "file_src_main_ts"), or file path (e.g. "src/main.ts").',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: {
-                type: 'string',
-                description: 'Memory ID (e.g. "mem_123456"), codemap ID (e.g. "file_src_main_ts"), or file path (e.g. "src/main.ts")'
-              },
-              context: contextProp
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'sd_delete',
-          description: 'DELETION TOOL: Safely delete a memory by ID. Cascades deletion through SQLite indices, FTS table, tags, incoming/outgoing relations, and disk storage with Git history logging.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: {
-                type: 'string',
-                description: 'Memory ID to delete (e.g. "mem_123456")'
-              },
-              context: contextProp
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'sd_consolidation_candidates',
-          description: 'CONSOLIDATION SCANNER: Scan the graph for file vertices or concepts that have accumulated multiple unconsolidated micro-memories (default >=3 or custom threshold). Review returned candidate memories to decide whether to selectively synthesize cohesive subsets into a guide via sd_consolidate.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              threshold: {
-                type: 'number',
-                description: 'Minimum micro-memory count to qualify as a candidate (defaults to user settings threshold, typically 3)'
-              },
-              context: contextProp
-            }
-          }
-        },
-        {
-          name: 'sd_add',
-          description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions (ADRs), or reusable patterns. To promote or record universal knowledge applicable across all projects, pass context: "_global" (or "global"). EDITORIAL RULE: Record only high-signal knowledge that prevents future errors or explains non-obvious constraints. Do NOT record routine implementation summaries or transient task progress.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              type: {
-                type: 'string',
-                enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
-                description: 'Canonical type: "warning" (hazard/pitfall/anti-pattern), "fact" (verified invariant/caller contract), "decision" (ADR/trade-off), "guide" (workflow/runbook), "concept" (domain model)'
+                enum: USER_CREATABLE_TYPES,
+                description: 'Memory type for "add" action: fact, decision, guide, warning, concept'
               },
               title: {
                 type: 'string',
-                description: 'Short, descriptive title capturing the invariant or takeaway'
+                description: 'Title of the memory for "add" action'
               },
               content: {
                 type: 'string',
-                description: 'Markdown content. Focus on non-obvious rationale, root causes, contracts, or reproduction steps. Avoid merely restating what the code does.'
+                description: 'Markdown content for "add" action'
+              },
+              target: {
+                type: 'string',
+                description: 'Target file path or memory ID to link (for "add") or consolidate (for "consolidate")'
+              },
+              relation_type: {
+                type: 'string',
+                description: 'Relation type for "add" action linking to target (e.g. affects, supports, related_to)'
               },
               tags: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Categorization tags. Conventions: #decision (ADR), #invariant, #hypothesis (unverified with test criteria), #environment (OS/toolchain quirk), #anti-pattern, #performance'
+                description: 'Categorization tags for "add" action'
               },
-              target_file: targetFileProp,
-              targets: {
-                type: 'array',
-                items: { type: 'string' },
-                description: 'Multiple target file paths or memory IDs to associate with this memory'
-              },
-              relations: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    target: { type: 'string', description: 'Target memory ID or file path' },
-                    type: { 
-                      type: 'string', 
-                      enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
-                      description: 'Semantic relation type' 
-                    }
-                  },
-                  required: ['target']
-                },
-                description: 'Explicit typed relation edges to other memories or files'
-              },
-              relation_type: {
+              query: {
                 type: 'string',
-                description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
+                description: 'Search query for "search" action'
               },
-              context: contextProp
-            },
-            required: ['type', 'title', 'content']
-          }
-        },
-        {
-          name: 'sd_update',
-          description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, tags, or relation links by ID.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Memory ID' },
-              title: { type: 'string' },
-              content: { type: 'string' },
-              tags: { type: 'array', items: { type: 'string' } },
-              type: {
+              id: {
                 type: 'string',
-                enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
-                description: 'Canonical type: "warning" (hazard/pitfall/anti-pattern), "fact" (verified invariant/caller contract), "decision" (ADR/trade-off), "guide" (workflow/runbook), "concept" (domain model)'
-              },
-              add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
-              remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
-              relations: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    target: { type: 'string' },
-                    type: { type: 'string' }
-                  },
-                  required: ['target']
-                },
-                description: 'Replace full relations list'
-              },
-              context: contextProp
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'sd_relate',
-          description: 'RELATION TOOL: Connect two memories, or link a memory to a file vertex in the knowledge graph with an explicit semantic relationship (e.g. "supports", "contradicts", "supersedes", "related_to", "references", "depends_on", "part_of", "affects", "applies_to").',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              source_id: { type: 'string', description: 'Source memory ID (e.g. "mem_123456")' },
-              target: { type: 'string', description: 'Target memory ID or file path (e.g. "mem_789012" or "src/index.ts")' },
-              type: { 
-                type: 'string', 
-                enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
-                description: 'Semantic relation type (default: "related_to" between memories, "affects" for files)'
-              },
-              context: contextProp
-            },
-            required: ['source_id', 'target']
-          }
-        },
-        {
-          name: 'sd_scan',
-          description: 'GRAPH SYNC TOOL: Scan workspace source files (TypeScript, Python, C++, Go, Rust, MATLAB) to synchronize the codebase dependency DAG edges and file vertices in persistent memory.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              directory: {
-                type: 'string',
-                description: 'Optional workspace directory path to scan (defaults to current working directory)'
-              },
-              submodule_policy: {
-                type: 'string',
-                enum: ['dive', 'sum'],
-                description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
-              },
-              context: contextProp
-            }
-          }
-        },
-        {
-          name: 'sd_init',
-          description: 'INITIALIZATION TOOL: Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              name: {
-                type: 'string',
-                description: 'Context name (e.g. project name). Note: "global" and "_global" are reserved.'
-              },
-              directory: {
-                type: 'string',
-                description: 'Optional directory path to bind and scan (defaults to current working directory)'
-              },
-              submodule_policy: {
-                type: 'string',
-                enum: ['dive', 'sum'],
-                description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
-              }
-            },
-            required: ['name']
-          }
-        },
-        {
-          name: 'sd_consolidate',
-          description: 'CONSOLIDATION TOOL: Consolidate micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield. You can pass optional "memory_ids" to selectively merge only cohesive memories, leaving unlike facts separate.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              target_file: {
-                type: 'string',
-                description: 'Target file path (e.g. src/core/config.ts) whose micro-memories should be consolidated'
+                description: 'Memory ID (e.g. mem_123456) or file path for "get" or "delete" action'
               },
               memory_ids: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Optional list of specific memory IDs to consolidate. If omitted, all attached unconsolidated micro-memories are merged.'
+                description: 'Specific memory IDs to merge for "consolidate" action (optional)'
               },
               context: contextProp
             },
-            required: ['target_file']
-          }
-        },
-        {
-          name: 'sd_prune',
-          description: 'GRAPH PRUNE TOOL: Prune leaked or orphaned codemap file vertices from the DAG that do not belong to the workspace.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              directory: {
-                type: 'string',
-                description: 'Optional directory path to validate against (defaults to context bound paths)'
-              },
-              context: contextProp
-            }
+            required: ['action']
           }
         }
       );
@@ -535,6 +349,70 @@ export class StormDrainMcpServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const { ctx, targetContext } = this.getContextForRequest(request);
+
+        if (request.params.name === 'sd_memory') {
+          const mArgs = (request.params.arguments || {}) as any;
+          const action = mArgs.action;
+          if (!action) {
+            return {
+              content: [{ type: 'text', text: 'Validation Error: "action" parameter is required for sd_memory ("add", "search", "get", "delete", "consolidate").' }],
+              isError: true
+            };
+          }
+
+          if (action === 'add') {
+            if (!mArgs.title || !mArgs.content) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "title" and "content" are required for action "add".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_add';
+            mArgs.target_file = mArgs.target || mArgs.target_file;
+            mArgs.relation_type = mArgs.relation_type || mArgs.relationType;
+          } else if (action === 'search') {
+            if (mArgs.query === undefined) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "query" is required for action "search".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_search';
+          } else if (action === 'get') {
+            const id = mArgs.id || mArgs.target;
+            if (!id) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" or "target" is required for action "get".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_get';
+            mArgs.id = id;
+          } else if (action === 'delete') {
+            if (!mArgs.id) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" is required for action "delete".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_delete';
+          } else if (action === 'consolidate') {
+            const target = mArgs.target || mArgs.target_file;
+            if (!target) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "target" is required for action "consolidate".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_consolidate';
+            mArgs.target_file = target;
+          } else {
+            return {
+              content: [{ type: 'text', text: `Unknown action "${action}" for sd_memory. Supported actions: add, search, get, delete, consolidate.` }],
+              isError: true
+            };
+          }
+        }
 
         if (request.params.name === 'sd_read') {
           const args = request.params.arguments as {
@@ -1030,6 +908,15 @@ export class StormDrainMcpServer {
   public async run() {
     const ws = this.sessionWorkspaceDir || process.cwd();
     const resolvedContext = this.config.resolveContext(undefined, ws);
+
+    const cleanup = async () => {
+      try {
+        await this.close();
+      } catch {}
+      process.exit(0);
+    };
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
 
     const transport = new StdioServerTransport();
     await this.server.connect(transport);

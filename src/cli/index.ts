@@ -398,13 +398,45 @@ program
   .description('Add a new memory to the context knowledge graph')
   .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, guide, sequence, concept)')
   .argument('<title>', 'Title of the memory')
-  .argument('<content>', 'Markdown content of the memory')
+  .argument('[content]', 'Markdown content of the memory, or "-" to read from stdin')
+  .option('--file <path>', 'Path to file containing memory content, or "-" to read from stdin')
   .option('-c, --context <name>', 'Target context override')
   .option('-t, --target <targets...>', 'Target file(s) or memory ID(s) to link memory onto')
   .option('-r, --relation <relations...>', 'Explicit typed relation(s) in target:type format (e.g. mem_123:supports, src/b.ts:affects)')
   .option('--relation-type <type>', 'Default relation type for targets (default: affects for files, related_to for memories)')
   .option('--tags <tags...>', 'Tags for categorization')
+  .option('--json', 'Output added memory details as JSON')
   .action(async (type, title, content, options) => {
+    const MAX_CONTENT_SIZE = 256 * 1024; // 256 KB limit
+    let resolvedContent = '';
+
+    if (options.file) {
+      if (options.file === '-') {
+        resolvedContent = fs.readFileSync(0, 'utf8');
+      } else {
+        if (!fs.existsSync(options.file)) {
+          console.error(`Error: Content file "${options.file}" does not exist.`);
+          process.exitCode = 1;
+          return;
+        }
+        resolvedContent = fs.readFileSync(options.file, 'utf8');
+      }
+    } else if (content === '-') {
+      resolvedContent = fs.readFileSync(0, 'utf8');
+    } else if (content) {
+      resolvedContent = content;
+    } else {
+      console.error('Error: Memory content is required. Provide content argument, pass "-" for stdin, or use --file <path>.');
+      process.exitCode = 1;
+      return;
+    }
+
+    if (Buffer.byteLength(resolvedContent, 'utf8') > MAX_CONTENT_SIZE) {
+      console.error(`Error: Memory content exceeds maximum allowable size (${MAX_CONTENT_SIZE / 1024} KB).`);
+      process.exitCode = 1;
+      return;
+    }
+
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
@@ -422,7 +454,7 @@ program
       const id = ctx.addMemory(
         type as MemoryType,
         title,
-        content,
+        resolvedContent,
         tags,
         'manual',
         undefined,
@@ -431,11 +463,23 @@ program
         explicitRelations.length > 0 ? explicitRelations : undefined
       );
       const mem = ctx.getMemory(id);
-      const linkCount = mem?.metadata.relations.length || 0;
-      const linkMsg = linkCount > 0 
-        ? ` (linked to ${linkCount} target(s): ${mem?.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})` 
-        : '';
-      console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
+
+      if (options.json) {
+        console.log(JSON.stringify({
+          id,
+          title,
+          type,
+          context: targetCtxName,
+          status: 'added',
+          relations: mem?.metadata.relations || []
+        }, null, 2));
+      } else {
+        const linkCount = mem?.metadata.relations.length || 0;
+        const linkMsg = linkCount > 0 
+          ? ` (linked to ${linkCount} target(s): ${mem?.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})` 
+          : '';
+        console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
+      }
     } finally {
       await ctx.close();
     }
@@ -493,11 +537,16 @@ program
   .description('Search memories across active and global contexts')
   .argument('<query>', 'Search query')
   .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output search results as JSON')
   .action(async (query, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
       const results = ctx.searchMemories(query, true) as Array<{ type: string; title: string; id: string; confidence: number; content_snippet: string; context?: string }>;
+      if (options.json) {
+        console.log(JSON.stringify(results, null, 2));
+        return;
+      }
       if (results.length === 0) {
         console.log(`No memories found matching "${query}".`);
       } else {
@@ -525,7 +574,8 @@ program
       const details = ctx.getNodeDetails(id);
       if (!details) {
         console.error(`Node "${id}" not found in context "${targetCtxName}" or global context.`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       if (options.json) {
         console.log(JSON.stringify(details, null, 2));
@@ -597,7 +647,8 @@ program
       const existing = ctx.getMemory(id);
       if (!existing) {
         console.error(`Memory "${id}" not found in context "${targetCtxName}".`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       if (!options.force && process.stdin.isTTY) {
@@ -625,12 +676,17 @@ program
   .description('Find target files/concepts with high micro-memory density ready for consolidation')
   .option('-t, --threshold <number>', 'Minimum micro-memories threshold')
   .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output consolidation candidates as JSON')
   .action(async (options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
       const threshold = options.threshold ? parseInt(options.threshold, 10) : undefined;
       const candidates = ctx.findConsolidationCandidates(threshold);
+      if (options.json) {
+        console.log(JSON.stringify(candidates, null, 2));
+        return;
+      }
       if (candidates.length === 0) {
         console.log(`No consolidation candidates found in context "${targetCtxName}".`);
         return;
@@ -643,6 +699,33 @@ program
           console.log(`   - [${m.type.toUpperCase()}] ${m.title} (${m.id}, conf: ${m.confidence})${tags}`);
         }
         console.log('');
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('consolidate')
+  .description('Consolidate micro-memories attached to a target file vertex into a unified guide')
+  .argument('<target>', 'Target file path (e.g. src/core/config.ts) whose micro-memories should be consolidated')
+  .argument('[memory_ids...]', 'Optional specific memory IDs to consolidate')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output consolidation result as JSON')
+  .action(async (target, memoryIds, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const opts = (memoryIds && memoryIds.length > 0) ? { memory_ids: memoryIds } : undefined;
+      const res = ctx.consolidateNeighborhood(target, opts);
+      if (options.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      if (!res.consolidatedId) {
+        console.log(`No micro-memories (>= 2) found to consolidate for "${target}".`);
+      } else {
+        console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${target}".`);
       }
     } finally {
       await ctx.close();
@@ -672,31 +755,83 @@ program
       console.log(result.content);
     } catch (err: any) {
       console.error(`Error reading file: ${err.message}`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
 program
   .command('recall')
   .description('Recall top memories for current context or graph-connected memories for a target file')
-
   .option('-c, --context <name>', 'Target context override')
   .option('-t, --target <file>', 'Target file to traverse graph from')
+  .option('-l, --limit <number>', 'Maximum number of results (default: 10)')
+  .option('--json', 'Output recall results as JSON')
   .action(async (options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
+    const limit = options.limit ? parseInt(options.limit, 10) : 10;
     try {
       if (options.target) {
-        const results = ctx.recallGraph(options.target, 2);
-        console.log(`Graph memories for target "${options.target}" in context "${targetCtxName}":`);
-        for (const r of results) {
-          console.log(`- [Depth ${r.depth}] [${r.type}] ${r.title} (${r.id})`);
+        const multiHop = ctx.recallMultiHop(options.target, { maxDepth: 3, maxResults: limit, cumulativeThreshold: 0.98 });
+        if (options.json) {
+          console.log(JSON.stringify(multiHop, null, 2));
+          return;
+        }
+        if (multiHop.all.length === 0) {
+          console.log(`No memories found for target file "${options.target}" or its topological neighborhood in context "${targetCtxName}".`);
+          return;
+        }
+
+        console.log(`Graph memories for target "${options.target}" in context "${targetCtxName}":\n`);
+        if (multiHop.direct.length > 0) {
+          console.log(`### 🎯 Direct File Invariants (${options.target})`);
+          for (const r of multiHop.direct) {
+            const mem = ctx.getMemory(r.id);
+            console.log(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`, Score: ${r.relevanceScore})`);
+            if (mem?.content) console.log(`${mem.content}\n`);
+          }
+        }
+        if (multiHop.upstream.length > 0) {
+          console.log(`### ⚠️ Upstream Consumer Constraints (Callers at Risk)`);
+          for (const r of multiHop.upstream) {
+            const mem = ctx.getMemory(r.id);
+            const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+            console.log(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})`);
+            if (mem?.content) console.log(`${mem.content}\n`);
+          }
+        }
+        if (multiHop.downstream.length > 0) {
+          console.log(`### 📦 Downstream Dependency Invariants (Foundations)`);
+          for (const r of multiHop.downstream) {
+            const mem = ctx.getMemory(r.id);
+            const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+            console.log(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})`);
+            if (mem?.content) console.log(`${mem.content}\n`);
+          }
         }
       } else {
-        const results = ctx.recallTopMemories(5);
-        console.log(`Top memories for context "${targetCtxName}":`);
+        const results = ctx.recallTopMemories(limit) as Array<{ type: string; title: string; id: string; confidence: number }>;
+        if (options.json) {
+          const detailed = results.map(r => {
+            const mem = ctx.getMemory(r.id);
+            return { ...r, content: mem?.content || '' };
+          });
+          console.log(JSON.stringify(detailed, null, 2));
+          return;
+        }
+        if (results.length === 0) {
+          console.log(`No memories found in context "${targetCtxName}".`);
+          return;
+        }
+        console.log(`Top memories for context "${targetCtxName}":\n`);
         for (const r of results) {
-          console.log(`- [${r.type}] ${r.title} (Confidence: ${r.confidence})`);
+          const mem = ctx.getMemory(r.id);
+          console.log(`## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id}, Confidence: ${r.confidence})`);
+          if (mem?.content) {
+            console.log(`${mem.content}`);
+          }
+          console.log('---\n');
         }
       }
     } finally {

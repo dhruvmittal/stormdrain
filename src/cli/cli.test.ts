@@ -41,7 +41,7 @@ describe('StormDrain CLI Enhancements & Commands', () => {
     expect(fs.existsSync(agentsMdPath)).toBe(true);
     const content = fs.readFileSync(agentsMdPath, 'utf8');
     expect(content).toContain('StormDrain Persistent Memory');
-    expect(content).toContain('MCP-First Execution');
+    expect(content).toContain('Authorized Execution (MCP or CLI)');
     expect(content).toContain('~/.stormdrain');
   });
 
@@ -58,7 +58,7 @@ describe('StormDrain CLI Enhancements & Commands', () => {
 
     const updatedContent = fs.readFileSync(agentsMdPath, 'utf8');
     expect(updatedContent).toContain('# My Project');
-    expect(updatedContent).toContain('MCP-First Execution');
+    expect(updatedContent).toContain('Authorized Execution (MCP or CLI)');
     expect(updatedContent).not.toContain('Old outdated text');
   });
 
@@ -94,5 +94,80 @@ describe('StormDrain CLI Enhancements & Commands', () => {
     expect(output).toContain('StormDrain Knowledge Curation: Target "src/core/store.ts"');
     expect(output).toContain('Store Mutex Rule');
     expect(output).toContain('Consolidate Micro-Memories');
+  });
+
+  it('should add memory with --json flag and parse id programmatically', () => {
+    runCli(`init test-json-ctx ${tempDir} --submodules sum`);
+    const addOut = runCli(`add fact "CLI JSON Fact" "Detailed fact body" --json -c test-json-ctx`);
+    const parsed = JSON.parse(addOut);
+    expect(parsed.id).toMatch(/^mem_[a-f0-9]+/);
+    expect(parsed.title).toBe('CLI JSON Fact');
+    expect(parsed.status).toBe('added');
+  });
+
+  it('should add memory with --file and stdin (-)', () => {
+    runCli(`init test-file-ctx ${tempDir} --submodules sum`);
+
+    // 1. Using --file
+    const noteFile = path.join(tempDir, 'notes.md');
+    fs.writeFileSync(noteFile, 'Detailed markdown from external file', 'utf8');
+    const out1 = runCli(`add guide "External Guide" --file ${noteFile} --json -c test-file-ctx`);
+    const parsed1 = JSON.parse(out1);
+    expect(parsed1.id).toBeDefined();
+
+    // 2. Using stdin (-)
+    const stdinCmd = `echo "Content piped from stdin stream" | node ${CLI_PATH} add fact "Stdin Fact" - --json -c test-file-ctx`;
+    const out2 = execSync(stdinCmd, {
+      cwd: tempDir,
+      env: { ...process.env, STORMDRAIN_TEST_DIR: testHomeDir },
+      encoding: 'utf8',
+    });
+    const parsed2 = JSON.parse(out2);
+    expect(parsed2.id).toBeDefined();
+    expect(parsed2.title).toBe('Stdin Fact');
+  });
+
+  it('should search memories with --json output', () => {
+    runCli(`init test-search-ctx ${tempDir} --submodules sum`);
+    runCli(`add fact "Unique Search Zebra" "Zebra content description" -c test-search-ctx`);
+
+    const searchOut = runCli(`search "Zebra" --json -c test-search-ctx`);
+    const parsed = JSON.parse(searchOut);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.length).toBeGreaterThan(0);
+    expect(parsed[0].title).toBe('Unique Search Zebra');
+  });
+
+  it('should recall multi-hop memories for target file and support --json', () => {
+    runCli(`init test-recall-ctx ${tempDir} --submodules sum`);
+    runCli(`add warning "Config Invariant" "Do not mutate config in place" -t "src/core/config.ts" -c test-recall-ctx`);
+
+    // Human readable
+    const textOut = runCli(`recall -t "src/core/config.ts" -c test-recall-ctx`);
+    expect(textOut).toContain('Direct File Invariants');
+    expect(textOut).toContain('Config Invariant');
+    expect(textOut).toContain('Do not mutate config in place');
+
+    // JSON
+    const jsonOut = runCli(`recall -t "src/core/config.ts" --json -c test-recall-ctx`);
+    const parsed = JSON.parse(jsonOut);
+    expect(parsed.direct).toBeDefined();
+    expect(parsed.direct.length).toBeGreaterThan(0);
+    expect(parsed.direct[0].title).toBe('Config Invariant');
+  });
+
+  it('should consolidate memories via top-level stormdrain consolidate command', () => {
+    runCli(`init test-consolidate-ctx ${tempDir} --submodules sum`);
+    runCli(`add fact "Micro 1" "Fact 1 content" -t "src/service.ts" -c test-consolidate-ctx`);
+    runCli(`add fact "Micro 2" "Fact 2 content" -t "src/service.ts" -c test-consolidate-ctx`);
+
+    const candOut = runCli(`candidates -t 2 --json -c test-consolidate-ctx`);
+    const candidates = JSON.parse(candOut);
+    expect(candidates.length).toBeGreaterThan(0);
+
+    const consOut = runCli(`consolidate "src/service.ts" --json -c test-consolidate-ctx`);
+    const consResult = JSON.parse(consOut);
+    expect(consResult.consolidatedId).toBeDefined();
+    expect(consResult.mergedCount).toBe(2);
   });
 });

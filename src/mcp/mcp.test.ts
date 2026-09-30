@@ -34,15 +34,71 @@ describe('StormDrainMcpServer Protocol', () => {
     delete process.env.STORMDRAIN_TEST_DIR;
   });
 
-  it('should list available StormDrain MCP tools', async () => {
+  it('should list lean consolidated StormDrain MCP tools', async () => {
     const response = await client.listTools();
     const toolNames = response.tools.map(t => t.name);
 
-    expect(toolNames).toContain('sd_read');
-    expect(toolNames).toContain('sd_recall');
-    expect(toolNames).toContain('sd_search');
-    expect(toolNames).toContain('sd_add');
-    expect(toolNames).toContain('sd_update');
+    expect(toolNames).toEqual(['sd_read', 'sd_recall', 'sd_memory']);
+    expect(toolNames.length).toBe(3);
+  });
+
+  it('should execute sd_memory tool with action: add, search, get, delete', async () => {
+    // 1. Add memory via sd_memory
+    const addRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'fact',
+        title: 'Consolidated Fact',
+        content: 'Content created via sd_memory add action',
+        tags: ['consolidated', 'mcp']
+      }
+    });
+    const addText = (addRes as any).content[0].text;
+    expect(addText).toContain('Successfully added memory mem_');
+    const memId = addText.match(/mem_[a-f0-9]+/)?.[0];
+    expect(memId).toBeDefined();
+
+    // 2. Search via sd_memory
+    const searchRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'search',
+        query: 'Consolidated Fact'
+      }
+    });
+    expect((searchRes as any).content[0].text).toContain('Consolidated Fact');
+
+    // 3. Get via sd_memory
+    const getRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'get',
+        id: memId
+      }
+    });
+    expect((getRes as any).content[0].text).toContain('Consolidated Fact');
+
+    // 4. Delete via sd_memory
+    const delRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'delete',
+        id: memId
+      }
+    });
+    expect((delRes as any).content[0].text).toContain('Successfully deleted memory');
+
+    // 5. Validation error handling
+    const invalidRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        title: 'Missing Content'
+      }
+    });
+    expect((invalidRes as any).isError).toBe(true);
+    expect((invalidRes as any).content[0].text).toContain('Validation Error');
   });
 
 
