@@ -228,13 +228,27 @@ fi
 
 ---
 
-## 🔌 MCP Client Configuration
+## 🔌 Model Context Protocol (MCP)
 
-StormDrain runs an MCP server over `stdio` exposing 3 primary tools (`sd_read`, `sd_recall`, `sd_memory`) with backward compatibility for legacy granular tool calls:
+StormDrain runs as an MCP server over `stdio` (`stormdrain serve [dir]` or alias `stormdrain mcp [dir]`), automatically routing requests to the correct project context via filesystem path introspection.
 
-### 1. OpenCode
+It exposes 3 primary tools:
+
+| Tool | Purpose | Key Parameters |
+| :--- | :--- | :--- |
+| **`sd_read`** | **Primary File Reader**: Reads source files with automatic topological invariant injection, AST symbol outlines, and line slicing. | `path`, `start_line`, `end_line`, `limit`, `include_invariants`, `include_symbols` |
+| **`sd_recall`** | **Pre-Action Recall**: Mandatory check before modifying code. Recalls multi-hop invariants, upstream caller constraints, and downstream rules. | `target_file`, `limit`, `max_depth` |
+| **`sd_memory`** | **Consolidated Memory Manager**: Performs add, search, get, delete, or consolidate actions. | `action` (`add` \| `search` \| `get` \| `delete` \| `consolidate`), `type`, `title`, `content`, `target`, `relation_type`, `query`, `id` |
+
+*(Note: Legacy calls to `sd_add`, `sd_search`, `sd_get`, `sd_delete`, `sd_update`, `sd_relate`, `sd_consolidate`, `sd_scan`, `sd_init`, and `sd_prune` remain fully supported via transparent backward-compatible routing).*
+
+<details>
+<summary><b>⚙️ Client Configuration (OpenCode, Antigravity, Claude Code)</b></summary>
+
+<br>
+
+#### 1. OpenCode
 Add to `opencode.json` (global) or `.opencode/opencode.json` (workspace):
-
 ```json
 {
   "mcpServers": {
@@ -258,9 +272,8 @@ To pin to the current workspace root in project-local configuration:
 }
 ```
 
-### 2. Antigravity
+#### 2. Antigravity
 Add to `~/.gemini/antigravity/mcp_config.json`:
-
 ```json
 {
   "mcpServers": {
@@ -272,9 +285,8 @@ Add to `~/.gemini/antigravity/mcp_config.json`:
 }
 ```
 
-### 3. Claude Code
+#### 3. Claude Code
 Register via the CLI:
-
 ```bash
 # Global
 claude mcp add stormdrain -- stormdrain serve
@@ -283,23 +295,12 @@ claude mcp add stormdrain -- stormdrain serve
 claude mcp add stormdrain -- stormdrain serve .
 ```
 
----
+</details>
 
-## 🛠️ MCP Tool Surface
+<details>
+<summary><b>🌐 Remote Hosts Setup (Zero-Dependency Python Thin Client)</b></summary>
 
-Agents interacting with StormDrain over MCP use 3 lean, consolidated tools:
-
-| Tool | Purpose | Key Parameters |
-| :--- | :--- | :--- |
-| **`sd_read`** | **Primary File Reader**: Reads source files with automatic topological invariant injection, AST symbol outlines, and line slicing. | `path`, `start_line`, `end_line`, `limit`, `include_invariants`, `include_symbols` |
-| **`sd_recall`** | **Pre-Action Recall**: Mandatory check before modifying code. Recalls multi-hop invariants, upstream caller constraints, and downstream rules. | `target_file`, `limit`, `max_depth` |
-| **`sd_memory`** | **Consolidated Memory Manager**: Performs add, search, get, delete, or consolidate actions. | `action` (`add` \| `search` \| `get` \| `delete` \| `consolidate`), `type`, `title`, `content`, `target`, `relation_type`, `query`, `id` |
-
-*(Note: Legacy calls to `sd_add`, `sd_search`, `sd_get`, `sd_delete`, `sd_update`, `sd_relate`, `sd_consolidate`, `sd_scan`, `sd_init`, and `sd_prune` remain fully supported via transparent backward-compatible routing).*
-
----
-
-## 🌐 Remote Hosts (Zero-Dependency Python Thin Client)
+<br>
 
 For remote VMs, cloud GPU clusters, or sandboxed environments where Node.js is unavailable, StormDrain includes a standalone, zero-dependency Python 3.6+ client (`scripts/stormdrain-agent.py`):
 
@@ -326,6 +327,36 @@ Configure your remote agent (`mcpServers`):
 }
 ```
 See the **[Remote Setup Guide](docs/remote-client-setup.md)** for SSH tunneling and production configuration.
+
+</details>
+
+<details>
+<summary><b>📖 Detailed Tool Schemas & Action Parameters</b></summary>
+
+<br>
+
+#### `sd_read` Parameters
+- `path` *(required)*: Relative or absolute file path to read.
+- `start_line` / `offset`: 1-indexed start line number.
+- `end_line`: 1-indexed end line number.
+- `limit`: Line count limit from start line.
+- `include_invariants`: Whether to inject architectural invariants and caller constraints (default: `true`).
+- `include_symbols`: Whether to extract and prepend AST symbol outlines (default: `true`).
+
+#### `sd_recall` Parameters
+- `target_file`: File path to inspect for multi-hop topological invariants.
+- `limit`: Maximum memories to recall (default: `10`).
+- `max_depth` / `depth`: Maximum graph hop depth (default: `3`).
+
+#### `sd_memory` Actions & Parameters
+- `action` *(required)*:
+  - `"add"`: Requires `title`, `content`. Optional: `type` (`fact`, `decision`, `guide`, `warning`, `concept`), `target`, `relation_type`, `tags`.
+  - `"search"`: Requires `query`. Optional: `type`.
+  - `"get"`: Requires `id` (memory ID or file vertex path).
+  - `"delete"`: Requires `id` (memory ID to remove).
+  - `"consolidate"`: Requires `target` (target file path). Optional: `memory_ids`.
+
+</details>
 
 ---
 
