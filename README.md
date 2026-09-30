@@ -38,10 +38,11 @@ This installs the `stormdrain` CLI globally on your system.
 
 ---
 
-## 🖥️ CLI Quick Start
+## 🖥️ Command Line Interface
 
 StormDrain provides a first-class CLI designed for human developers and autonomous terminal agents (such as OpenCode, Claude Code, and Aider). Primary querying and mutation commands support pure `--json` output and stdin/file piping.
 
+### Quick Start
 ```bash
 # Read source code with automatic topological invariant injection
 stormdrain read src/core/context.ts
@@ -49,9 +50,10 @@ stormdrain read src/core/context.ts
 # Multi-hop pre-action recall before modifying code
 stormdrain recall -t src/core/context.ts [--json]
 
-# Record discoveries, invariants, or ADRs (supports stdin '-' and '--file')
+# Record discoveries, invariants, or ADRs (supports stdin "-" and "--file")
 stormdrain add warning "Lock Contention" "High write concurrency causes BUSY in WAL mode" -t src/core/context.ts
 stormdrain add fact "Architecture Rule" --file ./docs/invariants.md -t src/cli/index.ts --json
+echo "Pipe content directly" | stormdrain add decision "ADR 004" - -t src/core/context.ts --json
 
 # Search, inspect, and consolidate
 stormdrain search "WAL lock" [--json]
@@ -63,7 +65,166 @@ stormdrain serve [dir]   # MCP server over stdio (alias: stormdrain mcp)
 stormdrain web -p 3456   # Web UI dashboard & REST API
 ```
 
-> 📖 **Complete CLI Reference**: See the **[CLI Usage & Scripting Guide](docs/cli-usage-examples.md)** for detailed flag options, stdin ingestion, context management, shell autocompletion, and scripting recipes.
+<details>
+<summary><b>📖 Full CLI Command Reference & Flags</b></summary>
+
+<br>
+
+#### 1. File Reader (`read`)
+Read source code from disk with injected architectural invariants, upstream caller constraints, and AST symbol outlines:
+```bash
+# Read entire file with invariant header and symbols
+stormdrain read src/core/context.ts
+
+# Slice line ranges (1-indexed)
+stormdrain read src/core/context.ts -s 10 -e 45
+stormdrain read src/core/context.ts --offset 50 --limit 20
+
+# Disable symbol outline or invariant injection if needed
+stormdrain read src/core/context.ts --no-invariants
+stormdrain read src/core/context.ts --no-symbols
+```
+
+#### 2. Pre-Action Recall (`recall`)
+Traverse the codebase dependency graph to retrieve invariants before modifying code:
+```bash
+# Recall invariants and caller constraints for a target file
+stormdrain recall -t src/core/context.ts
+
+# Limit results count (-l) or hop depth (-d)
+stormdrain recall -t src/core/context.ts -l 5 -d 2
+
+# Output machine-readable JSON for agents
+stormdrain recall -t src/core/context.ts --json
+
+# Recall top memories across the active context without a file anchor
+stormdrain recall -l 10
+```
+
+#### 3. Adding Memories (`add`)
+Persist new architectural discoveries, invariants, gotchas, or decisions:
+```bash
+# Direct arguments: <type> <title> [content]
+stormdrain add warning "Lock Contention" "High concurrency write locks cause BUSY timeout in SQLite WAL mode" -t src/core/context.ts
+
+# Ingest content from a file
+stormdrain add decision "ADR 005 - ACL PageRank" --file ./docs/adr-005.md -t src/core/context.ts
+
+# Pipe content via stdin ("-", buffered up to 256 KB)
+git diff HEAD~1 | stormdrain add fact "Recent Migration Invariants" - -t src/core/context.ts --json
+
+# Machine-readable JSON output returns assigned ID
+stormdrain add fact "Memory Invariant" "Always check null on targetFile" -t src/core/context.ts --json
+```
+
+#### 4. Search & Inspection (`search`, `get`, `delete`)
+```bash
+# Full-text search (FTS5) across titles, tags, and content
+stormdrain search "WAL lock"
+stormdrain search "timeout" -T warning      # Filter by canonical type
+stormdrain search "WAL lock" --json        # Pure JSON output
+
+# Inspect full details, timestamps, scores, and incoming/outgoing edges
+stormdrain get mem_83050d448bb2
+stormdrain get src/core/context.ts          # Inspect a file vertex in the DAG
+stormdrain get mem_83050d448bb2 --json
+
+# Delete a memory and cascade clean its relational links
+stormdrain delete mem_83050d448bb2
+```
+
+#### 5. Consolidation & Curation (`candidates`, `consolidate`, `harvest`, `curate`)
+```bash
+# Find file vertices with clustered micro-memories
+stormdrain candidates
+stormdrain candidates --threshold 5
+stormdrain candidates --json
+
+# Synthesize clustered micro-memories into a consolidated guide
+stormdrain consolidate src/core/context.ts
+stormdrain consolidate src/core/context.ts mem_123 mem_456 --json
+
+# End-of-session guided prompt instructions
+stormdrain harvest   # Prompts agent to extract invariants from recent work
+stormdrain curate    # Holistic memory curation and pruning sweep
+```
+
+</details>
+
+<details>
+<summary><b>📁 Context & Workspace Management</b></summary>
+
+<br>
+
+Contexts isolate project knowledge under `~/.stormdrain/contexts/`:
+
+```bash
+# Initialize and bind a project repository
+stormdrain init my-project /path/to/project
+
+# Scaffold or refresh AGENTS.md instruction guidelines
+stormdrain agents -f
+
+# List registered contexts and bound filesystem paths
+stormdrain context list
+
+# Bind a workspace directory to an existing context
+stormdrain context bind my-project /path/to/project
+
+# Unbind a workspace directory
+stormdrain context unbind my-project /path/to/old
+
+# Set active context for current shell session
+stormdrain context use my-project
+```
+
+</details>
+
+<details>
+<summary><b>⚡ Shell Autocompletion Setup</b></summary>
+
+<br>
+
+StormDrain supports dynamic shell autocompletion for subcommands, context names, memory types, and relation types:
+
+```bash
+# Bash (add to ~/.bashrc)
+source <(stormdrain completion bash)
+
+# Zsh (add to ~/.zshrc)
+source <(stormdrain completion zsh)
+
+# Fish
+stormdrain completion fish | source
+
+# PowerShell
+stormdrain completion powershell | Out-String | Invoke-Expression
+```
+
+</details>
+
+<details>
+<summary><b>🤖 Agent Scripting Recipes</b></summary>
+
+<br>
+
+#### Capturing Created Memory IDs with `jq`
+```bash
+MEM_ID=$(stormdrain add fact "CI Test Timeout" "Set Vitest testTimeout to 10000ms" -t vitest.config.ts --json | jq -r .id)
+echo "Created memory ID: ${MEM_ID}"
+```
+
+#### Automated Pre-Edit Recall Verification in Bash Loops
+Before modifying a file, check for active caller constraints:
+```bash
+INVARIANTS=$(stormdrain recall -t "$TARGET_FILE" --json)
+if [ "$INVARIANTS" != "[]" ]; then
+  echo "Active constraints found for $TARGET_FILE:"
+  echo "$INVARIANTS" | jq -r '.[] | "- [\(.type | ascii_upcase)] \(.title)"'
+fi
+```
+
+</details>
 
 ---
 
