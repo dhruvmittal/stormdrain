@@ -320,273 +320,58 @@ class StormDrainMcpServer:
                 }
             },
             {
-                "name": "sd_search",
-                "description": "SEARCH TOOL: Full-text search across all memories, titles, and tags in the central knowledge base.",
+                "name": "sd_memory",
+                "description": "Manage memories in the knowledge graph: add invariants/decisions, search memories, inspect nodes, delete memories, or consolidate micro-memories.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {
+                        "action": {
                             "type": "string",
-                            "description": "Search query terms (optional if metadata filters are provided)"
+                            "enum": ["add", "search", "get", "delete", "consolidate"],
+                            "description": "The memory operation to execute: \"add\" to record knowledge, \"search\" to query, \"get\" to inspect full details, \"delete\" to remove, \"consolidate\" to merge micro-memories."
                         },
                         "type": {
                             "type": "string",
-                            "description": "Optional memory type filter (decision, lesson, pattern, etc.)"
-                        },
-                        "context": context_prop
-                    }
-                }
-            },
-            {
-                "name": "sd_get",
-                "description": "INSPECTION TOOL: Get detailed information for a specific memory or graph node ID.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Memory ID (e.g. mem_...) or node ID"
-                        },
-                        "context": context_prop
-                    },
-                    "required": ["id"]
-                }
-            },
-            {
-                "name": "sd_add",
-                "description": "RECORD TOOL: Persist architectural decisions, invariants, gotchas, lessons, and performance rules to central memory.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["fact", "pattern", "lesson", "warning", "guide", "codemap", "sequence", "concept"],
-                            "description": "Semantic type of the memory"
+                            "enum": ["fact", "decision", "guide", "warning", "concept"],
+                            "description": "Memory type for \"add\" action: fact, decision, guide, warning, concept"
                         },
                         "title": {
                             "type": "string",
-                            "description": "Concise summary title"
+                            "description": "Title of the memory for \"add\" action"
                         },
                         "content": {
                             "type": "string",
-                            "description": "Detailed explanation, invariant rationale, or resolution"
+                            "description": "Markdown content for \"add\" action"
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Target file path or memory ID to link (for \"add\") or consolidate (for \"consolidate\")"
+                        },
+                        "relation_type": {
+                            "type": "string",
+                            "description": "Relation type for \"add\" action linking to target (e.g. affects, supports, related_to)"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional semantic tags"
+                            "description": "Categorization tags for \"add\" action"
                         },
-                        "target_file": {
+                        "query": {
                             "type": "string",
-                            "description": "Optional source file path this memory directly affects"
+                            "description": "Search query for \"search\" action"
                         },
-                        "targets": {
-                            "description": "Optional target file or array of targets"
-                        },
-                        "relations": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "target": {"type": "string"},
-                                    "type": {"type": "string"}
-                                },
-                                "required": ["target"]
-                            },
-                            "description": "Explicit typed relation edges to other memories or files"
-                        },
-                        "relation_type": {
-                            "type": "string",
-                            "description": "Relation type: affects, applies_to, depends_on, implements, related_to (default: affects)"
-                        },
-                        "context": context_prop
-                    },
-                    "required": ["type", "title", "content"]
-                }
-            },
-            {
-                "name": "sd_update",
-                "description": "UPDATE TOOL: Update an existing memory's content, title, tags, type, or canonical promotion status.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
                         "id": {
                             "type": "string",
-                            "description": "Memory ID to update"
-                        },
-                        "title": {"type": "string"},
-                        "content": {"type": "string"},
-                        "tags": {"type": "array", "items": {"type": "string"}},
-                        "type": {"type": "string"},
-                        "add_targets": {
-                            "description": "Target file paths or memory IDs to add"
-                        },
-                        "remove_targets": {
-                            "description": "Target file paths or memory IDs to remove"
-                        },
-                        "relations": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "target": {"type": "string"},
-                                    "type": {"type": "string"}
-                                },
-                                "required": ["target"]
-                            },
-                            "description": "Replace full relations list"
-                        },
-                        "add_relations": {
-                            "type": "array",
-                            "description": "Relations to add"
-                        },
-                        "remove_relations": {
-                            "type": "array",
-                            "description": "Relations to remove"
-                        },
-                        "is_canonical": {
-                            "type": "boolean",
-                            "description": "Set to true to mark or promote as canonical repository baseline knowledge"
-                        },
-                        "context": context_prop
-                    },
-                    "required": ["id"]
-                }
-            },
-            {
-                "name": "sd_delete",
-                "description": "DELETE TOOL: Remove a memory by ID from the central database.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Memory ID to delete"
-                        },
-                        "context": context_prop
-                    },
-                    "required": ["id"]
-                }
-            },
-            {
-                "name": "sd_relate",
-                "description": "RELATION TOOL: Connect a memory node to a file vertex or another memory in the DAG.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": {
-                            "type": "string",
-                            "description": "Source memory ID"
-                        },
-                        "target": {
-                            "type": "string",
-                            "description": "Target file path or memory ID"
-                        },
-                        "type": {
-                            "type": "string",
-                            "description": "Semantic relation type (alias for relation_type)"
-                        },
-                        "relation_type": {
-                            "type": "string",
-                            "description": "Semantic relation type (default: related_to for memories, affects for files)"
-                        },
-                        "context": context_prop
-                    },
-                    "required": ["source_id", "target"]
-                }
-            },
-            {
-                "name": "sd_scan",
-                "description": "GRAPH SYNC TOOL: Scan workspace source files (TypeScript, Python, C++, Go, Rust, MATLAB) to synchronize the codebase dependency DAG edges and file vertices in persistent memory.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "directory": {
-                            "type": "string",
-                            "description": "Optional workspace directory path to scan (defaults to current working directory)"
-                        },
-                        "submodule_policy": {
-                            "type": "string",
-                            "enum": ["dive", "sum"],
-                            "description": "How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum"
-                        },
-                        "context": context_prop
-                    }
-                }
-            },
-            {
-                "name": "sd_init",
-                "description": "INITIALIZATION TOOL: Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Context name (e.g. project name). Note: 'global' and '_global' are reserved."
-                        },
-                        "directory": {
-                            "type": "string",
-                            "description": "Optional directory path to bind and scan (defaults to current working directory)"
-                        },
-                        "submodule_policy": {
-                            "type": "string",
-                            "enum": ["dive", "sum"],
-                            "description": "How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum"
-                        }
-                    },
-                    "required": ["name"]
-                }
-            },
-            {
-                "name": "sd_consolidate",
-                "description": "CONSOLIDATION TOOL: Consolidate multiple micro-memories attached to a target into a single high-confidence guide.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "target_file": {
-                            "type": "string",
-                            "description": "Target file path"
+                            "description": "Memory ID (e.g. mem_123456) or file path for \"get\" or \"delete\" action"
                         },
                         "memory_ids": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional explicit list of memory IDs to merge"
+                            "description": "Specific memory IDs to merge for \"consolidate\" action (optional)"
                         },
                         "context": context_prop
                     },
-                    "required": ["target_file"]
-                }
-            },
-            {
-                "name": "sd_consolidation_candidates",
-                "description": "CANDIDATE INSPECTION TOOL: Find file vertices with clustered micro-memories ready for consolidation.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "threshold": {
-                            "type": "number",
-                            "description": "Minimum micro-memory count threshold (default: 3)"
-                        },
-                        "min_memories": {
-                            "type": "number",
-                            "description": "Minimum micro-memory count threshold (alias for threshold)"
-                        },
-                        "context": context_prop
-                    }
-                }
-            },
-            {
-                "name": "sd_prune",
-                "description": "GRAPH PRUNE TOOL: Prune leaked or orphaned codemap file vertices from the DAG that do not belong to the workspace.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "directory": {
-                            "type": "string",
-                            "description": "Optional directory path to validate against (defaults to context bound paths)"
-                        },
-                        "context": context_prop
-                    }
+                    "required": ["action"]
                 }
             }
         ]
@@ -595,6 +380,63 @@ class StormDrainMcpServer:
         context = arguments.get("context")
 
         git_root, current_branch = get_git_info()
+
+        if name == "sd_memory":
+            action = arguments.get("action")
+            if not action:
+                return {
+                    "isError": True,
+                    "content": [{"type": "text", "text": 'Validation Error: "action" parameter is required for sd_memory ("add", "search", "get", "delete", "consolidate").'}]
+                }
+
+            if action == "add":
+                if not arguments.get("title") or not arguments.get("content"):
+                    return {
+                        "isError": True,
+                        "content": [{"type": "text", "text": 'Validation Error: "title" and "content" are required for action "add".'}]
+                    }
+                name = "sd_add"
+                if not arguments.get("type"):
+                    arguments["type"] = "decision"
+                arguments["target_file"] = arguments.get("target") or arguments.get("target_file")
+                arguments["relation_type"] = arguments.get("relation_type") or arguments.get("relationType", "affects")
+            elif action == "search":
+                if arguments.get("query") is None:
+                    return {
+                        "isError": True,
+                        "content": [{"type": "text", "text": 'Validation Error: "query" is required for action "search".'}]
+                    }
+                name = "sd_search"
+            elif action == "get":
+                target_id = arguments.get("id") or arguments.get("target")
+                if not target_id:
+                    return {
+                        "isError": True,
+                        "content": [{"type": "text", "text": 'Validation Error: "id" or "target" is required for action "get".'}]
+                    }
+                name = "sd_get"
+                arguments["id"] = target_id
+            elif action == "delete":
+                if not arguments.get("id"):
+                    return {
+                        "isError": True,
+                        "content": [{"type": "text", "text": 'Validation Error: "id" is required for action "delete".'}]
+                    }
+                name = "sd_delete"
+            elif action == "consolidate":
+                target = arguments.get("target") or arguments.get("target_file")
+                if not target:
+                    return {
+                        "isError": True,
+                        "content": [{"type": "text", "text": 'Validation Error: "target" is required for action "consolidate".'}]
+                    }
+                name = "sd_consolidate"
+                arguments["target_file"] = target
+            else:
+                return {
+                    "isError": True,
+                    "content": [{"type": "text", "text": 'Unknown action "{}" for sd_memory. Supported actions: add, search, get, delete, consolidate.'.format(action)}]
+                }
 
         if name == "sd_read":
             file_path = arguments.get("path") or arguments.get("filePath")
@@ -741,7 +583,7 @@ class StormDrainMcpServer:
 
         elif name == "sd_add":
             target_file = arguments.get("target_file")
-            if target_file:
+            if target_file and not (target_file.startswith("mem_") or target_file.startswith("file_") or target_file.startswith("node_") or target_file.startswith("mem-") or target_file.startswith("node-")):
                 target_file = normalize_client_path(target_file, git_root)
             targets = arguments.get("targets")
             if isinstance(targets, list):

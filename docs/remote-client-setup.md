@@ -103,14 +103,17 @@ python3 /path/to/stormdrain-agent.py --server-url http://localhost:3456 --contex
 
 ## 5. Available Tools
 
-The thin agent provides the full StormDrain tool suite:
-- **`sd_read`**: Reads files from the local client disk, extracts symbol outlines, slices line ranges (1-indexed), and automatically injects topological invariants from the server.
-- **`sd_recall`**: Recalls multi-hop DAG caller constraints and invariants for a target file.
-- **`sd_search`**: Full-text search across central memories.
-- **`sd_get`**: Detailed node and memory inspection by ID.
-- **`sd_add`**: Records architectural decisions, invariants, gotchas, and patterns to central memory.
-- **`sd_update`**: Updates memory content, title, tags, or type.
-- **`sd_delete`**: Deletes a memory by ID.
-- **`sd_relate`**: Links memories and files with graph edges (`affects`, `applies_to`, `depends_on`, `related_to`).
-- **`sd_consolidate`**: Synthesizes multiple micro-memories into a consolidated guide.
-- **`sd_consolidation_candidates`**: Finds clusters of micro-memories ready for consolidation.
+The thin agent exposes a lean, consolidated 3-tool MCP surface (~800 schema tokens), optimized for lightweight remote agents (such as GLM Flash, Claude Code, or local terminal agents):
+
+- **`sd_read`**: Reads source files directly from the local client disk, slices line ranges (1-indexed), extracts AST symbol outlines, and automatically injects topological architectural invariants and caller constraints from the central server.
+- **`sd_recall`**: Mandatory pre-action recall tool. Queries the server for multi-hop topological invariants, upstream caller constraints (callers at risk), and downstream dependency rules for a target file.
+- **`sd_memory`**: Unified memory lifecycle tool (`action`: `'add' | 'search' | 'get' | 'delete' | 'consolidate'`):
+  - `add`: Record a new invariant, decision, guide, warning, or concept linked to a file or memory ID.
+  - `search`: Full-text search (FTS5) across titles, tags, and content.
+  - `get`: Retrieve full node or memory details by ID.
+  - `delete`: Delete a memory and its associated graph relationships.
+  - `consolidate`: Synthesize clustered micro-memories into a consolidated architectural guide.
+
+### Backward Compatibility
+For legacy clients or subagents expecting granular tool definitions, `stormdrain-agent.py` maintains full backward compatibility for legacy calls (`sd_add`, `sd_search`, `sd_get`, `sd_delete`, `sd_update`, `sd_relate`, `sd_consolidate`, `sd_consolidation_candidates`, `sd_scan`, `sd_init`, `sd_prune`).
+
