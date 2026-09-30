@@ -2,10 +2,10 @@
 
 StormDrain is a persistent memory layer and architectural invariant tracker for AI software engineering agents. It pairs graph-backed SQLite storage and automated Git versioning with an **Asymmetric Localized PageRank** engine, SHA-256 confidence decay, automated micro-memory consolidation, and a Vite-based React Web UI.
 
-StormDrain is built for **lightweight, fast agents**:
-- **Dual Architecture**: Native, first-class CLI with pure `--json` outputs and stdin/file pipes for terminal-native agents (OpenCode, Claude Code, Aider, terminal scripts).
-- **Consolidated 3-Tool MCP Surface**: Slashes MCP handshake schema token tax from **~3,500+ tokens to ~800 tokens** (`sd_read`, `sd_recall`, `sd_memory`), dramatically boosting tool-calling reliability for fast reasoning models like GLM Flash 5.3.
-- **Zero-Dependency Remote Thin Agent**: Single-file Python client (`scripts/stormdrain-agent.py`, stock Python 3.6+) for remote VM execution over SSH tunnels.
+StormDrain supports both terminal and MCP agent workflows:
+- **CLI-First**: Native CLI commands (`read`, `recall`, `add`, `search`, `consolidate`) with pure `--json` flags and stdin/file pipes for terminal agents.
+- **Lean MCP Server**: 3 core tools (`sd_read`, `sd_recall`, `sd_memory`) with backward compatibility for legacy granular calls.
+- **Remote Thin Agent**: Zero-dependency Python client (`scripts/stormdrain-agent.py`, stock Python 3.6+) for remote VMs over SSH tunnels.
 
 ---
 
@@ -38,94 +38,38 @@ This installs the `stormdrain` CLI globally on your system.
 
 ---
 
-## 🖥️ CLI Usage (Terminal & Scripted Workflows)
+## 🖥️ CLI Quick Start
 
-StormDrain provides a first-class CLI designed for humans and autonomous terminal agents. All primary querying commands support pure `--json` output for programmatic consumption.
-
-### Invariant & Memory Workflows
+StormDrain provides a first-class CLI designed for human developers and autonomous terminal agents (such as OpenCode, Claude Code, and Aider). Primary querying and mutation commands support pure `--json` output and stdin/file piping.
 
 ```bash
-# Read file with topological invariant injection and AST outline
+# Read source code with automatic topological invariant injection
 stormdrain read src/core/context.ts
 
-# Multi-hop architectural recall before modifying code
-stormdrain recall -t src/core/context.ts
-stormdrain recall -t src/core/context.ts --json
+# Multi-hop pre-action recall before modifying code
+stormdrain recall -t src/core/context.ts [--json]
 
-# Record new architectural discoveries, invariants, or warnings
-stormdrain add warning "Lock Contention" "High concurrency write locks cause BUSY timeout in WAL mode" -t src/core/context.ts
-stormdrain add fact "Buffer Cap" --file ./docs/invariants.md -t src/cli/index.ts --json
-echo "Pipe content directly" | stormdrain add decision "ADR 004" - -t src/core/context.ts --json
+# Record discoveries, invariants, or ADRs (supports stdin '-' and '--file')
+stormdrain add warning "Lock Contention" "High write concurrency causes BUSY in WAL mode" -t src/core/context.ts
+stormdrain add fact "Architecture Rule" --file ./docs/invariants.md -t src/cli/index.ts --json
 
-# Search memories across active context and _global
-stormdrain search "WAL lock"
-stormdrain search "WAL lock" --json
+# Search, inspect, and consolidate
+stormdrain search "WAL lock" [--json]
+stormdrain get mem_83050d448bb2 [--json]
+stormdrain consolidate src/core/context.ts [--json]
 
-# Inspect details for a specific memory or file vertex
-stormdrain get mem_83050d448bb2
-stormdrain get mem_83050d448bb2 --json
-
-# Delete a memory
-stormdrain delete mem_83050d448bb2
-
-# Find consolidation candidates and synthesize micro-memories
-stormdrain candidates
-stormdrain candidates --json
-stormdrain consolidate src/core/context.ts --json
-
-# Guided session harvest & curation prompts
-stormdrain harvest   # Prompts agent to extract invariants from recent work
-stormdrain curate    # Holistic memory curation and pruning sweep
+# Start MCP stdio server or Web UI
+stormdrain serve [dir]   # MCP server over stdio (alias: stormdrain mcp)
+stormdrain web -p 3456   # Web UI dashboard & REST API
 ```
 
-### Context & Project Management
-
-```bash
-# Initialize and bind a project repository
-stormdrain init my-project /path/to/project
-
-# Scaffold or refresh AGENTS.md instruction guidelines
-stormdrain agents -f
-
-# Manage context bindings
-stormdrain context list                              # List registered contexts and bound filesystem paths
-stormdrain context bind my-project /path/to/project  # Bind a workspace directory to a context
-stormdrain context unbind my-project /path/to/old    # Unbind a workspace directory
-stormdrain context use my-project                    # Set default context for interactive CLI commands
-```
-
-### Servers & Daemons
-
-```bash
-# Start lean MCP server over stdio (alias: stormdrain mcp [dir])
-stormdrain serve [dir]
-
-# Start Web UI & REST API on http://localhost:3456
-stormdrain web -p 3456
-```
-
-### Shell Autocompletion
-StormDrain supports dynamic shell autocompletion for Bash, Zsh, Fish, and PowerShell:
-
-```bash
-# Bash (add to ~/.bashrc)
-source <(stormdrain completion bash)
-
-# Zsh (add to ~/.zshrc)
-source <(stormdrain completion zsh)
-
-# Fish
-stormdrain completion fish | source
-
-# PowerShell
-stormdrain completion powershell | Out-String | Invoke-Expression
-```
+> 📖 **Complete CLI Reference**: See the **[CLI Usage & Scripting Guide](docs/cli-usage-examples.md)** for detailed flag options, stdin ingestion, context management, shell autocompletion, and scripting recipes.
 
 ---
 
 ## 🔌 MCP Client Configuration
 
-StormDrain exposes a consolidated **3-tool surface** (`sd_read`, `sd_recall`, `sd_memory`) over `stdio`, consuming only ~800 tokens of initial schema context while preserving universal backward compatibility for legacy granular tool calls.
+StormDrain runs an MCP server over `stdio` exposing 3 primary tools (`sd_read`, `sd_recall`, `sd_memory`) with backward compatibility for legacy granular tool calls:
 
 ### 1. OpenCode
 Add to `opencode.json` (global) or `.opencode/opencode.json` (workspace):

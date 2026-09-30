@@ -103,7 +103,7 @@ python3 /path/to/stormdrain-agent.py --server-url http://localhost:3456 --contex
 
 ## 5. Available Tools
 
-The thin agent exposes a lean, consolidated 3-tool MCP surface (~800 schema tokens), optimized for lightweight remote agents (such as GLM Flash, Claude Code, or local terminal agents):
+The thin agent exposes 3 tools over MCP (`sd_read`, `sd_recall`, and `sd_memory`):
 
 - **`sd_read`**: Reads source files directly from the local client disk, slices line ranges (1-indexed), extracts AST symbol outlines, and automatically injects topological architectural invariants and caller constraints from the central server.
 - **`sd_recall`**: Mandatory pre-action recall tool. Queries the server for multi-hop topological invariants, upstream caller constraints (callers at risk), and downstream dependency rules for a target file.
