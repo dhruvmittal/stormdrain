@@ -463,6 +463,8 @@ program
         explicitRelations.length > 0 ? explicitRelations : undefined
       );
       const mem = ctx.getMemory(id);
+      const linkCount = mem?.metadata.relations.length || 0;
+      const suggestions = linkCount === 0 ? ctx.suggestCandidateTargets(id, 3) : [];
 
       if (options.json) {
         console.log(JSON.stringify({
@@ -471,14 +473,77 @@ program
           type,
           context: targetCtxName,
           status: 'added',
-          relations: mem?.metadata.relations || []
+          relations: mem?.metadata.relations || [],
+          ...(linkCount === 0 ? { warning: 'Created with 0 connections (disconnected node)', suggested_targets: suggestions } : {})
         }, null, 2));
       } else {
-        const linkCount = mem?.metadata.relations.length || 0;
         const linkMsg = linkCount > 0 
           ? ` (linked to ${linkCount} target(s): ${mem?.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})` 
           : '';
         console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
+        if (linkCount === 0) {
+          console.log(`⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.`);
+          console.log(`  - Link it to a file or concept: stormdrain relate ${id} <file_or_mem_id>`);
+          if (suggestions.length > 0) {
+            const formattedSug = suggestions
+              .map(s => s.nodeType === 'file' ? `${s.displayTarget} (file)` : `${s.id} ("${s.title}", ${s.type})`)
+              .join(', ');
+            console.log(`  - Suggested candidate targets: ${formattedSug}`);
+          }
+        }
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('list')
+  .alias('ls')
+  .description('Browse all memories in the context alongside connection counts to rapidly identify disconnected nodes')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--type <type>', 'Filter by memory type (fact, decision, guide, warning, concept)')
+  .option('--tag <tag>', 'Filter by tag')
+  .option('--orphans', 'Show only disconnected memories with 0 connections')
+  .option('--max-connections <number>', 'Filter memories with at most N total connections')
+  .option('--sort <field>', 'Sort order: connections_asc, connections_desc, updated, confidence, accessed (default: connections_asc)')
+  .option('-l, --limit <number>', 'Maximum number of memories to display')
+  .option('--include-consolidated', 'Include superseded micro-memories that were already consolidated')
+  .option('--json', 'Output memory list with connection stats as JSON')
+  .action(async (options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const maxConnections = options.maxConnections !== undefined ? parseInt(options.maxConnections, 10) : undefined;
+      const limit = options.limit !== undefined ? parseInt(options.limit, 10) : undefined;
+      const summaries = ctx.listMemoriesWithStats({
+        type: options.type as MemoryType | undefined,
+        tag: options.tag,
+        orphansOnly: Boolean(options.orphans),
+        maxConnections: maxConnections !== undefined && !isNaN(maxConnections) ? maxConnections : undefined,
+        sortBy: options.sort || 'connections_asc',
+        limit: limit !== undefined && !isNaN(limit) ? limit : undefined,
+        includeConsolidated: Boolean(options.includeConsolidated)
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(summaries, null, 2));
+        return;
+      }
+
+      if (summaries.length === 0) {
+        console.log(`No memories found matching filters in context "${targetCtxName}".`);
+        return;
+      }
+
+      const orphanCount = summaries.filter(s => s.total_connections === 0).length;
+      console.log(`Memory Inventory in context "${targetCtxName}" (${summaries.length} memories, ${orphanCount} disconnected [0 connections]):\n`);
+      for (const s of summaries) {
+        const tagStr = s.tags.length > 0 ? ` [${s.tags.map(t => `#${t}`).join(' ')}]` : '';
+        const connLabel = s.total_connections === 0
+          ? `0 connections ⚠️ DISCONNECTED`
+          : `${s.total_connections} conn (${s.outgoing_count} out, ${s.incoming_count} in)`;
+        console.log(`- [${s.type.toUpperCase()}] ${s.title} (${s.id}) | ${connLabel} | conf: ${s.confidence} | accesses: ${s.access_count}${tagStr}`);
       }
     } finally {
       await ctx.close();
@@ -707,25 +772,44 @@ program
 
 program
   .command('consolidate')
-  .description('Consolidate micro-memories attached to a target file vertex into a unified guide')
-  .argument('<target>', 'Target file path (e.g. src/core/config.ts) whose micro-memories should be consolidated')
-  .argument('[memory_ids...]', 'Optional specific memory IDs to consolidate')
+  .description('Consolidate micro-memories attached to a target file vertex (or a list of memory IDs) into a unified guide')
+  .argument('<target>', 'Target file path (e.g. src/core/config.ts) or first memory ID when consolidating file-less memories')
+  .argument('[memory_ids...]', 'Specific memory IDs to consolidate')
   .option('-c, --context <name>', 'Target context override')
+  .option('--title <title>', 'Custom title for the consolidated guide')
   .option('--json', 'Output consolidation result as JSON')
   .action(async (target, memoryIds, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      const opts = (memoryIds && memoryIds.length > 0) ? { memory_ids: memoryIds } : undefined;
-      const res = ctx.consolidateNeighborhood(target, opts);
+      let effectiveTarget: string | undefined = target;
+      let effectiveIds: string[] | undefined = (memoryIds && memoryIds.length > 0) ? memoryIds : undefined;
+
+      // If target itself is a memory ID and additional memory_ids were passed, check if target has attached micro-memories;
+      // if not, treat all positional arguments [target, ...memoryIds] as a file-less memory_ids list.
+      if (target && target.startsWith('mem_') && effectiveIds && effectiveIds.length >= 1) {
+        const attached = ctx.getDb().prepare(`
+          SELECT COUNT(*) as cnt FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
+        `).get(target) as { cnt: number };
+        if (!attached || attached.cnt < 2) {
+          effectiveTarget = undefined;
+          effectiveIds = [target, ...effectiveIds];
+        }
+      }
+
+      const res = ctx.consolidateNeighborhood(effectiveTarget, {
+        memory_ids: effectiveIds,
+        title: options.title
+      });
       if (options.json) {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
+      const desc = effectiveTarget ? `for target "${effectiveTarget}"` : `from ${effectiveIds?.length || 0} memory IDs`;
       if (!res.consolidatedId) {
-        console.log(`No micro-memories (>= 2) found to consolidate for "${target}".`);
+        console.log(`No micro-memories (>= 2) found to consolidate ${desc}.`);
       } else {
-        console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${target}".`);
+        console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} ${desc}.`);
       }
     } finally {
       await ctx.close();

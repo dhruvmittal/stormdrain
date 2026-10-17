@@ -624,6 +624,142 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(getText).toContain('Probed Memory');
     expect(getText).toContain('tenant-c');
   });
+
+  it('should browse memories with connection counts via sd_memory action: list, and link orphans via action: relate', async () => {
+    // 1. Add a connected memory
+    const connectedRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'fact',
+        title: 'Anchored Profiler Config',
+        content: 'VTune sampling configuration in profiler module',
+        target: 'src/utils/profiler.ts',
+        tags: ['performance']
+      }
+    });
+    const connectedText = ((connectedRes as any).content[0] as any).text;
+    expect(connectedText).not.toContain('0 connections (disconnected node)');
+    const connectedId = connectedText.match(/mem_[a-f0-9]+/)?.[0];
+
+    // 2. Add a disconnected memory (0 connections) — should emit creation-time nudge and suggest candidate
+    const orphanRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'guide',
+        title: 'VTune Profiler Steps',
+        content: 'Steps to run VTune profiler sampling on Linux',
+        tags: ['performance']
+      }
+    });
+    const orphanText = ((orphanRes as any).content[0] as any).text;
+    expect(orphanText).toContain('0 connections (disconnected node)');
+    expect(orphanText).toContain('Suggested candidate targets in graph');
+    expect(orphanText).toContain(connectedId);
+    const orphanId = orphanText.match(/mem_[a-f0-9]+/)?.[0];
+
+    // 3. List all memories via sd_memory(action="list") — disconnected node should appear first with 0 connections
+    const listRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list'
+      }
+    });
+    const listText = ((listRes as any).content[0] as any).text;
+    expect(listText).toContain('2 memories, 1 disconnected [0 connections]');
+    expect(listText).toContain(`${orphanId} | **0 connections** ⚠️ DISCONNECTED`);
+    expect(listText).toContain(`${connectedId} | **1 connection(s)** (1 out, 0 in)`);
+
+    // 4. Filter orphans_only via sd_memory(action="list", orphans_only=true)
+    const orphansOnlyRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list',
+        orphans_only: true
+      }
+    });
+    const orphansOnlyText = ((orphansOnlyRes as any).content[0] as any).text;
+    expect(orphansOnlyText).toContain('VTune Profiler Steps');
+    expect(orphansOnlyText).not.toContain('Anchored Profiler Config');
+
+    // 5. Link the orphan to the connected memory via sd_memory(action="relate")
+    const relateRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'relate',
+        id: orphanId,
+        target: connectedId,
+        relation_type: 'related_to'
+      }
+    });
+    expect(((relateRes as any).content[0] as any).text).toContain(`Successfully linked memory ${orphanId} -> ${connectedId}`);
+
+    // 6. Verify connection counts updated (0 disconnected remaining; connectedId now has 1 out + 1 in = 2 connections)
+    const listAfterRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list'
+      }
+    });
+    const listAfterText = ((listAfterRes as any).content[0] as any).text;
+    expect(listAfterText).toContain('2 memories, 0 disconnected [0 connections]');
+    expect(listAfterText).toContain(`${orphanId} | **1 connection(s)** (1 out, 0 in)`);
+    expect(listAfterText).toContain(`${connectedId} | **2 connection(s)** (1 out, 1 in)`);
+  });
+
+  it('should support file-less consolidation of disconnected memories via sd_memory(action="consolidate", memory_ids=[...])', async () => {
+    const r1 = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'fact',
+        title: 'SIMD Alignment Note 1',
+        content: 'AVX-512 requires 64-byte alignment for aligned loads.',
+        tags: ['simd', 'performance']
+      }
+    });
+    const id1 = ((r1 as any).content[0] as any).text.match(/mem_[a-f0-9]+/)?.[0];
+
+    const r2 = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'guide',
+        title: 'SIMD Profiling Note 2',
+        content: 'Check unaligned load penalties in hardware counters.',
+        tags: ['simd', 'profiling']
+      }
+    });
+    const id2 = ((r2 as any).content[0] as any).text.match(/mem_[a-f0-9]+/)?.[0];
+
+    const consRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'consolidate',
+        memory_ids: [id1, id2],
+        title: 'SIMD Performance & Profiling Guide'
+      }
+    });
+    const consText = ((consRes as any).content[0] as any).text;
+    expect(consText).toContain('Successfully consolidated 2 micro-memories into super-memory');
+    const superId = consText.match(/mem_[a-f0-9]+/)?.[0];
+    expect(superId).toBeDefined();
+
+    // Verify the consolidated guide has incoming part_of connections from the 2 micro-memories,
+    // and the superseded micro-memories are hidden from default list
+    const listRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list'
+      }
+    });
+    const listText = ((listRes as any).content[0] as any).text;
+    expect(listText).toContain('SIMD Performance & Profiling Guide');
+    expect(listText).toContain(`${superId} | **2 connection(s)** (0 out, 2 in)`);
+    expect(listText).not.toContain('SIMD Alignment Note 1');
+  });
 });
+
 
 

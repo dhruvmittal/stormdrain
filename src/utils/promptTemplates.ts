@@ -186,12 +186,8 @@ function generateGraphSweepCuratePrompt(
     return hasEnvTag || (m.metadata.type === 'fact' && hasEnvKeywords);
   }).slice(0, 5);
 
-  // Find orphan memories: memories with no targets and no outgoing relations
-  const orphanCandidates = allMemories.filter((m) => {
-    if (m.metadata.type === 'guide') return false;
-    const hasRelations = m.metadata.relations && m.metadata.relations.length > 0;
-    return !hasRelations;
-  }).slice(0, 5);
+  // Find orphan memories: memories with 0 total connections (outgoing + incoming)
+  const orphanCandidates = ctx.listMemoriesWithStats({ orphansOnly: true, limit: 10 });
 
   let prompt = `# 🧹 StormDrain Graph-Wide Curation Sweep
 
@@ -236,16 +232,16 @@ You are performing a holistic health and curation review of the knowledge graph 
 
   prompt += `---
 
-## 3. 🧩 Orphan & Disconnected Memories
+## 3. 🧩 Orphan & Disconnected Memories (0 Connections)
 `;
 
   if (orphanCandidates.length === 0) {
-    prompt += `*All memories are linked to target files or connected concepts in the DAG.*\n\n`;
+    prompt += `*All memories have at least 1 incoming or outgoing connection in the DAG.*\n\n`;
   } else {
-    prompt += `The following memories have no target files or relation links attached:\n\n`;
+    prompt += `The following memories have 0 connections (no incoming or outgoing relation links). Browse all memories and connection counts anytime via \`sd_memory(action="list")\`:\n\n`;
     orphanCandidates.forEach((m, idx) => {
-      prompt += `${idx + 1}. **[${m.metadata.type.toUpperCase()}]** ${m.metadata.title} (\`${m.metadata.id}\`)\n`;
-      prompt += `   👉 **Action**: Link to relevant file or memory using \`sd_relate(source_id="${m.metadata.id}", target="<file_or_memory_id>", type="applies_to")\` or prune if obsolete with \`sd_delete(id="${m.metadata.id}")\`.\n\n`;
+      prompt += `${idx + 1}. **[${m.type.toUpperCase()}]** ${m.title} (\`${m.id}\`, 0 connections)\n`;
+      prompt += `   👉 **Action**: Link to a relevant file or memory using \`sd_memory(action="relate", id="${m.id}", target="<file_or_memory_id>", relation_type="applies_to")\` (or \`sd_relate\`), merge related orphans via \`sd_memory(action="consolidate", memory_ids=["${m.id}", ...], title="...")\`, or prune if obsolete with \`sd_delete(id="${m.id}")\`.\n\n`;
     });
   }
 

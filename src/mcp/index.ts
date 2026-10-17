@@ -79,7 +79,7 @@ export class StormDrainMcpServer {
     let isMutating = this.MUTATING_TOOLS.has(toolName);
     if (toolName === 'sd_memory') {
       const action = args.action;
-      isMutating = action === 'add' || action === 'delete' || action === 'consolidate';
+      isMutating = action === 'add' || action === 'update' || action === 'relate' || action === 'delete' || action === 'consolidate';
     }
 
     // Tier 0: Explicit context argument
@@ -137,16 +137,23 @@ export class StormDrainMcpServer {
       }
     }
 
-    // Tier 1b: Memory ID introspection (for sd_get, sd_update, sd_delete, sd_relate)
+    // Tier 1b: Memory ID introspection (for sd_get, sd_update, sd_delete, sd_relate, sd_consolidate)
     const candidateMemIds: string[] = [];
     const collectMemId = (val: any) => {
       if (typeof val === 'string' && val.trim().startsWith('mem_')) {
         candidateMemIds.push(val.trim());
+      } else if (Array.isArray(val)) {
+        for (const item of val) {
+          if (typeof item === 'string' && item.trim().startsWith('mem_')) {
+            candidateMemIds.push(item.trim());
+          }
+        }
       }
     };
     collectMemId(args.id);
     collectMemId(args.source_id);
     collectMemId(args.target);
+    collectMemId(args.memory_ids);
 
     if (candidateMemIds.length > 0) {
       if (baseDir) {
@@ -286,40 +293,44 @@ export class StormDrainMcpServer {
         },
         {
           name: 'sd_memory',
-          description: 'Manage memories in the knowledge graph: add invariants/decisions, search memories, inspect nodes, delete memories, or consolidate micro-memories.',
+          description: 'Manage memories in the knowledge graph: add invariants/decisions, browse/list all memories with connection counts, search memories, inspect nodes, update memories, link nodes via relate, delete memories, or consolidate micro-memories.',
           inputSchema: {
             type: 'object',
             properties: {
               action: {
                 type: 'string',
-                enum: ['add', 'search', 'get', 'delete', 'consolidate'],
-                description: 'The memory operation to execute: "add" to record knowledge, "search" to query, "get" to inspect full details, "delete" to remove, "consolidate" to merge micro-memories.'
+                enum: ['add', 'search', 'list', 'get', 'update', 'relate', 'delete', 'consolidate'],
+                description: 'The memory operation to execute: "add" to record knowledge, "list" to browse all memories alongside connection counts (and identify disconnected nodes), "search" to query, "get" to inspect full details, "update" to modify a memory, "relate" to link a memory to a file or another memory, "delete" to remove, "consolidate" to merge micro-memories.'
               },
               type: {
                 type: 'string',
                 enum: USER_CREATABLE_TYPES,
-                description: 'Memory type for "add" action: fact, decision, guide, warning, concept'
+                description: 'Memory type for "add" or "update" action, or type filter for "list"/"search": fact, decision, guide, warning, concept'
               },
               title: {
                 type: 'string',
-                description: 'Title of the memory for "add" action'
+                description: 'Title of the memory (for "add", "update", or optional custom guide title for "consolidate")'
               },
               content: {
                 type: 'string',
-                description: 'Markdown content for "add" action'
+                description: 'Markdown content (for "add" or "update" action)'
               },
               target: {
                 type: 'string',
-                description: 'Target file path or memory ID to link (for "add") or consolidate (for "consolidate")'
+                description: 'Target file path or memory ID to link (for "add" or "relate"), inspect (for "get"), or consolidate (optional for "consolidate" when memory_ids are provided)'
               },
               relation_type: {
                 type: 'string',
-                description: 'Relation type for "add" action linking to target (e.g. affects, supports, related_to)'
+                description: 'Semantic relation type for "add" or "relate" action (e.g. affects, applies_to, supports, related_to, depends_on, part_of)'
               },
               tags: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Categorization tags for "add" action'
+                description: 'Categorization tags (for "add" or "update" action)'
+              },
+              tag: {
+                type: 'string',
+                description: 'Optional tag filter for "list" action'
               },
               query: {
                 type: 'string',
@@ -327,12 +338,43 @@ export class StormDrainMcpServer {
               },
               id: {
                 type: 'string',
-                description: 'Memory ID (e.g. mem_123456) or file path for "get" or "delete" action'
+                description: 'Memory ID (e.g. mem_123456) for "get", "update", "delete", or source memory ID for "relate"'
+              },
+              source_id: {
+                type: 'string',
+                description: 'Source memory ID for "relate" action (alias for "id")'
+              },
+              add_targets: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Target file paths or memory IDs to link for "update" action'
+              },
+              remove_targets: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Target file paths or memory IDs to unlink for "update" action'
               },
               memory_ids: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Specific memory IDs to merge for "consolidate" action (optional)'
+                description: 'Specific memory IDs to merge for "consolidate" action (can consolidate disconnected memories directly without a target file)'
+              },
+              orphans_only: {
+                type: 'boolean',
+                description: 'For "list" action: if true, return only disconnected memories with 0 total connections'
+              },
+              max_connections: {
+                type: 'number',
+                description: 'For "list" action: optional maximum total connections filter (e.g. 0 for orphans, 1 for weakly connected)'
+              },
+              sort_by: {
+                type: 'string',
+                enum: ['connections_asc', 'connections_desc', 'updated', 'confidence', 'accessed'],
+                description: 'For "list" action: sort order (default: "connections_asc" to surface disconnected nodes first)'
+              },
+              limit: {
+                type: 'number',
+                description: 'For "list" action: optional maximum number of memories to return'
               },
               context: contextProp
             },
@@ -355,7 +397,7 @@ export class StormDrainMcpServer {
           const action = mArgs.action;
           if (!action) {
             return {
-              content: [{ type: 'text', text: 'Validation Error: "action" parameter is required for sd_memory ("add", "search", "get", "delete", "consolidate").' }],
+              content: [{ type: 'text', text: 'Validation Error: "action" parameter is required for sd_memory ("add", "search", "list", "get", "update", "relate", "delete", "consolidate").' }],
               isError: true
             };
           }
@@ -378,6 +420,8 @@ export class StormDrainMcpServer {
               };
             }
             request.params.name = 'sd_search';
+          } else if (action === 'list') {
+            request.params.name = 'sd_list';
           } else if (action === 'get') {
             const id = mArgs.id || mArgs.target;
             if (!id) {
@@ -388,6 +432,30 @@ export class StormDrainMcpServer {
             }
             request.params.name = 'sd_get';
             mArgs.id = id;
+          } else if (action === 'update') {
+            if (!mArgs.id) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" is required for action "update".' }],
+                isError: true
+              };
+            }
+            if (mArgs.target && !mArgs.add_targets) {
+              mArgs.add_targets = [mArgs.target];
+            }
+            request.params.name = 'sd_update';
+          } else if (action === 'relate') {
+            const sourceId = mArgs.source_id || mArgs.id;
+            const target = mArgs.target || mArgs.target_file;
+            if (!sourceId || !target) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" (or "source_id") and "target" are required for action "relate".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_relate';
+            mArgs.source_id = sourceId;
+            mArgs.target = target;
+            mArgs.relation_type = mArgs.relation_type || mArgs.relationType || mArgs.type;
           } else if (action === 'delete') {
             if (!mArgs.id) {
               return {
@@ -398,17 +466,20 @@ export class StormDrainMcpServer {
             request.params.name = 'sd_delete';
           } else if (action === 'consolidate') {
             const target = mArgs.target || mArgs.target_file;
-            if (!target) {
+            const hasMemoryIds = Array.isArray(mArgs.memory_ids) && mArgs.memory_ids.length >= 2;
+            if (!target && !hasMemoryIds) {
               return {
-                content: [{ type: 'text', text: 'Validation Error: "target" is required for action "consolidate".' }],
+                content: [{ type: 'text', text: 'Validation Error: Either "target" or "memory_ids" (>= 2 IDs) is required for action "consolidate".' }],
                 isError: true
               };
             }
             request.params.name = 'sd_consolidate';
-            mArgs.target_file = target;
+            if (target) {
+              mArgs.target_file = target;
+            }
           } else {
             return {
-              content: [{ type: 'text', text: `Unknown action "${action}" for sd_memory. Supported actions: add, search, get, delete, consolidate.` }],
+              content: [{ type: 'text', text: `Unknown action "${action}" for sd_memory. Supported actions: add, search, list, get, update, relate, delete, consolidate.` }],
               isError: true
             };
           }
@@ -633,6 +704,55 @@ export class StormDrainMcpServer {
           return { content: [{ type: 'text', text: sections.join('\n') }] };
         }
 
+        if (request.params.name === 'sd_list') {
+          const args = (request.params.arguments || {}) as {
+            type?: MemoryType;
+            tag?: string;
+            orphans_only?: boolean;
+            max_connections?: number;
+            sort_by?: 'connections_asc' | 'connections_desc' | 'updated' | 'confidence' | 'accessed';
+            limit?: number;
+            include_consolidated?: boolean;
+          };
+
+          const summaries = ctx.listMemoriesWithStats({
+            type: args.type,
+            tag: args.tag,
+            orphansOnly: args.orphans_only,
+            maxConnections: args.max_connections,
+            sortBy: args.sort_by || 'connections_asc',
+            limit: args.limit,
+            includeConsolidated: args.include_consolidated
+          });
+
+          if (summaries.length === 0) {
+            return { content: [{ type: 'text', text: `No memories found matching filters in context "${targetContext}".` }] };
+          }
+
+          const orphanCount = summaries.filter(s => s.total_connections === 0).length;
+          const lines: string[] = [];
+          lines.push(`## 📋 Memory Inventory in Context "${targetContext}" (${summaries.length} memories, ${orphanCount} disconnected [0 connections])`);
+          lines.push('');
+
+          for (const s of summaries) {
+            const tagStr = s.tags.length > 0 ? ` [${s.tags.map(t => `#${t}`).join(' ')}]` : '';
+            const connBadge = s.total_connections === 0
+              ? `**0 connections** ⚠️ DISCONNECTED`
+              : `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in)`;
+            lines.push(`- **[${s.type.toUpperCase()}] ${s.title}** (ID: \`${s.id}\` | ${connBadge} | Conf: ${s.confidence} | Accesses: ${s.access_count})${tagStr}`);
+          }
+
+          if (orphanCount > 0) {
+            lines.push('');
+            lines.push(`*💡 Tip: Found ${orphanCount} disconnected memory node(s) with 0 connections. You can:*`);
+            lines.push(`- *Link to a file or concept: \`sd_memory(action="relate", id="mem_...", target="<file_path_or_mem_id>")\`*`);
+            lines.push(`- *Merge related orphan memories into a guide: \`sd_memory(action="consolidate", memory_ids=["mem_...", "mem_..."], title="...")\`*`);
+            lines.push(`- *Delete if obsolete: \`sd_memory(action="delete", id="mem_...")\`*`);
+          }
+
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
         if (request.params.name === 'sd_add') {
           const args = request.params.arguments as {
             type: MemoryType;
@@ -666,7 +786,21 @@ export class StormDrainMcpServer {
           } else if (mem && mem.metadata.relations.length > 0) {
             linkMsg = ` (linked to ${mem.metadata.relations.length} target(s): ${mem.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})`;
           }
-          return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"` }] };
+
+          let orphanNudge = '';
+          const relCount = mem ? mem.metadata.relations.length : 0;
+          if (relCount === 0) {
+            const suggestions = ctx.suggestCandidateTargets(id, 3);
+            orphanNudge = `\n\n⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.\n- Link it to a file or concept via \`sd_memory(action="relate", id="${id}", target="<file_or_mem_id>")\`.`;
+            if (suggestions.length > 0) {
+              const formattedSug = suggestions
+                .map(s => s.nodeType === 'file' ? `\`${s.displayTarget}\` (file)` : `\`${s.id}\` ("${s.title}", ${s.type})`)
+                .join(', ');
+              orphanNudge += `\n- Suggested candidate targets in graph: ${formattedSug}`;
+            }
+          }
+
+          return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"${orphanNudge}` }] };
         }
 
         if (request.params.name === 'sd_update') {
@@ -768,13 +902,15 @@ export class StormDrainMcpServer {
         }
 
         if (request.params.name === 'sd_consolidate') {
-          const targetFile = request.params.arguments?.target_file as string;
+          const targetFile = (request.params.arguments?.target_file || request.params.arguments?.target) as string | undefined;
           const memoryIds = request.params.arguments?.memory_ids as string[] | undefined;
-          const res = ctx.consolidateNeighborhood(targetFile, { memory_ids: memoryIds });
+          const title = request.params.arguments?.title as string | undefined;
+          const res = ctx.consolidateNeighborhood(targetFile, { memory_ids: memoryIds, title });
+          const targetDesc = targetFile ? `for target "${targetFile}"` : `from ${memoryIds?.length || 0} specified memory IDs`;
           if (!res.consolidatedId) {
-            return { content: [{ type: 'text', text: `No micro-memories (>= 2) found to consolidate for "${targetFile}".` }] };
+            return { content: [{ type: 'text', text: `No micro-memories (>= 2) found to consolidate ${targetDesc}.` }] };
           }
-          return { content: [{ type: 'text', text: `Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${targetFile}".` }] };
+          return { content: [{ type: 'text', text: `Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} ${targetDesc}.` }] };
         }
 
         if (request.params.name === 'sd_prune') {

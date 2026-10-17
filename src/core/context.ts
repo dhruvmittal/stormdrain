@@ -7,7 +7,7 @@ import { initDb } from '../db/schema';
 import { syncMemoryToDb, deleteMemoryFromDb } from '../db/sync';
 import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
-import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow, USER_CREATABLE_TYPES, CANONICAL_MEMORY_TYPES, toCanonicalType } from '../types';
+import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryListSummary, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow, USER_CREATABLE_TYPES, CANONICAL_MEMORY_TYPES, toCanonicalType } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
@@ -357,6 +357,212 @@ export class ContextManager {
     }
     return results;
   }
+
+  public listMemoriesWithStats(options?: {
+    type?: MemoryType;
+    tag?: string;
+    orphansOnly?: boolean;
+    maxConnections?: number;
+    sortBy?: 'connections_asc' | 'connections_desc' | 'updated' | 'confidence' | 'accessed';
+    limit?: number;
+    includeConsolidated?: boolean;
+  }): MemoryListSummary[] {
+    const filterType = options?.type ? toCanonicalType(options.type) : undefined;
+    const filterTag = options?.tag ? options.tag.replace(/^#/, '').trim().toLowerCase() : undefined;
+    const includeConsolidated = options?.includeConsolidated ?? false;
+
+    const rows = this.db.prepare(`
+      SELECT
+        m.*,
+        f.content as content_snippet,
+        (SELECT COUNT(*) FROM relations r WHERE r.source_id = m.id) as outgoing_count,
+        (SELECT COUNT(*) FROM relations r WHERE r.target_id = m.id) as incoming_count,
+        (SELECT GROUP_CONCAT(tag) FROM tags t WHERE t.memory_id = m.id) as tags_str
+      FROM memories m
+      LEFT JOIN memories_fts f ON f.id = m.id
+      WHERE m.type != 'codemap'
+    `).all() as Array<any>;
+
+    let summaries: MemoryListSummary[] = [];
+
+    for (const row of rows) {
+      const tags = (row.tags_str || '').split(',').filter(Boolean);
+      if (!includeConsolidated && (row.superseded_by || tags.includes('consolidated'))) {
+        continue;
+      }
+      const canonicalType = toCanonicalType(row.type);
+      if (filterType && canonicalType !== filterType && row.type !== options?.type) {
+        continue;
+      }
+      if (filterTag && !tags.some((t: string) => t.toLowerCase() === filterTag)) {
+        continue;
+      }
+
+      const outgoingCount = Number(row.outgoing_count ?? 0);
+      const incomingCount = Number(row.incoming_count ?? 0);
+      const totalConnections = outgoingCount + incomingCount;
+
+      if (options?.orphansOnly && totalConnections > 0) {
+        continue;
+      }
+      if (options?.maxConnections !== undefined && totalConnections > options.maxConnections) {
+        continue;
+      }
+
+      summaries.push({
+        id: row.id,
+        type: row.type,
+        title: row.title,
+        context: row.context || this.name,
+        confidence: row.confidence ?? 1.0,
+        tags,
+        created: row.created || new Date().toISOString(),
+        updated: row.updated || new Date().toISOString(),
+        accessed: row.accessed || new Date().toISOString(),
+        access_count: row.access_count ?? 0,
+        outgoing_count: outgoingCount,
+        incoming_count: incomingCount,
+        total_connections: totalConnections,
+        superseded_by: row.superseded_by || null,
+        content_snippet: row.content_snippet ? String(row.content_snippet).slice(0, 140).trim() : undefined,
+      });
+    }
+
+    const sortBy = options?.sortBy || 'connections_asc';
+    summaries.sort((a, b) => {
+      if (sortBy === 'connections_asc') {
+        if (a.total_connections !== b.total_connections) {
+          return a.total_connections - b.total_connections;
+        }
+        return b.updated.localeCompare(a.updated);
+      }
+      if (sortBy === 'connections_desc') {
+        if (b.total_connections !== a.total_connections) {
+          return b.total_connections - a.total_connections;
+        }
+        return b.updated.localeCompare(a.updated);
+      }
+      if (sortBy === 'confidence') {
+        if (b.confidence !== a.confidence) {
+          return b.confidence - a.confidence;
+        }
+        return b.updated.localeCompare(a.updated);
+      }
+      if (sortBy === 'accessed') {
+        if (b.access_count !== a.access_count) {
+          return b.access_count - a.access_count;
+        }
+        return b.accessed.localeCompare(a.accessed);
+      }
+      // default 'updated'
+      return b.updated.localeCompare(a.updated);
+    });
+
+    if (options?.limit && options.limit > 0) {
+      summaries = summaries.slice(0, options.limit);
+    }
+
+    return summaries;
+  }
+
+  public suggestCandidateTargets(
+    memoryId: string,
+    limit = 3
+  ): Array<{ id: string; title: string; displayTarget: string; nodeType: 'file' | 'memory'; type: string }> {
+    const mem = this.getMemory(memoryId);
+    if (!mem) return [];
+
+    const stopwords = new Set([
+      'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'when', 'where',
+      'what', 'which', 'how', 'why', 'should', 'must', 'can', 'will', 'not', 'are',
+      'was', 'were', 'has', 'have', 'had', 'use', 'using', 'used', 'via', 'all', 'any'
+    ]);
+
+    const rawText = `${mem.metadata.title} ${(mem.metadata.tags || []).join(' ')} ${mem.content.slice(0, 400)}`;
+    const tokens = Array.from(
+      new Set(
+        rawText
+          .split(/[^a-zA-Z0-9_\-\.\/]+/)
+          .map(t => t.replace(/^\.+|\.+$/g, '').trim())
+          .filter(t => t.length >= 3 && !stopwords.has(t.toLowerCase()))
+      )
+    );
+
+    if (tokens.length === 0) return [];
+
+    const candidates: Array<{ id: string; title: string; displayTarget: string; nodeType: 'file' | 'memory'; type: string }> = [];
+    const seen = new Set<string>([memoryId]);
+
+    // 1. Check if any token looks like a file path or filename matching a codemap vertex
+    const codemaps = this.db.prepare(`
+      SELECT id, title, type FROM memories WHERE type = 'codemap'
+    `).all() as Array<{ id: string; title: string; type: string }>;
+
+    for (const cm of codemaps) {
+      const relPath = cm.title.replace(/^\[(File|Submodule|Codemap)\]\s*/, '').trim();
+      const baseName = path.basename(relPath);
+      const baseNoExt = baseName.replace(/\.[^.]+$/, '');
+      if (
+        tokens.some(
+          tok =>
+            tok === relPath ||
+            tok === baseName ||
+            (baseNoExt.length >= 4 && tok.toLowerCase() === baseNoExt.toLowerCase())
+        )
+      ) {
+        if (!seen.has(cm.id)) {
+          seen.add(cm.id);
+          candidates.push({
+            id: cm.id,
+            title: relPath,
+            displayTarget: relPath,
+            nodeType: 'file',
+            type: 'codemap'
+          });
+        }
+      }
+      if (candidates.length >= limit) return candidates;
+    }
+
+    // 2. FTS OR match across other memories and codemaps
+    const safeTokens = tokens
+      .slice(0, 8)
+      .map(t => t.replace(/[^a-zA-Z0-9_]/g, ''))
+      .filter(t => t.length >= 3)
+      .map(t => `"${t}"`);
+
+    if (safeTokens.length > 0) {
+      try {
+        const ftsQuery = safeTokens.join(' OR ');
+        const rows = this.db.prepare(`
+          SELECT m.id, m.title, m.type, m.superseded_by
+          FROM memories_fts fts
+          JOIN memories m ON m.id = fts.id
+          WHERE memories_fts MATCH ? AND m.id != ?
+          ORDER BY rank
+          LIMIT ?
+        `).all(ftsQuery, memoryId, limit * 2) as Array<{ id: string; title: string; type: string; superseded_by: string | null }>;
+
+        for (const r of rows) {
+          if (seen.has(r.id) || r.superseded_by) continue;
+          seen.add(r.id);
+          const isFile = r.type === 'codemap';
+          const cleanTitle = isFile ? r.title.replace(/^\[(File|Submodule|Codemap)\]\s*/, '').trim() : r.title;
+          candidates.push({
+            id: r.id,
+            title: cleanTitle,
+            displayTarget: isFile ? cleanTitle : r.id,
+            nodeType: isFile ? 'file' : 'memory',
+            type: r.type
+          });
+          if (candidates.length >= limit) break;
+        }
+      } catch {}
+    }
+
+    return candidates;
+  }
+
 
   public getNodeDetails(idOrPath: string): FullNodeDetails | null {
     const trimmed = idOrPath.trim();
@@ -735,29 +941,48 @@ export class ContextManager {
   }
 
   public consolidateNeighborhood(
-    targetFileOrId: string,
-    options?: { memory_ids?: string[] } | string[]
+    targetFileOrId?: string,
+    options?: { memory_ids?: string[]; title?: string } | string[]
   ): { consolidatedId: string; mergedCount: number } {
-    const targetId = this.resolveTargetId(targetFileOrId);
-
-    // Find non-codemap memories attached to this target vertex
-    const relations = this.db.prepare(`
-      SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
-    `).all(targetId) as Array<{ source_id: string }>;
+    const trimmedTarget = (targetFileOrId || '').trim();
+    const targetId = trimmedTarget ? this.resolveTargetId(trimmedTarget) : '';
 
     const memoryIds = Array.isArray(options) ? options : options?.memory_ids;
+    const customTitle = !Array.isArray(options) ? options?.title?.trim() : undefined;
     const filterIds = memoryIds && memoryIds.length > 0
-      ? new Set(memoryIds)
+      ? new Set(memoryIds.map(id => id.trim()).filter(Boolean))
       : null;
 
     const memories: Memory[] = [];
-    for (const rel of relations) {
-      if (filterIds && !filterIds.has(rel.source_id)) {
-        continue;
+    const seenIds = new Set<string>();
+
+    if (targetId) {
+      // Find non-codemap memories attached to this target vertex
+      const relations = this.db.prepare(`
+        SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
+      `).all(targetId) as Array<{ source_id: string }>;
+
+      for (const rel of relations) {
+        if (filterIds && !filterIds.has(rel.source_id)) {
+          continue;
+        }
+        const mem = this.getMemory(rel.source_id);
+        if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
+          seenIds.add(mem.metadata.id);
+          memories.push(mem);
+        }
       }
-      const mem = this.getMemory(rel.source_id);
-      if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
-        memories.push(mem);
+    }
+
+    // Support file-less consolidation (or consolidating explicit disconnected memory_ids)
+    if (memories.length < 2 && filterIds && filterIds.size >= 2 && (!targetId || memories.length === 0)) {
+      for (const id of filterIds) {
+        if (seenIds.has(id)) continue;
+        const mem = this.getMemory(id);
+        if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
+          seenIds.add(mem.metadata.id);
+          memories.push(mem);
+        }
       }
     }
 
@@ -765,11 +990,15 @@ export class ContextManager {
       return { consolidatedId: '', mergedCount: 0 };
     }
 
-    const title = targetFileOrId;
+    const title = customTitle || trimmedTarget || `Consolidated Guide: ${memories[0].metadata.title}`;
     const allTags = new Set<string>(['consolidated-guide', 'super-memory']);
     
-    let combinedContent = `# Consolidated Guide for ${targetFileOrId}\n\n`;
-    combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${targetFileOrId}\`.\n\n---\n\n`;
+    let combinedContent = `# ${customTitle ? customTitle : `Consolidated Guide for ${title}`}\n\n`;
+    if (trimmedTarget) {
+      combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${trimmedTarget}\`.\n\n---\n\n`;
+    } else {
+      combinedContent += `This super-memory consolidates ${memories.length} related domain memories.\n\n---\n\n`;
+    }
 
     for (const mem of memories) {
       mem.metadata.tags.forEach(t => allTags.add(t));
@@ -785,7 +1014,7 @@ export class ContextManager {
       Array.from(allTags),
       'consolidator',
       undefined,
-      targetFileOrId
+      trimmedTarget || undefined
     );
 
     // Mark source micro-memories as consolidated & superseded, transfer their relations, and link part_of
@@ -798,7 +1027,7 @@ export class ContextManager {
 
       // 1. Transfer outgoing relations (except the target file itself) to the new guide
       for (const rel of mem.metadata.relations) {
-        if (rel.target !== targetId) {
+        if (!targetId || rel.target !== targetId) {
           this.addRelation(consolidatedId, rel.target, rel.type);
         }
       }
