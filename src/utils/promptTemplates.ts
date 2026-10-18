@@ -117,22 +117,22 @@ Review the data above and perform the necessary maintenance actions:
 ### 1. Consolidate Micro-Memories (if $\\ge ${threshold}$ micro-memories attached)
 - If multiple related micro-memories exist, synthesize them into a coherent architectural guide.
 - Select the relevant memory IDs to merge and call:
-  \`sd_consolidate(target_file="${target}", memory_ids=[...])\`
+  \`sd_memory(action="consolidate", target="${target}", memory_ids=[...])\` (or \`sd_consolidate(target_file="${target}", memory_ids=[...])\`)
 - *Note*: If unlike/unrelated facts are attached, exclude their IDs so they remain active.
 
 ### 2. Generalize & Promote Universal Knowledge to \`_global\`
 - If any memory captures universal toolchain rules, compiler settings, OS quirks, or framework patterns independent of this project:
   1. Abstract away local file paths and repo-specific identifiers.
-  2. Call \`sd_add(type=..., title=..., content=..., context="_global", tags=[...])\`.
-  3. If the local copy is now redundant, delete it via \`sd_delete(id="...")\`.
+  2. Call \`sd_memory(action="add", type=..., title=..., content=..., context="_global", tags=[...])\` (or \`sd_add\`).
+  3. If the local copy is now redundant, delete it via \`sd_memory(action="delete", id="...")\`.
 
 ### 3. Connect Missing Relational Links
 - If this node is logically related to or depends on other concepts or files, link them:
-  \`sd_relate(source_id="${node.id}", target="<other_target>", type="related_to")\`
+  \`sd_memory(action="relate", id="${node.id}", target="<other_target>", relation_type="related_to")\`
 
 ### 4. Prune Noise or Stale Memories
 - If any attached memory contains obsolete or low-signal progress noise, delete it:
-  \`sd_delete(id="<memory_id>")\`
+  \`sd_memory(action="delete", id="<memory_id>")\`
 `;
 
   return {
@@ -204,11 +204,16 @@ You are performing a holistic health and curation review of the knowledge graph 
     prompt += `The following targets have accumulated multiple micro-memories ready for synthesis:\n\n`;
     candidates.forEach((c, idx) => {
       const displayTarget = c.targetTitle || c.target;
+      const idsStr = c.memories.map(m => `"${m.id}"`).join(', ');
       prompt += `### ${idx + 1}. \`${displayTarget}\` (${c.memoryCount} micro-memories, kind: ${c.targetType})\n`;
       c.memories.forEach((m) => {
         prompt += `- **[${m.type.toUpperCase()}]** ${m.title} (\`${m.id}\`, confidence: ${(m.confidence * 100).toFixed(0)}%)\n`;
       });
-      prompt += `👉 **Action**: Call \`sd_consolidate(target_file="${displayTarget}", memory_ids=[${c.memories.map(m => `"${m.id}"`).join(', ')}])\` to synthesize into a guide and activate the Consolidation Shield.\n\n`;
+      if (c.target.startsWith('#')) {
+        prompt += `👉 **Action**: Call \`sd_memory(action="consolidate", memory_ids=[${idsStr}], title="...")\` to synthesize this disconnected tag cluster into a unified guide.\n\n`;
+      } else {
+        prompt += `👉 **Action**: Call \`sd_memory(action="consolidate", target="${displayTarget}", memory_ids=[${idsStr}])\` (or \`sd_consolidate(target_file="${displayTarget}", memory_ids=[${idsStr}])\`) to synthesize into a guide and activate the Consolidation Shield.\n\n`;
+      }
     });
   }
 
@@ -226,7 +231,7 @@ You are performing a holistic health and curation review of the knowledge graph 
       if (m.metadata.tags && m.metadata.tags.length > 0) prompt += `   Tags: ${m.metadata.tags.join(', ')}\n`;
       const preview = (m.content || '').split('\n').filter(l => l.trim()).slice(0, 2).join(' ');
       prompt += `   *Preview*: ${preview.substring(0, 120)}...\n`;
-      prompt += `   👉 **Action**: Inspect with \`sd_get(id="${m.metadata.id}")\`, abstract project-specific details, and call \`sd_add(type="${m.metadata.type}", title="${m.metadata.title}", content="<generalized>", context="_global")\`.\n\n`;
+      prompt += `   👉 **Action**: Inspect with \`sd_memory(action="get", id="${m.metadata.id}")\`, abstract project-specific details, and call \`sd_memory(action="add", type="${m.metadata.type}", title="${m.metadata.title}", content="<generalized>", context="_global")\`.\n\n`;
     });
   }
 
@@ -241,7 +246,7 @@ You are performing a holistic health and curation review of the knowledge graph 
     prompt += `The following memories have 0 connections (no incoming or outgoing relation links). Browse all memories and connection counts anytime via \`sd_memory(action="list")\`:\n\n`;
     orphanCandidates.forEach((m, idx) => {
       prompt += `${idx + 1}. **[${m.type.toUpperCase()}]** ${m.title} (\`${m.id}\`, 0 connections)\n`;
-      prompt += `   👉 **Action**: Link to a relevant file or memory using \`sd_memory(action="relate", id="${m.id}", target="<file_or_memory_id>", relation_type="applies_to")\` (or \`sd_relate\`), merge related orphans via \`sd_memory(action="consolidate", memory_ids=["${m.id}", ...], title="...")\`, or prune if obsolete with \`sd_delete(id="${m.id}")\`.\n\n`;
+      prompt += `   👉 **Action**: Link to a relevant file or memory using \`sd_memory(action="relate", id="${m.id}", target="<file_or_memory_id>", relation_type="applies_to")\`, merge related orphans via \`sd_memory(action="consolidate", memory_ids=["${m.id}", ...], title="...")\`, or prune if obsolete with \`sd_memory(action="delete", id="${m.id}")\`.\n\n`;
     });
   }
 

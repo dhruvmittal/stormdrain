@@ -92,13 +92,14 @@ export class StormDrainMcpServer {
     }
 
     // Tier 1: Target path candidate introspection
+    const isVertexId = (s: string) => s.startsWith('mem_') || s.startsWith('file_');
     const candidatePaths: string[] = [];
     const collectCandidate = (val: any) => {
-      if (typeof val === 'string' && val.trim() && !val.trim().startsWith('mem_')) {
+      if (typeof val === 'string' && val.trim() && !isVertexId(val.trim())) {
         candidatePaths.push(val.trim());
       } else if (Array.isArray(val)) {
         for (const item of val) {
-          if (typeof item === 'string' && item.trim() && !item.trim().startsWith('mem_')) {
+          if (typeof item === 'string' && item.trim() && !isVertexId(item.trim())) {
             candidatePaths.push(item.trim());
           }
         }
@@ -137,14 +138,14 @@ export class StormDrainMcpServer {
       }
     }
 
-    // Tier 1b: Memory ID introspection (for sd_get, sd_update, sd_delete, sd_relate, sd_consolidate)
+    // Tier 1b: Memory/File vertex ID introspection (for sd_get, sd_update, sd_delete, sd_relate, sd_consolidate)
     const candidateMemIds: string[] = [];
     const collectMemId = (val: any) => {
-      if (typeof val === 'string' && val.trim().startsWith('mem_')) {
+      if (typeof val === 'string' && isVertexId(val.trim())) {
         candidateMemIds.push(val.trim());
       } else if (Array.isArray(val)) {
         for (const item of val) {
-          if (typeof item === 'string' && item.trim().startsWith('mem_')) {
+          if (typeof item === 'string' && isVertexId(item.trim())) {
             candidateMemIds.push(item.trim());
           }
         }
@@ -300,12 +301,16 @@ export class StormDrainMcpServer {
               action: {
                 type: 'string',
                 enum: ['add', 'search', 'list', 'get', 'update', 'relate', 'delete', 'consolidate'],
-                description: 'The memory operation to execute: "add" to record knowledge, "list" to browse all memories alongside connection counts (and identify disconnected nodes), "search" to query, "get" to inspect full details, "update" to modify a memory, "relate" to link a memory to a file or another memory, "delete" to remove, "consolidate" to merge micro-memories.'
+                description: 'Operation: "add" to record knowledge, "list" to browse memories alongside connection counts (sorted disconnected-first), "search" to query, "get" to inspect details, "update" to modify, "relate" to link a memory to a file/memory, "delete" to remove, "consolidate" to merge micro-memories.'
+              },
+              id: {
+                type: 'string',
+                description: 'Memory ID (e.g. mem_123456) for "get", "update", "delete", or source memory ID for "relate"'
               },
               type: {
                 type: 'string',
                 enum: USER_CREATABLE_TYPES,
-                description: 'Memory type for "add" or "update" action, or type filter for "list"/"search": fact, decision, guide, warning, concept'
+                description: 'Memory type for "add"/"update", or type filter for "list"/"search": fact, decision, guide, warning, concept'
               },
               title: {
                 type: 'string',
@@ -313,64 +318,33 @@ export class StormDrainMcpServer {
               },
               content: {
                 type: 'string',
-                description: 'Markdown content (for "add" or "update" action)'
+                description: 'Markdown content (for "add" or "update")'
               },
               target: {
                 type: 'string',
-                description: 'Target file path or memory ID to link (for "add" or "relate"), inspect (for "get"), or consolidate (optional for "consolidate" when memory_ids are provided)'
+                description: 'Target file path or memory ID to link (for "add", "relate", "update"), inspect (for "get"), or consolidate'
               },
               relation_type: {
                 type: 'string',
-                description: 'Semantic relation type for "add" or "relate" action (e.g. affects, applies_to, supports, related_to, depends_on, part_of)'
+                description: 'Semantic relation type for "add" or "relate" (affects, applies_to, supports, related_to, depends_on, part_of)'
               },
               tags: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Categorization tags (for "add" or "update" action)'
-              },
-              tag: {
-                type: 'string',
-                description: 'Optional tag filter for "list" action'
+                description: 'Categorization tags (for "add"/"update", or tag filter for "list")'
               },
               query: {
                 type: 'string',
                 description: 'Search query for "search" action'
               },
-              id: {
-                type: 'string',
-                description: 'Memory ID (e.g. mem_123456) for "get", "update", "delete", or source memory ID for "relate"'
-              },
-              source_id: {
-                type: 'string',
-                description: 'Source memory ID for "relate" action (alias for "id")'
-              },
-              add_targets: {
-                type: 'array',
-                items: { type: 'string' },
-                description: 'Target file paths or memory IDs to link for "update" action'
-              },
-              remove_targets: {
-                type: 'array',
-                items: { type: 'string' },
-                description: 'Target file paths or memory IDs to unlink for "update" action'
-              },
               memory_ids: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Specific memory IDs to merge for "consolidate" action (can consolidate disconnected memories directly without a target file)'
+                description: 'Specific memory IDs to merge for "consolidate" (can consolidate disconnected memories without a target file)'
               },
               orphans_only: {
                 type: 'boolean',
                 description: 'For "list" action: if true, return only disconnected memories with 0 total connections'
-              },
-              max_connections: {
-                type: 'number',
-                description: 'For "list" action: optional maximum total connections filter (e.g. 0 for orphans, 1 for weakly connected)'
-              },
-              sort_by: {
-                type: 'string',
-                enum: ['connections_asc', 'connections_desc', 'updated', 'confidence', 'accessed'],
-                description: 'For "list" action: sort order (default: "connections_asc" to surface disconnected nodes first)'
               },
               limit: {
                 type: 'number',
@@ -452,10 +426,13 @@ export class StormDrainMcpServer {
                 isError: true
               };
             }
+            const validRelTypes = new Set(['affects', 'applies_to', 'supports', 'contradicts', 'depends_on', 'supersedes', 'related_to', 'part_of']);
+            const typeAsRel = typeof mArgs.type === 'string' && validRelTypes.has(mArgs.type) ? mArgs.type : undefined;
             request.params.name = 'sd_relate';
             mArgs.source_id = sourceId;
             mArgs.target = target;
-            mArgs.relation_type = mArgs.relation_type || mArgs.relationType || mArgs.type;
+            mArgs.relation_type = mArgs.relation_type || mArgs.relationType || typeAsRel;
+            delete mArgs.type;
           } else if (action === 'delete') {
             if (!mArgs.id) {
               return {
@@ -708,6 +685,7 @@ export class StormDrainMcpServer {
           const args = (request.params.arguments || {}) as {
             type?: MemoryType;
             tag?: string;
+            tags?: string[];
             orphans_only?: boolean;
             max_connections?: number;
             sort_by?: 'connections_asc' | 'connections_desc' | 'updated' | 'confidence' | 'accessed';
@@ -715,9 +693,10 @@ export class StormDrainMcpServer {
             include_consolidated?: boolean;
           };
 
+          const effectiveTag = args.tag || (Array.isArray(args.tags) && args.tags.length > 0 ? args.tags[0] : undefined);
           const summaries = ctx.listMemoriesWithStats({
             type: args.type,
-            tag: args.tag,
+            tag: effectiveTag,
             orphansOnly: args.orphans_only,
             maxConnections: args.max_connections,
             sortBy: args.sort_by || 'connections_asc',
@@ -791,7 +770,11 @@ export class StormDrainMcpServer {
           const relCount = mem ? mem.metadata.relations.length : 0;
           if (relCount === 0) {
             const suggestions = ctx.suggestCandidateTargets(id, 3);
-            orphanNudge = `\n\n⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.\n- Link it to a file or concept via \`sd_memory(action="relate", id="${id}", target="<file_or_mem_id>")\`.`;
+            if (args.type === 'guide' || args.type === 'concept') {
+              orphanNudge = `\n\nℹ️ Note: ${args.type} ${id} was created with 0 file/graph connections. If this is an intentional workspace-wide ${args.type}, it will surface via top-memory recall, search, and \`sd_memory(action="list")\`. If it belongs to specific files or concepts, link it via \`sd_memory(action="relate", id="${id}", target="<file_or_mem_id>")\`.`;
+            } else {
+              orphanNudge = `\n\n⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.\n- Link it to a file or concept via \`sd_memory(action="relate", id="${id}", target="<file_or_mem_id>")\`.`;
+            }
             if (suggestions.length > 0) {
               const formattedSug = suggestions
                 .map(s => s.nodeType === 'file' ? `\`${s.displayTarget}\` (file)` : `\`${s.id}\` ("${s.title}", ${s.type})`)
@@ -836,8 +819,13 @@ export class StormDrainMcpServer {
             throw new Error('Arguments "source_id" and "target" are required for sd_relate.');
           }
           const resolvedTarget = ctx.resolveTargetId(args.target);
+          if (args.source_id === resolvedTarget) {
+            throw new Error(`Cannot link memory "${args.source_id}" to itself (self-loop).`);
+          }
+          const validRelTypes = new Set(['affects', 'applies_to', 'supports', 'contradicts', 'depends_on', 'supersedes', 'related_to', 'part_of']);
           const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
-          const relType = (args.type || args.relation_type || defaultType) as RelationType;
+          const validTypeFallback = args.type && validRelTypes.has(args.type) ? args.type : undefined;
+          const relType = (args.relation_type || validTypeFallback || defaultType) as RelationType;
           const added = ctx.addRelation(args.source_id, args.target, relType);
           if (added) {
             return { content: [{ type: 'text', text: `Successfully linked memory ${args.source_id} -> ${resolvedTarget} with relation "${relType}" in context "${targetContext}".` }] };

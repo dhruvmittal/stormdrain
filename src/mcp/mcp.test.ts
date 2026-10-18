@@ -625,7 +625,7 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(getText).toContain('tenant-c');
   });
 
-  it('should browse memories with connection counts via sd_memory action: list, and link orphans via action: relate', async () => {
+  it('should browse memories with connection counts via sd_memory action: list, emit type-aware nudges, and link orphans via action: relate', async () => {
     // 1. Add a connected memory
     const connectedRes = await client.callTool({
       name: 'sd_memory',
@@ -642,7 +642,7 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(connectedText).not.toContain('0 connections (disconnected node)');
     const connectedId = connectedText.match(/mem_[a-f0-9]+/)?.[0];
 
-    // 2. Add a disconnected memory (0 connections) — should emit creation-time nudge and suggest candidate
+    // 2. Add a disconnected guide (0 connections) — should emit type-aware workspace-wide guide note + candidate target suggestion
     const orphanRes = await client.callTool({
       name: 'sd_memory',
       arguments: {
@@ -654,7 +654,7 @@ describe('StormDrainMcpServer Protocol', () => {
       }
     });
     const orphanText = ((orphanRes as any).content[0] as any).text;
-    expect(orphanText).toContain('0 connections (disconnected node)');
+    expect(orphanText).toContain('0 file/graph connections');
     expect(orphanText).toContain('Suggested candidate targets in graph');
     expect(orphanText).toContain(connectedId);
     const orphanId = orphanText.match(/mem_[a-f0-9]+/)?.[0];
@@ -684,16 +684,31 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(orphansOnlyText).not.toContain('Anchored Profiler Config');
 
     // 5. Link the orphan to the connected memory via sd_memory(action="relate")
+    // Also verify Bug #3 fix: passing a MemoryType in `type` ("guide") does NOT overwrite `relation_type` ("related_to")
     const relateRes = await client.callTool({
       name: 'sd_memory',
       arguments: {
         action: 'relate',
         id: orphanId,
         target: connectedId,
+        type: 'guide',
         relation_type: 'related_to'
       }
     });
-    expect(((relateRes as any).content[0] as any).text).toContain(`Successfully linked memory ${orphanId} -> ${connectedId}`);
+    const relateText = ((relateRes as any).content[0] as any).text;
+    expect(relateText).toContain(`Successfully linked memory ${orphanId} -> ${connectedId} with relation "related_to"`);
+
+    // Attempting a self-loop via sd_memory(action="relate") must return an error
+    const selfLoopRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'relate',
+        id: orphanId,
+        target: orphanId
+      }
+    });
+    expect((selfLoopRes as any).isError).toBe(true);
+    expect(((selfLoopRes as any).content[0] as any).text).toContain('self-loop');
 
     // 6. Verify connection counts updated (0 disconnected remaining; connectedId now has 1 out + 1 in = 2 connections)
     const listAfterRes = await client.callTool({
@@ -708,7 +723,7 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(listAfterText).toContain(`${connectedId} | **2 connection(s)** (1 out, 1 in)`);
   });
 
-  it('should support file-less consolidation of disconnected memories via sd_memory(action="consolidate", memory_ids=[...])', async () => {
+  it('should support file-less consolidation of disconnected memories and still report 0 connections until anchored (Consolidation Paradox fix)', async () => {
     const r1 = await client.callTool({
       name: 'sd_memory',
       arguments: {
@@ -719,7 +734,10 @@ describe('StormDrainMcpServer Protocol', () => {
         tags: ['simd', 'performance']
       }
     });
-    const id1 = ((r1 as any).content[0] as any).text.match(/mem_[a-f0-9]+/)?.[0];
+    const r1Text = ((r1 as any).content[0] as any).text;
+    // fact with 0 connections gets the strong disconnected node warning
+    expect(r1Text).toContain('0 connections (disconnected node)');
+    const id1 = r1Text.match(/mem_[a-f0-9]+/)?.[0];
 
     const r2 = await client.callTool({
       name: 'sd_memory',
@@ -746,8 +764,8 @@ describe('StormDrainMcpServer Protocol', () => {
     const superId = consText.match(/mem_[a-f0-9]+/)?.[0];
     expect(superId).toBeDefined();
 
-    // Verify the consolidated guide has incoming part_of connections from the 2 micro-memories,
-    // and the superseded micro-memories are hidden from default list
+    // Verify Bug #1 (Consolidation Paradox) fix: superseded part_of children do NOT inflate incoming_count,
+    // so the unanchored consolidated guide still shows 0 connections (DISCONNECTED) until linked
     const listRes = await client.callTool({
       name: 'sd_memory',
       arguments: {
@@ -756,10 +774,11 @@ describe('StormDrainMcpServer Protocol', () => {
     });
     const listText = ((listRes as any).content[0] as any).text;
     expect(listText).toContain('SIMD Performance & Profiling Guide');
-    expect(listText).toContain(`${superId} | **2 connection(s)** (0 out, 2 in)`);
+    expect(listText).toContain(`${superId} | **0 connections** ⚠️ DISCONNECTED`);
     expect(listText).not.toContain('SIMD Alignment Note 1');
   });
 });
+
 
 
 

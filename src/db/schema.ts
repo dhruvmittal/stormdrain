@@ -46,6 +46,7 @@ export const initSchema = (db: Database.Database): void => {
       FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
       UNIQUE(memory_id, tag)
     );
+    CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
   `);
 
   // Relations table
@@ -57,6 +58,7 @@ export const initSchema = (db: Database.Database): void => {
       FOREIGN KEY (source_id) REFERENCES memories(id) ON DELETE CASCADE,
       UNIQUE(source_id, target_id, type)
     );
+    CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id, type);
   `);
 
   // FTS5 table for full-text search

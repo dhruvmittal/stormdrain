@@ -465,6 +465,7 @@ program
       const mem = ctx.getMemory(id);
       const linkCount = mem?.metadata.relations.length || 0;
       const suggestions = linkCount === 0 ? ctx.suggestCandidateTargets(id, 3) : [];
+      const isWorkspaceLevelType = type === 'guide' || type === 'concept';
 
       if (options.json) {
         console.log(JSON.stringify({
@@ -474,7 +475,12 @@ program
           context: targetCtxName,
           status: 'added',
           relations: mem?.metadata.relations || [],
-          ...(linkCount === 0 ? { warning: 'Created with 0 connections (disconnected node)', suggested_targets: suggestions } : {})
+          ...(linkCount === 0 ? {
+            warning: isWorkspaceLevelType
+              ? `Created with 0 file/graph connections (workspace-wide ${type})`
+              : 'Created with 0 connections (disconnected node)',
+            suggested_targets: suggestions
+          } : {})
         }, null, 2));
       } else {
         const linkMsg = linkCount > 0 
@@ -482,8 +488,12 @@ program
           : '';
         console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
         if (linkCount === 0) {
-          console.log(`⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.`);
-          console.log(`  - Link it to a file or concept: stormdrain relate ${id} <file_or_mem_id>`);
+          if (isWorkspaceLevelType) {
+            console.log(`ℹ️ Note: ${type} ${id} was created with 0 file/graph connections. If it belongs to specific files or concepts, link it via: stormdrain relate ${id} <file_or_mem_id>`);
+          } else {
+            console.log(`⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.`);
+            console.log(`  - Link it to a file or concept: stormdrain relate ${id} <file_or_mem_id>`);
+          }
           if (suggestions.length > 0) {
             const formattedSug = suggestions
               .map(s => s.nodeType === 'file' ? `${s.displayTarget} (file)` : `${s.id} ("${s.title}", ${s.type})`)
@@ -782,22 +792,8 @@ program
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
-      let effectiveTarget: string | undefined = target;
-      let effectiveIds: string[] | undefined = (memoryIds && memoryIds.length > 0) ? memoryIds : undefined;
-
-      // If target itself is a memory ID and additional memory_ids were passed, check if target has attached micro-memories;
-      // if not, treat all positional arguments [target, ...memoryIds] as a file-less memory_ids list.
-      if (target && target.startsWith('mem_') && effectiveIds && effectiveIds.length >= 1) {
-        const attached = ctx.getDb().prepare(`
-          SELECT COUNT(*) as cnt FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
-        `).get(target) as { cnt: number };
-        if (!attached || attached.cnt < 2) {
-          effectiveTarget = undefined;
-          effectiveIds = [target, ...effectiveIds];
-        }
-      }
-
-      const res = ctx.consolidateNeighborhood(effectiveTarget, {
+      const effectiveIds = (memoryIds && memoryIds.length > 0) ? memoryIds : undefined;
+      const res = ctx.consolidateNeighborhood(target, {
         memory_ids: effectiveIds,
         title: options.title
       });
@@ -805,11 +801,10 @@ program
         console.log(JSON.stringify(res, null, 2));
         return;
       }
-      const desc = effectiveTarget ? `for target "${effectiveTarget}"` : `from ${effectiveIds?.length || 0} memory IDs`;
       if (!res.consolidatedId) {
-        console.log(`No micro-memories (>= 2) found to consolidate ${desc}.`);
+        console.log(`No micro-memories (>= 2) found to consolidate for "${target}".`);
       } else {
-        console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} ${desc}.`);
+        console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId}.`);
       }
     } finally {
       await ctx.close();

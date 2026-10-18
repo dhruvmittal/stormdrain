@@ -250,6 +250,7 @@ export class ContextManager {
 
     const resolvedTarget = this.resolveTargetId(target);
     if (!resolvedTarget) throw new Error(`Invalid target "${target}".`);
+    if (resolvedTarget === sourceId) return false;
 
     const exists = memory.metadata.relations.some(r => r.target === resolvedTarget && r.type === type);
     if (exists) return false;
@@ -374,12 +375,16 @@ export class ContextManager {
     const rows = this.db.prepare(`
       SELECT
         m.*,
-        f.content as content_snippet,
         (SELECT COUNT(*) FROM relations r WHERE r.source_id = m.id) as outgoing_count,
-        (SELECT COUNT(*) FROM relations r WHERE r.target_id = m.id) as incoming_count,
+        (SELECT COUNT(*)
+         FROM relations r
+         LEFT JOIN memories src ON src.id = r.source_id
+         WHERE r.target_id = m.id
+           AND (src.superseded_by IS NULL OR src.superseded_by = '')
+           AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated')
+        ) as incoming_count,
         (SELECT GROUP_CONCAT(tag) FROM tags t WHERE t.memory_id = m.id) as tags_str
       FROM memories m
-      LEFT JOIN memories_fts f ON f.id = m.id
       WHERE m.type != 'codemap'
     `).all() as Array<any>;
 
@@ -424,7 +429,6 @@ export class ContextManager {
         incoming_count: incomingCount,
         total_connections: totalConnections,
         superseded_by: row.superseded_by || null,
-        content_snippet: row.content_snippet ? String(row.content_snippet).slice(0, 140).trim() : undefined,
       });
     }
 
@@ -475,11 +479,12 @@ export class ContextManager {
     const stopwords = new Set([
       'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'when', 'where',
       'what', 'which', 'how', 'why', 'should', 'must', 'can', 'will', 'not', 'are',
-      'was', 'were', 'has', 'have', 'had', 'use', 'using', 'used', 'via', 'all', 'any'
+      'was', 'were', 'has', 'have', 'had', 'use', 'using', 'used', 'via', 'all', 'any',
+      'src', 'lib', 'dist', 'test', 'tests', 'index'
     ]);
 
     const rawText = `${mem.metadata.title} ${(mem.metadata.tags || []).join(' ')} ${mem.content.slice(0, 400)}`;
-    const tokens = Array.from(
+    const pathTokens = Array.from(
       new Set(
         rawText
           .split(/[^a-zA-Z0-9_\-\.\/]+/)
@@ -488,7 +493,7 @@ export class ContextManager {
       )
     );
 
-    if (tokens.length === 0) return [];
+    if (pathTokens.length === 0) return [];
 
     const candidates: Array<{ id: string; title: string; displayTarget: string; nodeType: 'file' | 'memory'; type: string }> = [];
     const seen = new Set<string>([memoryId]);
@@ -503,7 +508,7 @@ export class ContextManager {
       const baseName = path.basename(relPath);
       const baseNoExt = baseName.replace(/\.[^.]+$/, '');
       if (
-        tokens.some(
+        pathTokens.some(
           tok =>
             tok === relPath ||
             tok === baseName ||
@@ -524,16 +529,21 @@ export class ContextManager {
       if (candidates.length >= limit) return candidates;
     }
 
-    // 2. FTS OR match across other memories and codemaps
-    const safeTokens = tokens
+    // 2. Split on non-identifier characters (including '/', '.', '-') so path segments become valid FTS trigram words
+    const wordTokens = Array.from(
+      new Set(
+        rawText
+          .split(/[^a-zA-Z0-9_]+/)
+          .map(t => t.trim())
+          .filter(t => t.length >= 3 && !stopwords.has(t.toLowerCase()))
+      )
+    )
       .slice(0, 8)
-      .map(t => t.replace(/[^a-zA-Z0-9_]/g, ''))
-      .filter(t => t.length >= 3)
       .map(t => `"${t}"`);
 
-    if (safeTokens.length > 0) {
+    if (wordTokens.length > 0) {
       try {
-        const ftsQuery = safeTokens.join(' OR ');
+        const ftsQuery = wordTokens.join(' OR ');
         const rows = this.db.prepare(`
           SELECT m.id, m.title, m.type, m.superseded_by
           FROM memories_fts fts
@@ -944,23 +954,23 @@ export class ContextManager {
     targetFileOrId?: string,
     options?: { memory_ids?: string[]; title?: string } | string[]
   ): { consolidatedId: string; mergedCount: number } {
-    const trimmedTarget = (targetFileOrId || '').trim();
-    const targetId = trimmedTarget ? this.resolveTargetId(trimmedTarget) : '';
+    let effectiveTarget = (targetFileOrId || '').trim();
+    let effectiveTargetId = effectiveTarget ? this.resolveTargetId(effectiveTarget) : '';
 
     const memoryIds = Array.isArray(options) ? options : options?.memory_ids;
     const customTitle = !Array.isArray(options) ? options?.title?.trim() : undefined;
-    const filterIds = memoryIds && memoryIds.length > 0
+    let filterIds = memoryIds && memoryIds.length > 0
       ? new Set(memoryIds.map(id => id.trim()).filter(Boolean))
       : null;
 
     const memories: Memory[] = [];
     const seenIds = new Set<string>();
 
-    if (targetId) {
+    if (effectiveTargetId) {
       // Find non-codemap memories attached to this target vertex
       const relations = this.db.prepare(`
         SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
-      `).all(targetId) as Array<{ source_id: string }>;
+      `).all(effectiveTargetId) as Array<{ source_id: string }>;
 
       for (const rel of relations) {
         if (filterIds && !filterIds.has(rel.source_id)) {
@@ -972,10 +982,20 @@ export class ContextManager {
           memories.push(mem);
         }
       }
+
+      // If target itself is a memory ID with < 2 attached memories and additional memory_ids were passed,
+      // treat [target, ...memory_ids] as a file-less memory_ids batch
+      if (effectiveTarget.startsWith('mem_') && memories.length < 2 && filterIds && filterIds.size >= 1) {
+        filterIds = new Set([effectiveTarget, ...filterIds]);
+        effectiveTarget = '';
+        effectiveTargetId = '';
+        memories.length = 0;
+        seenIds.clear();
+      }
     }
 
-    // Support file-less consolidation (or consolidating explicit disconnected memory_ids)
-    if (memories.length < 2 && filterIds && filterIds.size >= 2 && (!targetId || memories.length === 0)) {
+    // Load any remaining explicit memory_ids (supports file-less consolidation and mixed attached + orphan consolidation)
+    if (filterIds && filterIds.size >= 2) {
       for (const id of filterIds) {
         if (seenIds.has(id)) continue;
         const mem = this.getMemory(id);
@@ -990,12 +1010,13 @@ export class ContextManager {
       return { consolidatedId: '', mergedCount: 0 };
     }
 
-    const title = customTitle || trimmedTarget || `Consolidated Guide: ${memories[0].metadata.title}`;
+    const title = customTitle || effectiveTarget || `Consolidated Guide: ${memories[0].metadata.title}`;
+    const heading = customTitle || (effectiveTarget ? `Consolidated Guide for ${effectiveTarget}` : title);
     const allTags = new Set<string>(['consolidated-guide', 'super-memory']);
     
-    let combinedContent = `# ${customTitle ? customTitle : `Consolidated Guide for ${title}`}\n\n`;
-    if (trimmedTarget) {
-      combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${trimmedTarget}\`.\n\n---\n\n`;
+    let combinedContent = `# ${heading}\n\n`;
+    if (effectiveTarget) {
+      combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${effectiveTarget}\`.\n\n---\n\n`;
     } else {
       combinedContent += `This super-memory consolidates ${memories.length} related domain memories.\n\n---\n\n`;
     }
@@ -1014,7 +1035,7 @@ export class ContextManager {
       Array.from(allTags),
       'consolidator',
       undefined,
-      trimmedTarget || undefined
+      effectiveTarget || undefined
     );
 
     // Mark source micro-memories as consolidated & superseded, transfer their relations, and link part_of
@@ -1025,9 +1046,13 @@ export class ContextManager {
       mem.metadata.superseded_by = consolidatedId;
       mem.metadata.confidence = Math.max(0.4, Math.round(mem.metadata.confidence * 0.7 * 100) / 100);
 
-      // 1. Transfer outgoing relations (except the target file itself) to the new guide
+      // 1. Transfer outgoing relations (except target vertex and memories in the same batch) to the new guide
       for (const rel of mem.metadata.relations) {
-        if (!targetId || rel.target !== targetId) {
+        if (
+          (!effectiveTargetId || rel.target !== effectiveTargetId) &&
+          !seenIds.has(rel.target) &&
+          rel.target !== consolidatedId
+        ) {
           this.addRelation(consolidatedId, rel.target, rel.type);
         }
       }
@@ -1038,7 +1063,7 @@ export class ContextManager {
       `).all(mem.metadata.id) as Array<{ source_id: string; type: string }>;
 
       for (const inc of incoming) {
-        if (inc.source_id === consolidatedId || memories.some(m => m.metadata.id === inc.source_id)) {
+        if (inc.source_id === consolidatedId || seenIds.has(inc.source_id)) {
           continue;
         }
         const srcMem = this.getMemory(inc.source_id);
@@ -1492,7 +1517,7 @@ export class ContextManager {
           if (!filterType) {
             return [];
           }
-          let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap'";
+          let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap' AND (m.superseded_by IS NULL OR m.superseded_by = '')";
           const params: any[] = [];
           if (filterType) {
             sql += ' AND m.type = ?';
@@ -1508,6 +1533,8 @@ export class ContextManager {
           FROM memories_fts fts
           JOIN memories m ON m.id = fts.id
           WHERE memories_fts MATCH ?
+            AND m.type != 'codemap'
+            AND (m.superseded_by IS NULL OR m.superseded_by = '')
         `;
         const params: any[] = [safeQuery];
         if (filterType) {
@@ -1572,13 +1599,14 @@ export class ContextManager {
       }
     }
 
-    // Find all target vertices with >= effectiveThreshold unconsolidated micro-memories
+    // 1. Find all target vertices with >= effectiveThreshold unconsolidated micro-memories
     const candidateTargets = this.db.prepare(`
       SELECT r.target_id, COUNT(DISTINCT r.source_id) as count
       FROM relations r
       JOIN memories m ON m.id = r.source_id
       WHERE r.type IN ('affects', 'applies_to')
         AND m.type != 'codemap'
+        AND (m.superseded_by IS NULL OR m.superseded_by = '')
         AND m.id NOT IN (
           SELECT memory_id FROM tags WHERE tag = 'consolidated'
         )
@@ -1621,6 +1649,7 @@ export class ContextManager {
         WHERE r.target_id = ?
           AND r.type IN ('affects', 'applies_to')
           AND m.type != 'codemap'
+          AND (m.superseded_by IS NULL OR m.superseded_by = '')
           AND m.id NOT IN (
             SELECT memory_id FROM tags WHERE tag = 'consolidated'
           )
@@ -1644,17 +1673,84 @@ export class ContextManager {
       });
     }
 
+    // 2. Also find clusters of disconnected (0-connection) memories sharing a semantic tag (>= effectiveThreshold)
+    const tagClusters = this.db.prepare(`
+      SELECT t.tag, COUNT(DISTINCT m.id) as count
+      FROM tags t
+      JOIN memories m ON m.id = t.memory_id
+      WHERE m.type != 'codemap'
+        AND (m.superseded_by IS NULL OR m.superseded_by = '')
+        AND t.tag NOT IN ('consolidated', 'consolidated-guide', 'super-memory', 'invariant')
+        AND m.id NOT IN (SELECT memory_id FROM tags WHERE tag = 'consolidated')
+        AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.source_id = m.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM relations r
+          LEFT JOIN memories src ON src.id = r.source_id
+          WHERE r.target_id = m.id
+            AND (src.superseded_by IS NULL OR src.superseded_by = '')
+            AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated')
+        )
+      GROUP BY t.tag
+      HAVING count >= ?
+      ORDER BY count DESC
+    `).all(effectiveThreshold) as Array<{ tag: string; count: number }>;
+
+    for (const tc of tagClusters) {
+      const clusterRows = this.db.prepare(`
+        SELECT m.*, fts.content as content_snippet,
+          (SELECT GROUP_CONCAT(tag) FROM tags WHERE memory_id = m.id) as tags_str
+        FROM tags t
+        JOIN memories m ON m.id = t.memory_id
+        LEFT JOIN memories_fts fts ON fts.id = m.id
+        WHERE t.tag = ?
+          AND m.type != 'codemap'
+          AND (m.superseded_by IS NULL OR m.superseded_by = '')
+          AND m.id NOT IN (SELECT memory_id FROM tags WHERE tag = 'consolidated')
+          AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.source_id = m.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM relations r
+            LEFT JOIN memories src ON src.id = r.source_id
+            WHERE r.target_id = m.id
+              AND (src.superseded_by IS NULL OR src.superseded_by = '')
+              AND NOT EXISTS (SELECT 1 FROM tags tc2 WHERE tc2.memory_id = r.source_id AND tc2.tag = 'consolidated')
+          )
+      `).all(tc.tag) as Array<any>;
+
+      if (clusterRows.length >= effectiveThreshold) {
+        const memories = clusterRows.map(r => ({
+          id: r.id,
+          type: r.type as MemoryType,
+          title: r.title,
+          confidence: r.confidence ?? 1.0,
+          tags: (r.tags_str || '').split(',').filter(Boolean),
+          summarySnippet: (r.content_snippet || '').slice(0, 150).trim()
+        }));
+
+        candidates.push({
+          target: `#${tc.tag}`,
+          targetType: 'concept',
+          targetTitle: `Tag Cluster: #${tc.tag} (disconnected)`,
+          memoryCount: memories.length,
+          memories
+        });
+      }
+    }
+
     return candidates;
   }
 
-  public recallTopMemories(limit = 10): MemoryDbRow[] {
+  public recallTopMemories(limit = 10): Array<MemoryDbRow & { content_snippet?: string }> {
     const stmt = this.db.prepare(`
-      SELECT * FROM memories 
-      WHERE expires IS NULL OR expires > datetime('now')
-      ORDER BY confidence DESC, accessed DESC
+      SELECT m.*, fts.content as content_snippet
+      FROM memories m
+      LEFT JOIN memories_fts fts ON fts.id = m.id
+      WHERE m.type != 'codemap'
+        AND (m.superseded_by IS NULL OR m.superseded_by = '')
+        AND (m.expires IS NULL OR m.expires > datetime('now'))
+      ORDER BY m.confidence DESC, m.accessed DESC
       LIMIT ?
     `);
-    return stmt.all(limit) as MemoryDbRow[];
+    return stmt.all(limit) as Array<MemoryDbRow & { content_snippet?: string }>;
   }
 
   public markAccessed(id: string) {
