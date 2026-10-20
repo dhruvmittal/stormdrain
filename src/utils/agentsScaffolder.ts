@@ -10,9 +10,11 @@ This project uses StormDrain for persistent cross-session architectural memory v
 
 ### Workflow:
 - **Primary Source Reader**: Use \`sd_read(path="...")\` or CLI \`stormdrain read <path>\` to inject topological invariants and caller constraints.
-- **Pre-Edit Invariant Check**: Call \`sd_recall(target_file="...")\` or CLI \`stormdrain recall -t <path>\` before modifying code.
-- **Record Discoveries**: Call \`sd_add(...)\` or CLI \`stormdrain add <type> <title> [content]\` on non-obvious invariants (canonical types: \`fact\`, \`decision\`, \`guide\`, \`warning\`, \`concept\`).
-- **Harvest & Curate**: Run \`/sd_harvest\` (or \`stormdrain harvest\`) at session end; run \`/sd_curate\` (or \`stormdrain curate\`) to consolidate candidate micro-memories.
+- **Pre-Edit Invariant Check**: Call \`sd_recall(target_file="...")\` or CLI \`stormdrain recall -t <path> [--json]\` before modifying code.
+- **Record Discoveries**: Call \`sd_memory(action="add", ...)\` / \`sd_add(...)\` or CLI \`stormdrain add <type> <title> [content|--file <path>|-] [--json]\` on non-obvious invariants (canonical types: \`fact\`, \`decision\`, \`guide\`, \`warning\`, \`concept\`).
+- **Query, Browse & Inspect**: Call \`sd_memory(action="list"|"search"|"get"|"relate", ...)\` or CLI \`stormdrain list [--orphans] [--json]\`, \`stormdrain search <query> [--json]\`, \`stormdrain get <id> [--json]\`.
+- **Harvest & Curate**: Run \`/sd_harvest\` (or CLI \`stormdrain harvest\`) at session end; run \`/sd_curate\` (or CLI \`stormdrain curate\`) and \`stormdrain consolidate <target> [ids...]\` to consolidate candidate micro-memories.
+- **Export & Import**: Use \`stormdrain export [<ctx...> | --all] [-o <file.json|.json.gz|->] [--no-codemaps]\` and \`stormdrain import <file|-> [--as <ctx>] [--bind <dir>] [--strategy merge|overwrite|skip]\` to migrate contexts or entire instances across machines.
 
 ### Editorial Rule:
 Record non-obvious invariants, architectural trade-offs, and critical gotchas; do NOT record routine implementation summaries or transient task progress.`;

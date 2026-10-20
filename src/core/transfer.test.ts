@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ConfigManager } from './config';
 import { ContextManager } from './context';
+import { getContextPath } from '../utils/paths';
 import {
   exportBundle,
   importBundle,
@@ -337,10 +338,9 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
     process.env.STORMDRAIN_TEST_DIR = machineBDir;
     await importBundle(oldUnconsolidatedBundleFromA);
     const ctxB = new ContextManager('_global');
-    const superId = ctxB.consolidateNeighborhood({
-      memoryIds: [m1, m2],
-      summaryTitle: 'Consolidated Perf Guide',
-      summaryContent: 'Synthesized guide.',
+    const { consolidatedId: superId } = ctxB.consolidateNeighborhood(undefined, {
+      memory_ids: [m1, m2],
+      title: 'Consolidated Perf Guide',
     });
     expect(superId).toBeTruthy();
     await ctxB.close();
@@ -374,7 +374,7 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
     try {
       const afterNewerMerge = ctxBCheck2.getMemory(m1)!;
       expect(afterNewerMerge.content).toBe('Updated active content on Machine A after consolidation');
-      expect(afterNewerMerge.metadata.superseded_by).toBeUndefined();
+      expect(afterNewerMerge.metadata.superseded_by).toBeNull();
       expect(afterNewerMerge.metadata.tags).not.toContain('consolidated');
     } finally {
       await ctxBCheck2.close();
@@ -418,9 +418,9 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
       expect(ctxB.getMemory('file_src_app_ts')).not.toBeNull();
       // Multi-hop recall for src/app.ts should return our imported domain memory
       const recalled = ctxB.recallMultiHop('src/app.ts');
-      expect(recalled.map(r => r.memory.metadata.id)).toContain(domainId);
+      expect(recalled.memories.map(r => r.id)).toContain(domainId);
       // Git repository inside context directory should have committed the imported .md files
-      const ctxDir = new ConfigManager().getContextPath('bound-ctx');
+      const ctxDir = getContextPath('bound-ctx');
       expect(fs.existsSync(path.join(ctxDir, '.git'))).toBe(true);
     } finally {
       await ctxB.close();
@@ -454,7 +454,7 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
     process.env.STORMDRAIN_TEST_DIR = machineBDir;
     await expect(
       importBundle(multiBundle, { bindPaths: [machineBDir] })
-    ).rejects.toThrow(/--bind can only be used when importing a single context/i);
+    ).rejects.toThrow(/Cannot use "--bind <path>" when importing multiple contexts/i);
 
     // Also verify min(created), max(accessed), max(access_count), and is_canonical preservation during merge
     const ctxB = new ContextManager('_global');
@@ -509,6 +509,61 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
       expect(merged.metadata.is_canonical).toBe(true);
     } finally {
       await ctxBVerify.close();
+    }
+  });
+
+  it('automatically heals dangling superseded_by references on partial bundle imports', async () => {
+    process.env.STORMDRAIN_TEST_DIR = machineBDir;
+
+    // Bundle contains a memory that claims to be superseded by a super-memory that does NOT exist in the bundle
+    const danglingBundle: any = {
+      format: 'stormdrain-bundle',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      scope: 'context',
+      contexts: {
+        _global: {
+          config: { paths: [] },
+          memories: [
+            {
+              metadata: {
+                id: 'mem_broken_super',
+                title: 'Orphan Micro-Memory',
+                type: 'fact',
+                context: '_global',
+                created: '2026-01-01T00:00:00.000Z',
+                updated: '2026-01-01T00:00:00.000Z',
+                accessed: '2026-01-01T00:00:00.000Z',
+                access_count: 1,
+                confidence: 0.8,
+                tags: ['consolidated', 'perf'],
+                relations: [],
+                superseded_by: 'mem_nonexistent_super',
+              },
+              content: 'Content that should not stay hidden forever.',
+            },
+          ],
+        },
+      },
+    };
+
+    const res = await importBundle(danglingBundle);
+    expect(res.totalAdded).toBe(1);
+
+    const ctx = new ContextManager('_global');
+    try {
+      const healed = ctx.getMemory('mem_broken_super')!;
+      expect(healed).not.toBeNull();
+      // superseded_by must be cleared and 'consolidated' tag removed
+      expect(healed.metadata.superseded_by).toBeNull();
+      expect(healed.metadata.tags).not.toContain('consolidated');
+      expect(healed.metadata.tags).toContain('perf');
+
+      // It must now appear in default listMemoriesWithStats as an active memory
+      const list = ctx.listMemoriesWithStats();
+      expect(list.map(m => m.id)).toContain('mem_broken_super');
+    } finally {
+      await ctx.close();
     }
   });
 });

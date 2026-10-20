@@ -412,7 +412,10 @@ export async function importBundle(bundle: StormDrainBundle, options: ImportOpti
       const runImportTx = db.transaction(() => {
         for (const rawIncoming of incomingMemories) {
           const safeId = sanitizeMemoryId(rawIncoming?.metadata?.id);
-          if (!safeId) continue;
+          if (!safeId) {
+            skipped++;
+            continue;
+          }
 
           const incomingMeta = rawIncoming.metadata;
           if (!includeCodemaps && isCodemapMemory({ id: safeId, type: String(incomingMeta.type || '') })) {
@@ -471,6 +474,25 @@ export async function importBundle(bundle: StormDrainBundle, options: ImportOpti
 
       runImportTx();
 
+      // Integrity check: If any memory has a superseded_by target that does not exist in memories,
+      // heal it by clearing superseded_by and removing the 'consolidated' tag so it doesn't stay
+      // permanently hidden as an orphan micro-memory without a parent.
+      const danglingRows = db.prepare(`
+        SELECT id FROM memories
+        WHERE superseded_by IS NOT NULL
+          AND superseded_by != ''
+          AND superseded_by NOT IN (SELECT id FROM memories)
+      `).all() as Array<{ id: string }>;
+
+      for (const row of danglingRows) {
+        const dMem = ctx.getMemory(row.id);
+        if (dMem) {
+          dMem.metadata.superseded_by = null;
+          dMem.metadata.tags = (dMem.metadata.tags || []).filter(t => t !== 'consolidated');
+          ctx.saveMemory(dMem, `[stormdrain] import: heal dangling superseded_by on ${row.id}`);
+        }
+      }
+
       // If explicit --bind paths were provided (and syncBoundWorkspaces is not disabled),
       // auto-sync the file graph so codemap vertices and import edges are immediately available.
       const shouldScan = options.syncBoundWorkspaces ?? (explicitBindPaths.length > 0);
@@ -503,8 +525,13 @@ export async function importBundle(bundle: StormDrainBundle, options: ImportOpti
     totalSkipped += skipped;
   }
 
-  // Restore activeContext if importing a full bundle and the activeContext exists locally
-  if (bundle.scope === 'all' && bundle.activeContext && config.getContext(bundle.activeContext)) {
+  // Restore activeContext if importing settings from a full bundle and the activeContext exists locally
+  if (
+    shouldImportSettings &&
+    bundle.scope === 'all' &&
+    bundle.activeContext &&
+    (bundle.activeContext === '_global' || config.getContext(bundle.activeContext))
+  ) {
     try {
       config.setActiveContext(bundle.activeContext);
     } catch {}

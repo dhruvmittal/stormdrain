@@ -516,6 +516,7 @@ program
   .option('--type <type>', 'Filter by memory type (fact, decision, guide, warning, concept)')
   .option('--tag <tag>', 'Filter by tag')
   .option('--orphans', 'Show only disconnected memories with 0 connections')
+  .option('--unanchored', 'Filter for memories without any file-vertex connections (unanchored memory islands)')
   .option('--max-connections <number>', 'Filter memories with at most N total connections')
   .option('--sort <field>', 'Sort order: connections_asc, connections_desc, updated, confidence, accessed (default: connections_asc)')
   .option('-l, --limit <number>', 'Maximum number of memories to display')
@@ -531,6 +532,7 @@ program
         type: options.type as MemoryType | undefined,
         tag: options.tag,
         orphansOnly: Boolean(options.orphans),
+        unanchoredOnly: Boolean(options.unanchored),
         maxConnections: maxConnections !== undefined && !isNaN(maxConnections) ? maxConnections : undefined,
         sortBy: options.sort || 'connections_asc',
         limit: limit !== undefined && !isNaN(limit) ? limit : undefined,
@@ -548,12 +550,23 @@ program
       }
 
       const orphanCount = summaries.filter(s => s.total_connections === 0).length;
-      console.log(`Memory Inventory in context "${targetCtxName}" (${summaries.length} memories, ${orphanCount} disconnected [0 connections]):\n`);
+      const unanchoredIslandCount = summaries.filter(s => s.total_connections > 0 && !s.is_anchored).length;
+      const notes: string[] = [];
+      if (orphanCount > 0) notes.push(`${orphanCount} disconnected [0 connections]`);
+      if (unanchoredIslandCount > 0) notes.push(`${unanchoredIslandCount} unanchored island(s) [no file connections]`);
+      const notesStr = notes.length > 0 ? `, ${notes.join(', ')}` : '';
+
+      console.log(`Memory Inventory in context "${targetCtxName}" (${summaries.length} memories${notesStr}):\n`);
       for (const s of summaries) {
         const tagStr = s.tags.length > 0 ? ` [${s.tags.map(t => `#${t}`).join(' ')}]` : '';
-        const connLabel = s.total_connections === 0
-          ? `0 connections ⚠️ DISCONNECTED`
-          : `${s.total_connections} conn (${s.outgoing_count} out, ${s.incoming_count} in)`;
+        let connLabel: string;
+        if (s.total_connections === 0) {
+          connLabel = `0 connections ⚠️ DISCONNECTED`;
+        } else if (!s.is_anchored) {
+          connLabel = `${s.total_connections} conn (${s.outgoing_count} out, ${s.incoming_count} in) ⚠️ UNANCHORED ISLAND`;
+        } else {
+          connLabel = `${s.total_connections} conn (${s.outgoing_count} out, ${s.incoming_count} in, ${s.file_connections} file)`;
+        }
         console.log(`- [${s.type.toUpperCase()}] ${s.title} (${s.id}) | ${connLabel} | conf: ${s.confidence} | accesses: ${s.access_count}${tagStr}`);
       }
     } finally {
@@ -1217,6 +1230,12 @@ const completeSubmodulePolicies = (complete: any) => {
   complete('ask', 'Prompt interactively when submodules are detected');
 };
 
+const completeImportStrategies = (complete: any) => {
+  complete('merge', 'Merge with newest timestamp and union tags/relations (default)');
+  complete('overwrite', 'Always overwrite local memory with imported version');
+  complete('skip', 'Skip importing any memory that already exists locally');
+};
+
 const completeMemoryIds = (complete: any) => {
   try {
     const targetCtx = config.resolveContext(undefined, process.cwd());
@@ -1248,9 +1267,18 @@ for (const [, cmd] of completion.commands) {
   if (relOpt) {
     relOpt.handler = (complete) => completeRelationTypes(complete);
   }
+  const stratOpt = cmd.options.get('strategy');
+  if (stratOpt) {
+    stratOpt.handler = (complete) => completeImportStrategies(complete);
+  }
 }
 
 // Dynamic handlers for positional arguments
+const exportCmd = completion.commands.get('export');
+const exportContextsArg = exportCmd?.arguments.get('contexts');
+if (exportContextsArg) {
+  exportContextsArg.handler = (complete) => completeContexts(complete);
+}
 const addCmd = completion.commands.get('add');
 const addTypeArg = addCmd?.arguments.get('type');
 if (addTypeArg) {

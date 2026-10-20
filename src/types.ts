@@ -242,6 +242,8 @@ export interface MemoryListSummary {
   outgoing_count: number;
   incoming_count: number;
   total_connections: number;
+  file_connections: number;
+  is_anchored: boolean;
   superseded_by: string | null;
   content_snippet?: string;
 }

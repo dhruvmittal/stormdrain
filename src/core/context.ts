@@ -363,6 +363,7 @@ export class ContextManager {
     type?: MemoryType;
     tag?: string;
     orphansOnly?: boolean;
+    unanchoredOnly?: boolean;
     maxConnections?: number;
     sortBy?: 'connections_asc' | 'connections_desc' | 'updated' | 'confidence' | 'accessed';
     limit?: number;
@@ -375,7 +376,16 @@ export class ContextManager {
     const rows = this.db.prepare(`
       SELECT
         m.*,
-        (SELECT COUNT(*) FROM relations r WHERE r.source_id = m.id) as outgoing_count,
+        (SELECT COUNT(*)
+         FROM relations r
+         LEFT JOIN memories tgt ON tgt.id = r.target_id
+         WHERE r.source_id = m.id
+           AND (
+             r.target_id LIKE 'file_%'
+             OR (tgt.id IS NOT NULL AND (tgt.superseded_by IS NULL OR tgt.superseded_by = '')
+                 AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.target_id AND tc.tag = 'consolidated'))
+           )
+        ) as outgoing_count,
         (SELECT COUNT(*)
          FROM relations r
          LEFT JOIN memories src ON src.id = r.source_id
@@ -383,6 +393,11 @@ export class ContextManager {
            AND (src.superseded_by IS NULL OR src.superseded_by = '')
            AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated')
         ) as incoming_count,
+        (SELECT COUNT(*)
+         FROM relations r
+         WHERE (r.source_id = m.id AND r.target_id LIKE 'file_%')
+            OR (r.target_id = m.id AND r.source_id LIKE 'file_%')
+        ) as file_connections,
         (SELECT GROUP_CONCAT(tag) FROM tags t WHERE t.memory_id = m.id) as tags_str
       FROM memories m
       WHERE m.type != 'codemap'
@@ -405,9 +420,14 @@ export class ContextManager {
 
       const outgoingCount = Number(row.outgoing_count ?? 0);
       const incomingCount = Number(row.incoming_count ?? 0);
+      const fileConnections = Number(row.file_connections ?? 0);
+      const isAnchored = fileConnections > 0;
       const totalConnections = outgoingCount + incomingCount;
 
       if (options?.orphansOnly && totalConnections > 0) {
+        continue;
+      }
+      if (options?.unanchoredOnly && isAnchored) {
         continue;
       }
       if (options?.maxConnections !== undefined && totalConnections > options.maxConnections) {
@@ -428,6 +448,8 @@ export class ContextManager {
         outgoing_count: outgoingCount,
         incoming_count: incomingCount,
         total_connections: totalConnections,
+        file_connections: fileConnections,
+        is_anchored: isAnchored,
         superseded_by: row.superseded_by || null,
       });
     }

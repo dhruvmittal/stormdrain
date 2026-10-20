@@ -288,6 +288,65 @@ describe('ContextManager', () => {
     expect(vtuneCluster).toBeDefined();
     expect(vtuneCluster?.memoryCount).toBe(3);
   });
+
+  it('verifies symmetric outgoing_count filtering and unanchored island detection', () => {
+    // 1. Symmetric outgoing_count filtering:
+    // Create an active memory mActive and a micro-memory mMicro
+    const mActive = ctx.addMemory('fact', 'Active Invariant', 'Active contract');
+    const mMicro1 = ctx.addMemory('fact', 'Micro Note 1', 'Detail 1');
+    const mMicro2 = ctx.addMemory('fact', 'Micro Note 2', 'Detail 2');
+
+    // Consolidate mMicro1 and mMicro2 so they become superseded
+    ctx.consolidateNeighborhood(undefined, {
+      memory_ids: [mMicro1, mMicro2],
+      title: 'Consolidated Micro Guide'
+    });
+
+    // Add relation from mActive -> mMicro1 (superseded target) and to a ghost ID
+    ctx.addRelation(mActive, mMicro1, 'references');
+    ctx.addRelation(mActive, 'mem_ghost_nonexistent', 'related_to');
+
+    // listMemoriesWithStats: mActive's outgoing_count must be 0 because both targets are not active memories
+    const stats1 = ctx.listMemoriesWithStats({ includeConsolidated: false });
+    const activeStat = stats1.find(s => s.id === mActive);
+    expect(activeStat).toBeDefined();
+    expect(activeStat?.outgoing_count).toBe(0);
+
+    // 2. Unanchored 2-Node Memory Island:
+    // memA and memB link to each other, but not to any file vertex
+    const memA = ctx.addMemory('fact', 'Island Node A', 'Concept note A');
+    const memB = ctx.addMemory('fact', 'Island Node B', 'Concept note B');
+    ctx.addRelation(memA, memB, 'supports');
+    ctx.addRelation(memB, memA, 'references');
+
+    const statsIsland = ctx.listMemoriesWithStats();
+    const statA = statsIsland.find(s => s.id === memA)!;
+    const statB = statsIsland.find(s => s.id === memB)!;
+
+    expect(statA.total_connections).toBeGreaterThan(0);
+    expect(statB.total_connections).toBeGreaterThan(0);
+    expect(statA.file_connections).toBe(0);
+    expect(statA.is_anchored).toBe(false);
+    expect(statB.file_connections).toBe(0);
+    expect(statB.is_anchored).toBe(false);
+
+    // Filter by unanchoredOnly should include both island memories
+    const unanchored = ctx.listMemoriesWithStats({ unanchoredOnly: true });
+    expect(unanchored.map(u => u.id)).toContain(memA);
+    expect(unanchored.map(u => u.id)).toContain(memB);
+
+    // Anchor memA to a file vertex
+    ctx.addMemory('codemap', '[File] src/engine.ts', 'File Node: src/engine.ts', [], 'auto-scan', 'file_src_engine_ts');
+    ctx.addRelation(memA, 'src/engine.ts', 'affects');
+
+    const statsAfterAnchor = ctx.listMemoriesWithStats();
+    const statAAnchored = statsAfterAnchor.find(s => s.id === memA)!;
+    expect(statAAnchored.file_connections).toBe(1);
+    expect(statAAnchored.is_anchored).toBe(true);
+
+    const unanchoredAfter = ctx.listMemoriesWithStats({ unanchoredOnly: true });
+    expect(unanchoredAfter.map(u => u.id)).not.toContain(memA);
+  });
 });
 
 

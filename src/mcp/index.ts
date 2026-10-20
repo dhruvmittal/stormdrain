@@ -709,24 +709,38 @@ export class StormDrainMcpServer {
           }
 
           const orphanCount = summaries.filter(s => s.total_connections === 0).length;
+          const unanchoredIslandCount = summaries.filter(s => s.total_connections > 0 && !s.is_anchored).length;
+          const notes: string[] = [];
+          if (orphanCount > 0) notes.push(`${orphanCount} disconnected [0 connections]`);
+          if (unanchoredIslandCount > 0) notes.push(`${unanchoredIslandCount} unanchored island(s) [no file connections]`);
+          const notesStr = notes.length > 0 ? `, ${notes.join(', ')}` : '';
+
           const lines: string[] = [];
-          lines.push(`## 📋 Memory Inventory in Context "${targetContext}" (${summaries.length} memories, ${orphanCount} disconnected [0 connections])`);
+          lines.push(`## 📋 Memory Inventory in Context "${targetContext}" (${summaries.length} memories${notesStr})`);
           lines.push('');
 
           for (const s of summaries) {
             const tagStr = s.tags.length > 0 ? ` [${s.tags.map(t => `#${t}`).join(' ')}]` : '';
-            const connBadge = s.total_connections === 0
-              ? `**0 connections** ⚠️ DISCONNECTED`
-              : `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in)`;
+            let connBadge: string;
+            if (s.total_connections === 0) {
+              connBadge = `**0 connections** ⚠️ DISCONNECTED`;
+            } else if (!s.is_anchored) {
+              connBadge = `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in) ⚠️ UNANCHORED ISLAND`;
+            } else {
+              connBadge = `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in, ${s.file_connections} file)`;
+            }
             lines.push(`- **[${s.type.toUpperCase()}] ${s.title}** (ID: \`${s.id}\` | ${connBadge} | Conf: ${s.confidence} | Accesses: ${s.access_count})${tagStr}`);
           }
 
-          if (orphanCount > 0) {
+          if (orphanCount > 0 || unanchoredIslandCount > 0) {
             lines.push('');
-            lines.push(`*💡 Tip: Found ${orphanCount} disconnected memory node(s) with 0 connections. You can:*`);
-            lines.push(`- *Link to a file or concept: \`sd_memory(action="relate", id="mem_...", target="<file_path_or_mem_id>")\`*`);
-            lines.push(`- *Merge related orphan memories into a guide: \`sd_memory(action="consolidate", memory_ids=["mem_...", "mem_..."], title="...")\`*`);
-            lines.push(`- *Delete if obsolete: \`sd_memory(action="delete", id="mem_...")\`*`);
+            lines.push(`*💡 Graph Connectivity Guidance:*`);
+            if (orphanCount > 0) {
+              lines.push(`- *Found ${orphanCount} disconnected node(s) (0 connections). Link to a file via \`sd_memory(action="relate", id="...", target="<file_or_id>")\` or consolidate into a guide.*`);
+            }
+            if (unanchoredIslandCount > 0) {
+              lines.push(`- *Found ${unanchoredIslandCount} unanchored island memory/memories (connected to other memories but not anchored to any source file). Link to a relevant file vertex to surface during file reads.*`);
+            }
           }
 
           return { content: [{ type: 'text', text: lines.join('\n') }] };

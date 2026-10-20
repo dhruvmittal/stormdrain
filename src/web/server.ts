@@ -305,6 +305,11 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       LIMIT 5
     `).all();
 
+    // Orphan and Unanchored Island Counts
+    const statsList = ctx.listMemoriesWithStats({ includeConsolidated: false });
+    const orphanCount = statsList.filter(s => s.total_connections === 0).length;
+    const unanchoredCount = statsList.filter(s => !s.is_anchored).length;
+
     res.json({
       graphHealthScore: avgConfidence,
       counts,
@@ -317,6 +322,10 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
         candidateCount: backlogCount,
         unconsolidatedCount,
         candidates
+      },
+      orphans: {
+        orphanCount,
+        unanchoredCount,
       },
       decayWatchlist,
       hotspots,
@@ -332,13 +341,20 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
     const type = req.query.type as MemoryType | undefined;
+    const orphansOnly = req.query.orphans === 'true';
+    const unanchoredOnly = req.query.unanchored === 'true';
+    const includeConsolidated = req.query.include_consolidated === 'true';
 
     if (query || type) {
       const results = ctx.searchMemories(query, true, { type });
       res.json(results);
     } else {
-      const memories = ctx.getDb().prepare(`SELECT id, type, title, confidence, created, updated, accessed, access_count, source, git_branch, is_canonical FROM memories ORDER BY updated DESC`).all();
-      res.json(memories);
+      const summaries = ctx.listMemoriesWithStats({
+        orphansOnly,
+        unanchoredOnly,
+        includeConsolidated,
+      });
+      res.json(summaries);
     }
   }));
 
