@@ -18,6 +18,7 @@ This project uses StormDrain for persistent cross-session architectural memory v
 - **Record Discoveries**: Call `sd_memory(action="add", ...)` / `sd_add(...)` or CLI `stormdrain add <type> <title> [content|--file <path>|-] [--json]` on non-obvious invariants (canonical types: `fact`, `decision`, `guide`, `warning`, `concept`).
 - **Query, Browse & Inspect**: Call `sd_memory(action="list"|"search"|"get"|"relate", ...)` or CLI `stormdrain list [--orphans] [--json]`, `stormdrain search <query> [--json]`, `stormdrain get <id> [--json]`.
 - **Harvest & Curate**: Run `/sd_harvest` (or CLI `stormdrain harvest`) at session end; run `/sd_curate` (or CLI `stormdrain curate`) and `stormdrain consolidate <target> [ids...]` to consolidate candidate micro-memories.
+- **Export & Import**: Use `stormdrain export [<ctx...> | --all] [-o <file.json|.json.gz|->] [--no-codemaps]` and `stormdrain import <file|-> [--as <ctx>] [--bind <dir>] [--strategy merge|overwrite|skip]` to migrate contexts or entire instances across machines.
 
 ### Editorial Rule:
 Record non-obvious invariants, architectural trade-offs, and critical gotchas; do NOT record routine implementation summaries or transient task progress.

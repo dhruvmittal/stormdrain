@@ -715,7 +715,7 @@ export class ContextManager {
 
       // 2. Try extracting from source file on disk if available
       const targetRelPath = mem.metadata.title.replace(/^\[(File|Submodule|Codemap)\]\s*/, '');
-      const candidateRoots = [process.cwd(), ...(process.env.STORMDRAIN_TEST_DIR ? [process.env.STORMDRAIN_TEST_DIR] : [])];
+      const candidateRoots = [...this.getWorkspaceRoots(), process.cwd(), ...(process.env.STORMDRAIN_TEST_DIR ? [process.env.STORMDRAIN_TEST_DIR] : [])];
       for (const root of candidateRoots) {
         const fullP = path.join(root, targetRelPath);
         if (fs.existsSync(fullP) && fs.statSync(fullP).isFile()) {
@@ -795,7 +795,7 @@ export class ContextManager {
     this.git.scheduleCommit(`[stormdrain] delete: memory ${id} "${memory?.metadata.title || ''}"`);
   }
 
-  private saveMemory(memory: Memory, commitMsg: string) {
+  public saveMemory(memory: Memory, commitMsg: string) {
     const memPath = this.getSafeMemPath(memory.metadata.id);
     fs.writeFileSync(memPath, serializeMemory(memory));
     syncMemoryToDb(this.db, memory);
@@ -1082,6 +1082,7 @@ export class ContextManager {
 
       // 3. Set the micro-memory's outgoing relations to strictly point to the guide via 'part_of'
       mem.metadata.relations = [{ target: consolidatedId, type: 'part_of' }];
+      mem.metadata.updated = new Date().toISOString();
       this.saveMemory(mem, `[stormdrain] consolidate: marked ${mem.metadata.id} as consolidated (superseded by ${consolidatedId})`);
     }
 

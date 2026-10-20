@@ -13,6 +13,7 @@ import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
+import { exportBundle, importBundle, serializeBundleBuffer, parseBundleBuffer, ImportStrategy } from '../core/transfer';
 import { MemoryType } from '../types';
 
 
@@ -1033,6 +1034,149 @@ program
       console.log(scriptPath);
     } else {
       process.stdout.write(fs.readFileSync(scriptPath, 'utf8'));
+    }
+  });
+
+program
+  .command('export')
+  .description('Export specific context(s) or the entire StormDrain instance to a portable bundle (.json / .json.gz or stdout)')
+  .argument('[contexts...]', 'Context name(s) to export (defaults to current resolved context unless --all is set)')
+  .option('-c, --context <names...>', 'Specific context(s) to export')
+  .option('-a, --all', 'Export all contexts, global settings, and active context state')
+  .option('-o, --output <file>', 'Output bundle file path (.json or .json.gz), or "-" to write directly to stdout')
+  .option('-z, --gzip', 'Compress bundle with Gzip (enabled automatically if output file ends with .gz)')
+  .option('--no-codemaps', 'Exclude auto-scanned codemap file vertices (export only domain memories)')
+  .option('--json', 'Output export status summary as JSON')
+  .action((positionalContexts: string[], options) => {
+    try {
+      const requestedContexts: string[] = [
+        ...(Array.isArray(positionalContexts) ? positionalContexts : []),
+        ...(Array.isArray(options.context) ? options.context : options.context ? [options.context] : []),
+      ];
+
+      const isAll = Boolean(options.all);
+      if (!isAll && requestedContexts.length === 0) {
+        requestedContexts.push(config.resolveContext(undefined, process.cwd()));
+      }
+
+      const includeCodemaps = options.codemaps !== false;
+      const bundle = exportBundle({
+        all: isAll,
+        contexts: isAll ? undefined : requestedContexts,
+        includeCodemaps,
+      });
+
+      const outTarget = options.output ? String(options.output).trim() : '';
+      const useGzip = Boolean(options.gzip) || outTarget.endsWith('.gz');
+
+      if (outTarget === '-') {
+        const buf = serializeBundleBuffer(bundle, useGzip);
+        fs.writeFileSync(1, buf);
+        if (!useGzip) fs.writeFileSync(1, '\n');
+        return;
+      }
+
+      const exportedCtxNames = Object.keys(bundle.contexts);
+      const dateTag = new Date().toISOString().slice(0, 10);
+      const rawLabel = isAll
+        ? 'all'
+        : exportedCtxNames.length > 3
+          ? `${exportedCtxNames.slice(0, 2).join('-')}-plus-${exportedCtxNames.length - 2}`
+          : exportedCtxNames.join('-');
+      const label = rawLabel.slice(0, 80);
+      const ext = useGzip ? '.sd.json.gz' : '.sd.json';
+      const filePath = path.resolve(outTarget || `stormdrain-export-${label}-${dateTag}${ext}`);
+
+      const buf = serializeBundleBuffer(bundle, useGzip);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, buf);
+
+      const totalMemories = exportedCtxNames.reduce((acc, k) => acc + bundle.contexts[k].memories.length, 0);
+
+      if (options.json) {
+        console.log(JSON.stringify({
+          status: 'exported',
+          scope: bundle.scope,
+          file: filePath,
+          gzip: useGzip,
+          includeCodemaps,
+          contexts: exportedCtxNames,
+          totalMemories,
+          bytes: buf.length,
+        }, null, 2));
+      } else {
+        console.log(`Exported ${totalMemories} memories across ${exportedCtxNames.length} context(s) [${exportedCtxNames.join(', ')}] to ${filePath} (${buf.length} bytes${useGzip ? ', gzipped' : ''}).`);
+      }
+    } catch (err: any) {
+      console.error(`Error exporting bundle: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('import')
+  .description('Import a StormDrain bundle (.json / .json.gz or "-" for stdin) into local storage')
+  .argument('<file>', 'Path to bundle file (.json or .json.gz) or "-" to read from stdin')
+  .option('-c, --context <names...>', 'Only import specific context(s) from the bundle')
+  .option('--as <name>', 'Import a single context under a new context name on this machine')
+  .option('-b, --bind <paths...>', 'Bind the imported context to workspace directory path(s) on this machine and auto-scan codemaps')
+  .option('-s, --strategy <mode>', 'Conflict resolution strategy: merge (default, newest timestamp + union tags/relations), overwrite, or skip', 'merge')
+  .option('--no-codemaps', 'Skip importing codemap file vertices')
+  .option('--no-settings', 'Do not import global settings from a full bundle')
+  .option('--no-scan', 'Skip auto-scanning workspace files when --bind is provided')
+  .option('--json', 'Output import report as JSON')
+  .action(async (file: string, options) => {
+    try {
+      const targetFile = String(file).trim();
+      let rawBuf: Buffer;
+      if (targetFile === '-') {
+        rawBuf = fs.readFileSync(0);
+      } else {
+        const resolvedPath = path.resolve(targetFile);
+        if (!fs.existsSync(resolvedPath)) {
+          throw new Error(`Bundle file not found: ${resolvedPath}`);
+        }
+        rawBuf = fs.readFileSync(resolvedPath);
+      }
+
+      const bundle = parseBundleBuffer(rawBuf);
+      const filterContexts = Array.isArray(options.context)
+        ? options.context
+        : options.context
+          ? [options.context]
+          : undefined;
+      const bindPaths = Array.isArray(options.bind)
+        ? options.bind
+        : options.bind
+          ? [options.bind]
+          : undefined;
+
+      const res = await importBundle(bundle, {
+        strategy: (options.strategy || 'merge') as ImportStrategy,
+        contexts: filterContexts,
+        targetContextName: options.as,
+        bindPaths,
+        includeCodemaps: options.codemaps !== false,
+        importSettings: options.settings !== false ? undefined : false,
+        syncBoundWorkspaces: options.scan !== false ? undefined : false,
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+
+      console.log(`Imported StormDrain bundle (scope: ${res.scope}, strategy: ${res.strategy}${res.settingsImported ? ', settings updated' : ''}):`);
+      for (const c of res.contexts) {
+        const renameNote = c.context !== c.sourceContext ? ` (from "${c.sourceContext}")` : '';
+        const bindNote = c.boundPaths.length > 0 ? ` | paths: ${c.boundPaths.join(', ')}` : '';
+        const scanNote = c.scannedFiles > 0 ? ` | scanned ${c.scannedFiles} file(s)` : '';
+        console.log(`  - Context "${c.context}"${renameNote}: +${c.added} added, ~${c.updated} updated, =${c.skipped} unchanged/skipped${bindNote}${scanNote}`);
+      }
+      console.log(`Total: +${res.totalAdded} added, ~${res.totalUpdated} updated, =${res.totalSkipped} unchanged/skipped.`);
+    } catch (err: any) {
+      console.error(`Error importing bundle: ${err.message}`);
+      process.exit(1);
     }
   });
 

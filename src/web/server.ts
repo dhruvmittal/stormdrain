@@ -852,8 +852,32 @@ function computeNodeModules(nodes: any[], links: any[]): void {
 
     res.setHeader('ETag', `"${versionHash}"`);
 
-    const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all();
-    const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all();
+    const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all() as Array<any>;
+    const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all() as Array<{ source: string; target: string; type: string }>;
+
+    // Synthesize virtual codemap nodes for any file_* relation targets not present in memories (e.g. imported with --no-codemaps)
+    const existingNodeIds = new Set(memories.map(m => m.id));
+    const nowIso = new Date().toISOString();
+    for (const rel of relations) {
+      if (rel.target && rel.target.startsWith('file_') && !existingNodeIds.has(rel.target)) {
+        existingNodeIds.add(rel.target);
+        const raw = rel.target.replace(/^file_/, '');
+        const lastUnderscore = raw.lastIndexOf('_');
+        const inferredPath = lastUnderscore !== -1
+          ? `${raw.substring(0, lastUnderscore).replace(/_/g, '/')}.${raw.substring(lastUnderscore + 1)}`
+          : raw;
+        memories.push({
+          id: rel.target,
+          title: `[File] ${inferredPath}`,
+          type: 'codemap',
+          confidence: 1.0,
+          created: nowIso,
+          updated: nowIso,
+          superseded_by: null,
+        });
+      }
+    }
+
     computeNodeModules(memories, relations);
     res.json({ nodes: memories, links: relations });
   }));

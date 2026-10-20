@@ -211,6 +211,9 @@ export class ConfigManager {
   }
 
   public addContext(name: string, paths: string[] = [], parent: string | null = null) {
+    if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) {
+      throw new Error(`Invalid context name "${name}". Context names may only contain letters, numbers, underscores, and hyphens.`);
+    }
     if (name === 'global' || name === '_global') {
       throw new Error(`Context name "${name}" is a reserved system alias for the global context.`);
     }
@@ -224,6 +227,19 @@ export class ConfigManager {
     this.config.contexts[name] = { name, paths, parent: resolvedParent };
     ensureDirectories(name);
     this.saveConfig();
+  }
+
+  public setContextParent(name: string, parent: string | null) {
+    this.loadConfig();
+    const resolvedName = name === 'global' ? '_global' : name;
+    if (resolvedName === '_global' || !this.config.contexts[resolvedName]) {
+      return;
+    }
+    const resolvedParent = parent === 'global' ? '_global' : parent;
+    if (resolvedParent && resolvedParent !== resolvedName && this.config.contexts[resolvedParent]) {
+      this.config.contexts[resolvedName].parent = resolvedParent;
+      this.saveConfig();
+    }
   }
 
   public static isSystemOrHomeRoot(targetPath: string): boolean {
