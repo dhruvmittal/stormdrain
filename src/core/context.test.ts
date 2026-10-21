@@ -347,6 +347,28 @@ describe('ContextManager', () => {
     const unanchoredAfter = ctx.listMemoriesWithStats({ unanchoredOnly: true });
     expect(unanchoredAfter.map(u => u.id)).not.toContain(memA);
   });
+
+  it('should ignore incoming relations from non-existent ghost source memories', async () => {
+    const memTarget = ctx.addMemory('fact', 'Valid Target', 'Content for target');
+
+    // Manually insert a dangling relation from a non-existent ghost source
+    ctx.getDb().pragma('foreign_keys = OFF');
+    ctx.getDb().prepare(`
+      INSERT INTO relations (source_id, target_id, type)
+      VALUES (?, ?, ?)
+    `).run('mem_ghost_nonexistent', memTarget, 'references');
+    ctx.getDb().pragma('foreign_keys = ON');
+
+    const stats = ctx.listMemoriesWithStats();
+    const targetStat = stats.find(s => s.id === memTarget)!;
+    expect(targetStat.incoming_count).toBe(0);
+    expect(targetStat.total_connections).toBe(0);
+    expect(targetStat.is_anchored).toBe(false);
+
+    // Should still be returned by orphansOnly filter
+    const orphans = ctx.listMemoriesWithStats({ orphansOnly: true });
+    expect(orphans.map(o => o.id)).toContain(memTarget);
+  });
 });
 
 

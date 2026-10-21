@@ -266,13 +266,15 @@ function mergeMemoryPair(existing: Memory, incoming: Memory, targetContextName: 
   const mergedTags = Array.from(new Set([...(winner.metadata.tags || []), ...loserTagsFiltered]));
 
   // If the winning snapshot was consolidated/superseded, preserve its exact relations (e.g., part_of)
-  // so pre-consolidation edges are not resurrected; otherwise union relations.
+  // so pre-consolidation edges are not resurrected; otherwise union relations, omitting part_of
+  // edges from a consolidated loser so zombie consolidation pointers are not resurrected.
   let mergedRelations: MemoryRelation[];
   if (winnerConsolidated) {
     mergedRelations = [...(winner.metadata.relations || [])];
   } else {
     const relMap = new Map<string, MemoryRelation>();
-    for (const r of [...(winner.metadata.relations || []), ...(loser.metadata.relations || [])]) {
+    const loserRelations = (loser.metadata.relations || []).filter(r => winnerConsolidated || r.type !== 'part_of');
+    for (const r of [...(winner.metadata.relations || []), ...loserRelations]) {
       if (r && typeof r.target === 'string' && r.target.trim()) {
         relMap.set(`${r.target}:${r.type}`, { target: r.target, type: r.type });
       }
@@ -487,8 +489,12 @@ export async function importBundle(bundle: StormDrainBundle, options: ImportOpti
       for (const row of danglingRows) {
         const dMem = ctx.getMemory(row.id);
         if (dMem) {
+          const oldSuperseded = dMem.metadata.superseded_by;
           dMem.metadata.superseded_by = null;
           dMem.metadata.tags = (dMem.metadata.tags || []).filter(t => t !== 'consolidated');
+          if (oldSuperseded) {
+            dMem.metadata.relations = (dMem.metadata.relations || []).filter(r => r.target !== oldSuperseded);
+          }
           ctx.saveMemory(dMem, `[stormdrain] import: heal dangling superseded_by on ${row.id}`);
         }
       }
@@ -499,6 +505,7 @@ export async function importBundle(bundle: StormDrainBundle, options: ImportOpti
       if (shouldScan) {
         for (const bp of explicitBindPaths) {
           const resolvedBp = path.resolve(bp);
+          if (ConfigManager.isSystemOrHomeRoot(resolvedBp)) continue;
           if (fs.existsSync(resolvedBp) && fs.statSync(resolvedBp).isDirectory()) {
             const scanRes = ctx.syncFileGraph(resolvedBp);
             scannedFiles += scanRes.createdCount;

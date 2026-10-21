@@ -669,7 +669,7 @@ describe('StormDrainMcpServer Protocol', () => {
     const listText = ((listRes as any).content[0] as any).text;
     expect(listText).toContain('2 memories, 1 disconnected [0 connections]');
     expect(listText).toContain(`${orphanId} | **0 connections** ⚠️ DISCONNECTED`);
-    expect(listText).toContain(`${connectedId} | **1 connection(s)** (1 out, 0 in)`);
+    expect(listText).toContain(`${connectedId} | **1 connection(s)** (1 out, 0 in, 1 file)`);
 
     // 4. Filter orphans_only via sd_memory(action="list", orphans_only=true)
     const orphansOnlyRes = await client.callTool({
@@ -718,9 +718,9 @@ describe('StormDrainMcpServer Protocol', () => {
       }
     });
     const listAfterText = ((listAfterRes as any).content[0] as any).text;
-    expect(listAfterText).toContain('2 memories, 0 disconnected [0 connections]');
-    expect(listAfterText).toContain(`${orphanId} | **1 connection(s)** (1 out, 0 in)`);
-    expect(listAfterText).toContain(`${connectedId} | **2 connection(s)** (1 out, 1 in)`);
+    expect(listAfterText).toContain('2 memories, 1 unanchored island(s) [no file connections]');
+    expect(listAfterText).toContain(`${orphanId} | **1 connection(s)** (1 out, 0 in) ⚠️ UNANCHORED ISLAND`);
+    expect(listAfterText).toContain(`${connectedId} | **2 connection(s)** (1 out, 1 in, 1 file)`);
   });
 
   it('should support file-less consolidation of disconnected memories and still report 0 connections until anchored (Consolidation Paradox fix)', async () => {

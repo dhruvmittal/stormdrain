@@ -25,9 +25,13 @@ export class ContextManager {
     
     this.memoriesPath = getContextMemoriesPath(name);
     const dbPath = getContextDbPath(name);
-    
     this.db = initDb(dbPath);
-    this.git = new GitManager(name);
+    let debounceMs = 1500;
+    try {
+      const cfg = new ConfigManager();
+      debounceMs = cfg.getSettings().git.debounceMs ?? 1500;
+    } catch {}
+    this.git = new GitManager(name, debounceMs);
   }
 
   public getDb(): Database.Database {
@@ -326,21 +330,48 @@ export class ContextManager {
       ORDER BY m.updated DESC
     `).all() as Array<any>;
 
+    const tagsMap = new Map<string, string[]>();
+    const tagRows = this.db.prepare(`
+      SELECT t.memory_id, t.tag
+      FROM tags t
+      JOIN memories m ON m.id = t.memory_id
+      WHERE m.type != 'codemap'
+    `).all() as Array<{ memory_id: string; tag: string }>;
+    for (const tr of tagRows) {
+      const list = tagsMap.get(tr.memory_id);
+      if (list) {
+        list.push(tr.tag);
+      } else {
+        tagsMap.set(tr.memory_id, [tr.tag]);
+      }
+    }
+
+    const relsMap = new Map<string, MemoryRelation[]>();
+    const relRows = this.db.prepare(`
+      SELECT r.source_id, r.target_id as target, r.type
+      FROM relations r
+      JOIN memories m ON m.id = r.source_id
+      WHERE m.type != 'codemap'
+    `).all() as Array<{ source_id: string; target: string; type: string }>;
+    for (const rr of relRows) {
+      const rel: MemoryRelation = { target: rr.target, type: rr.type as RelationType };
+      const list = relsMap.get(rr.source_id);
+      if (list) {
+        list.push(rel);
+      } else {
+        relsMap.set(rr.source_id, [rel]);
+      }
+    }
+
     const results: Memory[] = [];
-    const getTagsStmt = this.db.prepare('SELECT tag FROM tags WHERE memory_id = ?');
-    const getRelsStmt = this.db.prepare('SELECT target_id as target, type FROM relations WHERE source_id = ?');
-
     for (const row of rows) {
-      const tagRows = getTagsStmt.all(row.id) as Array<{ tag: string }>;
-      const relRows = getRelsStmt.all(row.id) as Array<{ target: string; type: string }>;
-
       results.push({
         metadata: {
           id: row.id,
           type: row.type,
           title: row.title,
           context: row.context || this.name,
-          tags: tagRows.map(t => t.tag),
+          tags: tagsMap.get(row.id) || [],
           confidence: row.confidence ?? 1.0,
           created: row.created || new Date().toISOString(),
           updated: row.updated || new Date().toISOString(),
@@ -349,7 +380,7 @@ export class ContextManager {
           source: row.source || 'manual',
           expires: row.expires || null,
           superseded_by: row.superseded_by || null,
-          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType })),
+          relations: relsMap.get(row.id) || [],
           git_branch: row.git_branch || null,
           is_canonical: Boolean(row.is_canonical)
         },
@@ -373,6 +404,7 @@ export class ContextManager {
     const filterTag = options?.tag ? options.tag.replace(/^#/, '').trim().toLowerCase() : undefined;
     const includeConsolidated = options?.includeConsolidated ?? false;
 
+    const supersededFilter = includeConsolidated ? '' : "AND (m.superseded_by IS NULL OR m.superseded_by = '')";
     const rows = this.db.prepare(`
       SELECT
         m.*,
@@ -390,8 +422,11 @@ export class ContextManager {
          FROM relations r
          LEFT JOIN memories src ON src.id = r.source_id
          WHERE r.target_id = m.id
-           AND (src.superseded_by IS NULL OR src.superseded_by = '')
-           AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated')
+           AND (
+             r.source_id LIKE 'file_%'
+             OR (src.id IS NOT NULL AND (src.superseded_by IS NULL OR src.superseded_by = '')
+                 AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated'))
+           )
         ) as incoming_count,
         (SELECT COUNT(*)
          FROM relations r
@@ -401,6 +436,7 @@ export class ContextManager {
         (SELECT GROUP_CONCAT(tag) FROM tags t WHERE t.memory_id = m.id) as tags_str
       FROM memories m
       WHERE m.type != 'codemap'
+        ${supersededFilter}
     `).all() as Array<any>;
 
     let summaries: MemoryListSummary[] = [];
@@ -685,7 +721,7 @@ export class ContextManager {
           try {
             return globalCtx.getNodeDetails(idOrPath);
           } finally {
-            globalCtx.close();
+            globalCtx.getDb().close();
           }
         } catch {}
       }
@@ -831,11 +867,7 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  public autoPromoteMergedBranches(_cwd: string = process.cwd()): string[] {
-    return [];
-  }
-
-  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number; autoPromotedBranches?: string[] } {
+  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number } {
     const vertices = generateWorkspaceFileVertices(workspaceDir, scanOptions);
     let createdCount = 0;
     let decayedCount = 0;
@@ -1507,10 +1539,11 @@ export class ContextManager {
         direct,
         upstream,
         downstream,
-        all: finalMemories
+        all: finalMemories,
+        memories: finalMemories
       };
     } catch {
-      return { direct: [], upstream: [], downstream: [], all: [] };
+      return { direct: [], upstream: [], downstream: [], all: [], memories: [] };
     }
   }
 
@@ -1710,8 +1743,11 @@ export class ContextManager {
           SELECT 1 FROM relations r
           LEFT JOIN memories src ON src.id = r.source_id
           WHERE r.target_id = m.id
-            AND (src.superseded_by IS NULL OR src.superseded_by = '')
-            AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated')
+            AND (
+              r.source_id LIKE 'file_%'
+              OR (src.id IS NOT NULL AND (src.superseded_by IS NULL OR src.superseded_by = '')
+                  AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated'))
+            )
         )
       GROUP BY t.tag
       HAVING count >= ?
@@ -1734,8 +1770,11 @@ export class ContextManager {
             SELECT 1 FROM relations r
             LEFT JOIN memories src ON src.id = r.source_id
             WHERE r.target_id = m.id
-              AND (src.superseded_by IS NULL OR src.superseded_by = '')
-              AND NOT EXISTS (SELECT 1 FROM tags tc2 WHERE tc2.memory_id = r.source_id AND tc2.tag = 'consolidated')
+              AND (
+                r.source_id LIKE 'file_%'
+                OR (src.id IS NOT NULL AND (src.superseded_by IS NULL OR src.superseded_by = '')
+                    AND NOT EXISTS (SELECT 1 FROM tags tc2 WHERE tc2.memory_id = r.source_id AND tc2.tag = 'consolidated'))
+              )
           )
       `).all(tc.tag) as Array<any>;
 

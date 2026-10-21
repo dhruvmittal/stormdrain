@@ -91,6 +91,7 @@ export interface MultiHopRecallResponse {
   upstream: MultiHopMemoryResult[];
   downstream: MultiHopMemoryResult[];
   all: MultiHopMemoryResult[];
+  memories?: MultiHopMemoryResult[];
 }
 
 export interface ReadToolSettings {

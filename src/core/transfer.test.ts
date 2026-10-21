@@ -537,7 +537,10 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
                 access_count: 1,
                 confidence: 0.8,
                 tags: ['consolidated', 'perf'],
-                relations: [],
+                relations: [
+                  { target: 'mem_nonexistent_super', type: 'part_of' },
+                  { target: 'mem_other', type: 'references' },
+                ],
                 superseded_by: 'mem_nonexistent_super',
               },
               content: 'Content that should not stay hidden forever.',
@@ -558,6 +561,9 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
       expect(healed.metadata.superseded_by).toBeNull();
       expect(healed.metadata.tags).not.toContain('consolidated');
       expect(healed.metadata.tags).toContain('perf');
+      // part_of relation pointing to non-existent super memory must be cleaned up
+      expect(healed.metadata.relations.some(r => r.target === 'mem_nonexistent_super')).toBe(false);
+      expect(healed.metadata.relations.some(r => r.target === 'mem_other')).toBe(true);
 
       // It must now appear in default listMemoriesWithStats as an active memory
       const list = ctx.listMemoriesWithStats();
@@ -565,5 +571,86 @@ describe('Context & Full-Instance Export / Import (transfer.ts)', () => {
     } finally {
       await ctx.close();
     }
+  });
+
+  it('should not resurrect part_of relation from consolidated loser when merging with newer unconsolidated memory', async () => {
+    // Machine A consolidates mem_1
+    const ctxA = new ContextManager('merge_ctx');
+    ctxA.addMemory('fact', 'Memory 1', 'Content', [], 'manual', 'mem_1');
+    const existing = ctxA.getMemory('mem_1')!;
+    existing.metadata.superseded_by = 'mem_super_guide';
+    existing.metadata.tags = ['consolidated'];
+    existing.metadata.relations = [{ target: 'mem_super_guide', type: 'part_of' }];
+    existing.metadata.updated = '2026-01-01T00:00:00.000Z';
+    ctxA.saveMemory(existing);
+    await ctxA.close();
+
+    // Machine B has a newer unconsolidated edit of mem_1 with a different relation
+    const bundle: StormDrainBundle = {
+      format: 'stormdrain-bundle',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      scope: 'context',
+      contexts: {
+        merge_ctx: {
+          config: { paths: [] },
+          memories: [
+            {
+              metadata: {
+                id: 'mem_1',
+                title: 'Memory 1 Updated',
+                type: 'fact',
+                context: 'merge_ctx',
+                created: '2026-01-01T00:00:00.000Z',
+                updated: '2026-01-02T00:00:00.000Z', // newer
+                accessed: '2026-01-02T00:00:00.000Z',
+                access_count: 5,
+                confidence: 0.95,
+                tags: ['active'],
+                relations: [{ target: 'src/main.ts', type: 'affects' }],
+              },
+              content: 'Newer active content from machine B',
+            },
+          ],
+        },
+      },
+    };
+
+    const res = await importBundle(bundle, { strategy: 'merge' });
+    expect(res.totalUpdated).toBe(1);
+
+    const ctxMerged = new ContextManager('merge_ctx');
+    try {
+      const mergedMem = ctxMerged.getMemory('mem_1')!;
+      expect(mergedMem.metadata.title).toBe('Memory 1 Updated');
+      expect(mergedMem.metadata.superseded_by).toBeNull();
+      expect(mergedMem.metadata.tags).not.toContain('consolidated');
+      expect(mergedMem.metadata.relations.some(r => r.type === 'part_of')).toBe(false);
+      expect(mergedMem.metadata.relations.some(r => r.target === 'src/main.ts')).toBe(true);
+    } finally {
+      await ctxMerged.close();
+    }
+  });
+
+  it('should skip auto-scanning system or home root paths passed in explicitBindPaths', async () => {
+    const rootBundle: StormDrainBundle = {
+      format: 'stormdrain-bundle',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      scope: 'context',
+      contexts: {
+        root_guard_ctx: {
+          config: { paths: [] },
+          memories: [],
+        },
+      },
+    };
+
+    const res = await importBundle(rootBundle, {
+      bindPaths: ['/', os.homedir()],
+      syncBoundWorkspaces: true,
+    });
+
+    expect(res.contexts[0].scannedFiles).toBe(0);
   });
 });

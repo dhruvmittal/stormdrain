@@ -346,6 +346,10 @@ export class StormDrainMcpServer {
                 type: 'boolean',
                 description: 'For "list" action: if true, return only disconnected memories with 0 total connections'
               },
+              unanchored_only: {
+                type: 'boolean',
+                description: 'For "list" action: if true, return only memories that have no file connections'
+              },
               limit: {
                 type: 'number',
                 description: 'For "list" action: optional maximum number of memories to return'
@@ -698,6 +702,7 @@ export class StormDrainMcpServer {
             type: args.type,
             tag: effectiveTag,
             orphansOnly: args.orphans_only,
+            unanchoredOnly: args.unanchored_only,
             maxConnections: args.max_connections,
             sortBy: args.sort_by || 'connections_asc',
             limit: args.limit,
@@ -729,7 +734,7 @@ export class StormDrainMcpServer {
             } else {
               connBadge = `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in, ${s.file_connections} file)`;
             }
-            lines.push(`- **[${s.type.toUpperCase()}] ${s.title}** (ID: \`${s.id}\` | ${connBadge} | Conf: ${s.confidence} | Accesses: ${s.access_count})${tagStr}`);
+            lines.push(`- **[${s.type.toUpperCase()}] ${s.title}** (ID: ${s.id} | ${connBadge} | Conf: ${s.confidence} | Accesses: ${s.access_count})${tagStr}`);
           }
 
           if (orphanCount > 0 || unanchoredIslandCount > 0) {

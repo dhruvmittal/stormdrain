@@ -77,7 +77,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const oldestKey = contextCache.keys().next().value;
       if (oldestKey) {
         const oldestCtx = contextCache.get(oldestKey);
-        try { oldestCtx?.close(); } catch {}
+        oldestCtx?.close().catch(err => console.error('Error closing evicted context:', err));
         contextCache.delete(oldestKey);
       }
     }
@@ -340,16 +340,18 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
-    const type = req.query.type as MemoryType | undefined;
+    const rawType = req.query.type ? String(req.query.type).trim().toLowerCase() : undefined;
+    const type = (rawType && rawType !== 'all') ? (rawType as MemoryType) : undefined;
     const orphansOnly = req.query.orphans === 'true';
     const unanchoredOnly = req.query.unanchored === 'true';
     const includeConsolidated = req.query.include_consolidated === 'true';
 
-    if (query || type) {
+    if (query) {
       const results = ctx.searchMemories(query, true, { type });
       res.json(results);
     } else {
       const summaries = ctx.listMemoriesWithStats({
+        type,
         orphansOnly,
         unanchoredOnly,
         includeConsolidated,
@@ -590,12 +592,13 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   app.post('/api/consolidate', withContext(async (req, res, ctx) => {
     const { targetFile, target, memoryIds } = req.body;
     const targetPath = targetFile || target;
-    if (!targetPath) {
-      res.status(400).json({ error: 'targetFile or target is required' });
+    const hasExplicitIds = Array.isArray(memoryIds) && memoryIds.length >= 2;
+    if (!targetPath && !hasExplicitIds) {
+      res.status(400).json({ error: 'targetFile or target is required unless at least 2 memoryIds are provided' });
       return;
     }
     try {
-      const result = ctx.consolidateNeighborhood(targetPath, { memory_ids: memoryIds });
+      const result = ctx.consolidateNeighborhood(targetPath || '', { memory_ids: memoryIds });
       if (!result.consolidatedId) {
         res.status(400).json({ error: 'At least 2 micro-memories are required to consolidate' });
         return;

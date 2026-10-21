@@ -563,6 +563,34 @@ describe('Web API Server', () => {
     const data = await res.json();
     expect(data.text).toBeDefined();
   });
+
+  it('should support file-less consolidation via POST /api/consolidate when memoryIds has at least 2 IDs', async () => {
+    const res1 = await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'fact', title: 'Fileless Mem 1', content: 'Details 1' })
+    });
+    const { id: id1 } = await res1.json();
+
+    const res2 = await fetch(`${baseUrl}/api/memories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'fact', title: 'Fileless Mem 2', content: 'Details 2' })
+    });
+    const { id: id2 } = await res2.json();
+
+    const consRes = await fetch(`${baseUrl}/api/consolidate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memoryIds: [id1, id2] })
+    });
+
+    expect(consRes.status).toBe(200);
+    const consData = await consRes.json();
+    expect(consData.success).toBe(true);
+    expect(consData.consolidatedId).toBeDefined();
+    expect(consData.mergedCount).toBe(2);
+  });
 });
 
 
