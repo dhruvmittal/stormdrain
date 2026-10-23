@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "pretest": "npm run build",
     "test": "vitest run",
     "build": "tsup src/index.ts --format cjs",
     "start": "node dist/index.js",
@@ -15,6 +16,7 @@
   "type": "commonjs",
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
@@ -27,13 +29,11 @@
   "dependencies": {
     "@bomb.sh/tab": "^0.0.22",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@types/compression": "^1.8.1",
     "better-sqlite3": "^13.0.2",
     "commander": "^15.0.0",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "isomorphic-git": "^1.40.0",
     "yaml": "^2.9.0"
   },
   "bin": {

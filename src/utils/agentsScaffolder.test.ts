@@ -28,7 +28,7 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     expect(content).toContain('Agent Guidelines & Project Context');
     expect(content).toContain('StormDrain Persistent Memory');
     expect(content).toContain('~/.stormdrain');
-    expect(content).toContain('MCP-First Execution');
+    expect(content).toContain('Authorized Execution (MCP or CLI)');
     expect(content).toContain('sd_recall');
   });
 
@@ -80,7 +80,7 @@ describe('AGENTS.md Scaffolder for Antigravity, OpenCode, and Pi', () => {
     expect(updated).toContain('# Project Guidelines');
     expect(updated).toContain('## Custom Team Rules');
     expect(updated).toContain('~/.stormdrain');
-    expect(updated).toContain('MCP-First Execution');
+    expect(updated).toContain('Authorized Execution (MCP or CLI)');
     expect(updated).toContain('## Other Appendix');
     expect(updated).not.toContain('Old outdated protocol text');
   });

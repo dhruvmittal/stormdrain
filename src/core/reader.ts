@@ -49,9 +49,22 @@ export class FileReader {
 
   public async readFile(options: ReadOptions): Promise<ReadResult> {
     const cwd = options.cwd || process.cwd();
-    const resolvedPath = path.isAbsolute(options.filePath) 
+    let resolvedPath = path.isAbsolute(options.filePath) 
       ? path.normalize(options.filePath) 
       : path.normalize(path.resolve(cwd, options.filePath));
+
+    if (!fs.existsSync(resolvedPath)) {
+      if (!path.isAbsolute(options.filePath) && options.context) {
+        const ctxCfg = this.configManager.getContext(options.context);
+        for (const root of ctxCfg?.paths || []) {
+          const candidate = path.normalize(path.resolve(root, options.filePath));
+          if (fs.existsSync(candidate)) {
+            resolvedPath = candidate;
+            break;
+          }
+        }
+      }
+    }
 
     if (!fs.existsSync(resolvedPath)) {
       throw new Error(`File not found: ${options.filePath} (resolved: ${resolvedPath})`);

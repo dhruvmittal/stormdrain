@@ -91,6 +91,7 @@ export interface MultiHopRecallResponse {
   upstream: MultiHopMemoryResult[];
   downstream: MultiHopMemoryResult[];
   all: MultiHopMemoryResult[];
+  memories?: MultiHopMemoryResult[];
 }
 
 export interface ReadToolSettings {
@@ -222,11 +223,33 @@ export interface ConsolidationCandidate {
 }
 
 export interface ConsolidationOptions {
-  target_file: string;
+  target_file?: string;
   memory_ids?: string[];
+  title?: string;
   context?: string;
 }
 
+export interface MemoryListSummary {
+  id: string;
+  type: MemoryType;
+  title: string;
+  context: string;
+  confidence: number;
+  tags: string[];
+  created: string;
+  updated: string;
+  accessed: string;
+  access_count: number;
+  outgoing_count: number;
+  incoming_count: number;
+  total_connections: number;
+  file_connections: number;
+  is_anchored: boolean;
+  superseded_by: string | null;
+  content_snippet?: string;
+}
+
 export * from './db/types';
+
 
 

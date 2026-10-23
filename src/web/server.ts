@@ -77,7 +77,7 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       const oldestKey = contextCache.keys().next().value;
       if (oldestKey) {
         const oldestCtx = contextCache.get(oldestKey);
-        try { oldestCtx?.close(); } catch {}
+        oldestCtx?.close().catch(err => console.error('Error closing evicted context:', err));
         contextCache.delete(oldestKey);
       }
     }
@@ -89,12 +89,31 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   // Helper middleware wrapper
   const withContext = (handler: (req: express.Request, res: express.Response, ctx: ContextManager) => Promise<void>) => {
     return async (req: express.Request, res: express.Response) => {
-      const rawContext = req.query.context ? String(req.query.context) : undefined;
+      let rawContext = req.query.context ? String(req.query.context).trim() : undefined;
       if (rawContext !== undefined && !isValidContextName(rawContext)) {
         res.status(400).json({ error: 'Invalid context name: must contain only alphanumeric characters, dashes, or underscores' });
         return;
       }
+
+      // If context not in query, check target path clues from query or body
+      if (!rawContext) {
+        const candidate = (
+          (typeof req.query.target === 'string' && req.query.target) ||
+          (typeof req.body?.targetFile === 'string' && req.body.targetFile) ||
+          (typeof req.body?.target === 'string' && req.body.target) ||
+          (typeof req.body?.directory === 'string' && req.body.directory) ||
+          (Array.isArray(req.body?.targets) && typeof req.body.targets[0] === 'string' && req.body.targets[0])
+        );
+        if (candidate && !candidate.startsWith('mem_')) {
+          const matched = config.resolveContextByCwd(candidate);
+          if (matched) rawContext = matched;
+        }
+      }
+
+      const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method.toUpperCase());
+
       const active = rawContext || config.getActiveContext();
+
       try {
         const ctx = getContext(active);
         await handler(req, res, ctx);
@@ -286,6 +305,11 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
       LIMIT 5
     `).all();
 
+    // Orphan and Unanchored Island Counts
+    const statsList = ctx.listMemoriesWithStats({ includeConsolidated: false });
+    const orphanCount = statsList.filter(s => s.total_connections === 0).length;
+    const unanchoredCount = statsList.filter(s => !s.is_anchored).length;
+
     res.json({
       graphHealthScore: avgConfidence,
       counts,
@@ -298,6 +322,10 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
         candidateCount: backlogCount,
         unconsolidatedCount,
         candidates
+      },
+      orphans: {
+        orphanCount,
+        unanchoredCount,
       },
       decayWatchlist,
       hotspots,
@@ -312,14 +340,23 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
 
   app.get('/api/memories', withContext(async (req, res, ctx) => {
     const query = req.query.q ? String(req.query.q).trim() : '';
-    const type = req.query.type as MemoryType | undefined;
+    const rawType = req.query.type ? String(req.query.type).trim().toLowerCase() : undefined;
+    const type = (rawType && rawType !== 'all') ? (rawType as MemoryType) : undefined;
+    const orphansOnly = req.query.orphans === 'true';
+    const unanchoredOnly = req.query.unanchored === 'true';
+    const includeConsolidated = req.query.include_consolidated === 'true';
 
-    if (query || type) {
+    if (query) {
       const results = ctx.searchMemories(query, true, { type });
       res.json(results);
     } else {
-      const memories = ctx.getDb().prepare(`SELECT id, type, title, confidence, created, updated, accessed, access_count, source, git_branch, is_canonical FROM memories ORDER BY updated DESC`).all();
-      res.json(memories);
+      const summaries = ctx.listMemoriesWithStats({
+        type,
+        orphansOnly,
+        unanchoredOnly,
+        includeConsolidated,
+      });
+      res.json(summaries);
     }
   }));
 
@@ -555,12 +592,13 @@ export const startWebServer = (port: number = 3456, host: string = process.env.S
   app.post('/api/consolidate', withContext(async (req, res, ctx) => {
     const { targetFile, target, memoryIds } = req.body;
     const targetPath = targetFile || target;
-    if (!targetPath) {
-      res.status(400).json({ error: 'targetFile or target is required' });
+    const hasExplicitIds = Array.isArray(memoryIds) && memoryIds.length >= 2;
+    if (!targetPath && !hasExplicitIds) {
+      res.status(400).json({ error: 'targetFile or target is required unless at least 2 memoryIds are provided' });
       return;
     }
     try {
-      const result = ctx.consolidateNeighborhood(targetPath, { memory_ids: memoryIds });
+      const result = ctx.consolidateNeighborhood(targetPath || '', { memory_ids: memoryIds });
       if (!result.consolidatedId) {
         res.status(400).json({ error: 'At least 2 micro-memories are required to consolidate' });
         return;
@@ -833,8 +871,32 @@ function computeNodeModules(nodes: any[], links: any[]): void {
 
     res.setHeader('ETag', `"${versionHash}"`);
 
-    const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all();
-    const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all();
+    const memories = ctx.getDb().prepare(`SELECT id, title, type, confidence, created, updated, superseded_by FROM memories`).all() as Array<any>;
+    const relations = ctx.getDb().prepare(`SELECT source_id AS source, target_id AS target, type FROM relations`).all() as Array<{ source: string; target: string; type: string }>;
+
+    // Synthesize virtual codemap nodes for any file_* relation targets not present in memories (e.g. imported with --no-codemaps)
+    const existingNodeIds = new Set(memories.map(m => m.id));
+    const nowIso = new Date().toISOString();
+    for (const rel of relations) {
+      if (rel.target && rel.target.startsWith('file_') && !existingNodeIds.has(rel.target)) {
+        existingNodeIds.add(rel.target);
+        const raw = rel.target.replace(/^file_/, '');
+        const lastUnderscore = raw.lastIndexOf('_');
+        const inferredPath = lastUnderscore !== -1
+          ? `${raw.substring(0, lastUnderscore).replace(/_/g, '/')}.${raw.substring(lastUnderscore + 1)}`
+          : raw;
+        memories.push({
+          id: rel.target,
+          title: `[File] ${inferredPath}`,
+          type: 'codemap',
+          confidence: 1.0,
+          created: nowIso,
+          updated: nowIso,
+          superseded_by: null,
+        });
+      }
+    }
+
     computeNodeModules(memories, relations);
     res.json({ nodes: memories, links: relations });
   }));

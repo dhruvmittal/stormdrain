@@ -165,5 +165,210 @@ describe('ContextManager', () => {
       await reopenedCtx.close();
     }
   });
+
+  it('should strictly isolate getWorkspaceRoots and never append foreign CWD or home root', () => {
+    const boundPath = path.join(testDir, 'isolated-proj');
+    fs.mkdirSync(boundPath, { recursive: true });
+    config.bindPathToContext('test-context', boundPath);
+    
+    // Clear cache to pick up newly bound path
+    ctx.clearCache();
+    const roots = ctx.getWorkspaceRoots();
+
+    expect(roots).toContain(path.resolve(boundPath));
+    expect(roots).not.toContain(path.resolve(os.homedir()));
+    expect(roots.length).toBe(1);
+  });
+
+  it('Bug #1 (Consolidation Paradox): file-less consolidation does not inflate incoming_count from superseded children', () => {
+    const m1 = ctx.addMemory('fact', 'Orphan Perf Fact 1', 'Cache line size is 64 bytes.', ['perf']);
+    const m2 = ctx.addMemory('fact', 'Orphan Perf Fact 2', 'Avoid false sharing across threads.', ['perf']);
+
+    const { consolidatedId, mergedCount } = ctx.consolidateNeighborhood(undefined, {
+      memory_ids: [m1, m2],
+      title: 'CPU Cache Performance Guide'
+    });
+    expect(mergedCount).toBe(2);
+    expect(consolidatedId).toMatch(/^mem_/);
+
+    // The superseded children have part_of -> consolidatedId, but those must NOT count as active incoming connections
+    const list = ctx.listMemoriesWithStats();
+    expect(list.length).toBe(1);
+    expect(list[0].id).toBe(consolidatedId);
+    expect(list[0].incoming_count).toBe(0);
+    expect(list[0].outgoing_count).toBe(0);
+    expect(list[0].total_connections).toBe(0);
+
+    // Must still appear in orphansOnly until linked to a file or active concept
+    const orphans = ctx.listMemoriesWithStats({ orphansOnly: true });
+    expect(orphans.map(o => o.id)).toContain(consolidatedId);
+  });
+
+  it('Bug #2 (Non-File Memory Discovery): recallTopMemories and searchMemories exclude codemap and superseded nodes and populate content_snippet', () => {
+    // Add 5 codemap file nodes with confidence 1.0
+    for (let i = 0; i < 5; i++) {
+      ctx.addMemory('codemap', `[File] src/file${i}.ts`, `File Node: src/file${i}.ts`, [], 'auto-scan', `file_src_file${i}_ts`);
+    }
+
+    // Add 2 micro-memories and consolidate them so they become superseded
+    const m1 = ctx.addMemory('fact', 'Superseded Micro 1', 'UniqueTokenAlpha in micro 1');
+    const m2 = ctx.addMemory('fact', 'Superseded Micro 2', 'UniqueTokenAlpha in micro 2');
+    const { consolidatedId } = ctx.consolidateNeighborhood(undefined, {
+      memory_ids: [m1, m2],
+      title: 'Workspace VTune Guide'
+    });
+
+    // recallTopMemories must NOT return any codemap or superseded micro-memory
+    const top = ctx.recallTopMemories(5);
+    expect(top.length).toBe(1);
+    expect(top[0].id).toBe(consolidatedId);
+    expect(top[0].type).toBe('guide');
+    expect(top[0].content_snippet).toContain('UniqueTokenAlpha');
+
+    // searchMemories must also exclude codemaps and superseded micro-memories
+    const searchRes = ctx.searchMemories('UniqueTokenAlpha', false);
+    expect(searchRes.map(r => r.id)).toEqual([consolidatedId]);
+
+    const codemapSearch = ctx.searchMemories('File Node', false);
+    expect(codemapSearch.length).toBe(0);
+  });
+
+  it('Bug #3 (Self-Loop Guard): addRelation rejects self-loops', () => {
+    const id = ctx.addMemory('concept', 'Domain Model', 'Core domain concept');
+    const added = ctx.addRelation(id, id, 'related_to');
+    expect(added).toBe(false);
+    expect(ctx.getMemory(id)?.metadata.relations).toEqual([]);
+  });
+
+  it('Bug #4 (Consolidation Cycles, Mixed Attached+Orphan, Positional IDs & Heading): handles intra-batch edges and mixed orphans cleanly', () => {
+    // 4a. Intra-batch edge m1 -> m2 must NOT be copied onto consolidatedId (would create a cycle)
+    const m1 = ctx.addMemory('fact', 'Batch Node A', 'First node');
+    const m2 = ctx.addMemory('fact', 'Batch Node B', 'Second node');
+    ctx.addRelation(m1, m2, 'related_to');
+
+    // Positional disambiguation: passing m1 as targetFileOrId and [m2] as memory_ids
+    const res1 = ctx.consolidateNeighborhood(m1, [m2]);
+    expect(res1.mergedCount).toBe(2);
+    const guide1 = ctx.getMemory(res1.consolidatedId);
+    expect(guide1).not.toBeNull();
+    // Guide must not have an outgoing relation to m1 or m2
+    expect(guide1!.metadata.relations).toEqual([]);
+    // Heading must not double-prefix "Consolidated Guide for Consolidated Guide:"
+    expect(guide1!.content).not.toContain('Consolidated Guide for Consolidated Guide:');
+
+    // 4b. Mixed 1 attached memory + 1 unattached orphan memory consolidated onto target file
+    const mAttached = ctx.addMemory('warning', 'Attached Warning', 'Anchored to config.ts', [], 'manual', undefined, 'src/core/config.ts');
+    const mOrphan = ctx.addMemory('fact', 'Unattached Config Fact', 'Related config invariant that forgot target');
+
+    const res2 = ctx.consolidateNeighborhood('src/core/config.ts', {
+      memory_ids: [mAttached, mOrphan],
+      title: 'Unified Config Guide'
+    });
+    expect(res2.mergedCount).toBe(2);
+    const guide2 = ctx.getMemory(res2.consolidatedId);
+    expect(guide2?.metadata.relations.some(r => r.target === 'file_src_core_config_ts')).toBe(true);
+  });
+
+  it('Bug #5 (Path Tokenization in suggestCandidateTargets & Tag Cluster Candidates): splits file path segments for FTS and detects disconnected tag clusters', () => {
+    // Existing memory with "profiler" in title/content
+    const existingId = ctx.addMemory('concept', 'VTune Profiler Architecture', 'Hardware performance counter sampling architecture.');
+
+    // New orphan memory referencing a slash/dot path "src/utils/profiler.ts"
+    const orphanId = ctx.addMemory('fact', 'Sampling Interval Rule', 'Check src/utils/profiler.ts for 10ms interval.');
+    const suggestions = ctx.suggestCandidateTargets(orphanId, 3);
+    expect(suggestions.map(s => s.id)).toContain(existingId);
+
+    // 3 disconnected memories sharing #vtune should surface as a tag cluster in findConsolidationCandidates
+    ctx.addMemory('fact', 'VTune Note 1', 'First vtune note', ['vtune']);
+    ctx.addMemory('fact', 'VTune Note 2', 'Second vtune note', ['vtune']);
+    ctx.addMemory('guide', 'VTune Note 3', 'Third vtune note', ['vtune']);
+
+    const candidates = ctx.findConsolidationCandidates(3);
+    const vtuneCluster = candidates.find(c => c.target === '#vtune');
+    expect(vtuneCluster).toBeDefined();
+    expect(vtuneCluster?.memoryCount).toBe(3);
+  });
+
+  it('verifies symmetric outgoing_count filtering and unanchored island detection', () => {
+    // 1. Symmetric outgoing_count filtering:
+    // Create an active memory mActive and a micro-memory mMicro
+    const mActive = ctx.addMemory('fact', 'Active Invariant', 'Active contract');
+    const mMicro1 = ctx.addMemory('fact', 'Micro Note 1', 'Detail 1');
+    const mMicro2 = ctx.addMemory('fact', 'Micro Note 2', 'Detail 2');
+
+    // Consolidate mMicro1 and mMicro2 so they become superseded
+    ctx.consolidateNeighborhood(undefined, {
+      memory_ids: [mMicro1, mMicro2],
+      title: 'Consolidated Micro Guide'
+    });
+
+    // Add relation from mActive -> mMicro1 (superseded target) and to a ghost ID
+    ctx.addRelation(mActive, mMicro1, 'references');
+    ctx.addRelation(mActive, 'mem_ghost_nonexistent', 'related_to');
+
+    // listMemoriesWithStats: mActive's outgoing_count must be 0 because both targets are not active memories
+    const stats1 = ctx.listMemoriesWithStats({ includeConsolidated: false });
+    const activeStat = stats1.find(s => s.id === mActive);
+    expect(activeStat).toBeDefined();
+    expect(activeStat?.outgoing_count).toBe(0);
+
+    // 2. Unanchored 2-Node Memory Island:
+    // memA and memB link to each other, but not to any file vertex
+    const memA = ctx.addMemory('fact', 'Island Node A', 'Concept note A');
+    const memB = ctx.addMemory('fact', 'Island Node B', 'Concept note B');
+    ctx.addRelation(memA, memB, 'supports');
+    ctx.addRelation(memB, memA, 'references');
+
+    const statsIsland = ctx.listMemoriesWithStats();
+    const statA = statsIsland.find(s => s.id === memA)!;
+    const statB = statsIsland.find(s => s.id === memB)!;
+
+    expect(statA.total_connections).toBeGreaterThan(0);
+    expect(statB.total_connections).toBeGreaterThan(0);
+    expect(statA.file_connections).toBe(0);
+    expect(statA.is_anchored).toBe(false);
+    expect(statB.file_connections).toBe(0);
+    expect(statB.is_anchored).toBe(false);
+
+    // Filter by unanchoredOnly should include both island memories
+    const unanchored = ctx.listMemoriesWithStats({ unanchoredOnly: true });
+    expect(unanchored.map(u => u.id)).toContain(memA);
+    expect(unanchored.map(u => u.id)).toContain(memB);
+
+    // Anchor memA to a file vertex
+    ctx.addMemory('codemap', '[File] src/engine.ts', 'File Node: src/engine.ts', [], 'auto-scan', 'file_src_engine_ts');
+    ctx.addRelation(memA, 'src/engine.ts', 'affects');
+
+    const statsAfterAnchor = ctx.listMemoriesWithStats();
+    const statAAnchored = statsAfterAnchor.find(s => s.id === memA)!;
+    expect(statAAnchored.file_connections).toBe(1);
+    expect(statAAnchored.is_anchored).toBe(true);
+
+    const unanchoredAfter = ctx.listMemoriesWithStats({ unanchoredOnly: true });
+    expect(unanchoredAfter.map(u => u.id)).not.toContain(memA);
+  });
+
+  it('should ignore incoming relations from non-existent ghost source memories', async () => {
+    const memTarget = ctx.addMemory('fact', 'Valid Target', 'Content for target');
+
+    // Manually insert a dangling relation from a non-existent ghost source
+    ctx.getDb().pragma('foreign_keys = OFF');
+    ctx.getDb().prepare(`
+      INSERT INTO relations (source_id, target_id, type)
+      VALUES (?, ?, ?)
+    `).run('mem_ghost_nonexistent', memTarget, 'references');
+    ctx.getDb().pragma('foreign_keys = ON');
+
+    const stats = ctx.listMemoriesWithStats();
+    const targetStat = stats.find(s => s.id === memTarget)!;
+    expect(targetStat.incoming_count).toBe(0);
+    expect(targetStat.total_connections).toBe(0);
+    expect(targetStat.is_anchored).toBe(false);
+
+    // Should still be returned by orphansOnly filter
+    const orphans = ctx.listMemoriesWithStats({ orphansOnly: true });
+    expect(orphans.map(o => o.id)).toContain(memTarget);
+  });
 });
+
 

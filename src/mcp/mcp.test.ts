@@ -34,15 +34,71 @@ describe('StormDrainMcpServer Protocol', () => {
     delete process.env.STORMDRAIN_TEST_DIR;
   });
 
-  it('should list available StormDrain MCP tools', async () => {
+  it('should list lean consolidated StormDrain MCP tools', async () => {
     const response = await client.listTools();
     const toolNames = response.tools.map(t => t.name);
 
-    expect(toolNames).toContain('sd_read');
-    expect(toolNames).toContain('sd_recall');
-    expect(toolNames).toContain('sd_search');
-    expect(toolNames).toContain('sd_add');
-    expect(toolNames).toContain('sd_update');
+    expect(toolNames).toEqual(['sd_read', 'sd_recall', 'sd_memory']);
+    expect(toolNames.length).toBe(3);
+  });
+
+  it('should execute sd_memory tool with action: add, search, get, delete', async () => {
+    // 1. Add memory via sd_memory
+    const addRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'fact',
+        title: 'Consolidated Fact',
+        content: 'Content created via sd_memory add action',
+        tags: ['consolidated', 'mcp']
+      }
+    });
+    const addText = (addRes as any).content[0].text;
+    expect(addText).toContain('Successfully added memory mem_');
+    const memId = addText.match(/mem_[a-f0-9]+/)?.[0];
+    expect(memId).toBeDefined();
+
+    // 2. Search via sd_memory
+    const searchRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'search',
+        query: 'Consolidated Fact'
+      }
+    });
+    expect((searchRes as any).content[0].text).toContain('Consolidated Fact');
+
+    // 3. Get via sd_memory
+    const getRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'get',
+        id: memId
+      }
+    });
+    expect((getRes as any).content[0].text).toContain('Consolidated Fact');
+
+    // 4. Delete via sd_memory
+    const delRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'delete',
+        id: memId
+      }
+    });
+    expect((delRes as any).content[0].text).toContain('Successfully deleted memory');
+
+    // 5. Validation error handling
+    const invalidRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        title: 'Missing Content'
+      }
+    });
+    expect((invalidRes as any).isError).toBe(true);
+    expect((invalidRes as any).content[0].text).toContain('Validation Error');
   });
 
 
@@ -450,18 +506,279 @@ describe('StormDrainMcpServer Protocol', () => {
     expect(text).toContain('Target Guardrail');
   });
 
-  it('should strictly reject sd_add with non-canonical types', async () => {
+  it('should strictly isolate mutating writes across multiple registered contexts by target path', async () => {
+    const configManager = (mcpServer as any).config;
+    const projADir = path.join(testDir, 'proj-a');
+    const projBDir = path.join(testDir, 'proj-b');
+    fs.mkdirSync(projADir, { recursive: true });
+    fs.mkdirSync(projBDir, { recursive: true });
+
+    configManager.addContext('tenant-a', [projADir]);
+    configManager.addContext('tenant-b', [projBDir]);
+
+    // Write targeting Project A
+    const resA = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'fact',
+        title: 'Project A Architectural Axiom',
+        content: 'Exclusive to Project A',
+        target_file: path.join(projADir, 'index.ts')
+      }
+    });
+    expect((resA as any).isError).toBeFalsy();
+    const textA = ((resA as any).content[0] as any).text;
+    expect(textA).toContain('to context "tenant-a"');
+
+    // Write targeting Project B
+    const resB = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'decision',
+        title: 'Project B Decision Record',
+        content: 'Exclusive to Project B',
+        target_file: path.join(projBDir, 'index.ts')
+      }
+    });
+    expect((resB as any).isError).toBeFalsy();
+    const textB = ((resB as any).content[0] as any).text;
+    expect(textB).toContain('to context "tenant-b"');
+
+    // Search Project A: should not see Project B
+    const searchA = await client.callTool({
+      name: 'sd_search',
+      arguments: {
+        query: 'Exclusive',
+        context: 'tenant-a'
+      }
+    });
+    const searchTextA = ((searchA as any).content[0] as any).text;
+    expect(searchTextA).toContain('Project A Architectural Axiom');
+    expect(searchTextA).not.toContain('Project B Decision Record');
+
+    // Search Project B: should not see Project A
+    const searchB = await client.callTool({
+      name: 'sd_search',
+      arguments: {
+        query: 'Exclusive',
+        context: 'tenant-b'
+      }
+    });
+    const searchTextB = ((searchB as any).content[0] as any).text;
+    expect(searchTextB).toContain('Project B Decision Record');
+    expect(searchTextB).not.toContain('Project A Architectural Axiom');
+  });
+
+  it('should fail closed when performing mutating operations on unmapped workspaces in a multi-tenant environment', async () => {
+    const configManager = (mcpServer as any).config;
+    configManager.addContext('some-active-tenant', [path.join(testDir, 'active-tenant')]);
+
+    const unmappedDir = path.join(testDir, 'completely-unmapped');
+    fs.mkdirSync(unmappedDir, { recursive: true });
+
     const res = await client.callTool({
       name: 'sd_add',
       arguments: {
-        type: 'invariant',
-        title: 'Legacy Invariant',
-        content: 'Should be rejected'
+        type: 'fact',
+        title: 'Unmapped Write Attempt',
+        content: 'Should fail closed',
+        target_file: path.join(unmappedDir, 'file.ts')
       }
     });
+
     expect((res as any).isError).toBe(true);
-    expect(((res as any).content[0] as any).text).toContain('Invalid memory type "invariant"');
+    const text = ((res as any).content[0] as any).text;
+    expect(text).toContain('Cannot perform mutating operation "sd_add"');
+    expect(text).toContain('workspace path does not belong to any registered StormDrain context');
+  });
+
+  it('should resolve context by probing memory ID in multi-tenant environments', async () => {
+    const configManager = (mcpServer as any).config;
+    const projCDir = path.join(testDir, 'proj-c');
+    fs.mkdirSync(projCDir, { recursive: true });
+    configManager.addContext('tenant-c', [projCDir]);
+
+    // Add memory to tenant-c
+    const addRes = await client.callTool({
+      name: 'sd_add',
+      arguments: {
+        type: 'fact',
+        title: 'Probed Memory',
+        content: 'Memory to probe by ID',
+        target_file: path.join(projCDir, 'module.ts')
+      }
+    });
+    const addText = ((addRes as any).content[0] as any).text;
+    const memId = addText.split('Successfully added memory ')[1].split(' ')[0].trim();
+
+    // Call sd_get with only memory ID and no context or path clues
+    const getRes = await client.callTool({
+      name: 'sd_get',
+      arguments: {
+        id: memId
+      }
+    });
+
+    expect((getRes as any).isError).toBeFalsy();
+    const getText = ((getRes as any).content[0] as any).text;
+    expect(getText).toContain('Probed Memory');
+    expect(getText).toContain('tenant-c');
+  });
+
+  it('should browse memories with connection counts via sd_memory action: list, emit type-aware nudges, and link orphans via action: relate', async () => {
+    // 1. Add a connected memory
+    const connectedRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'fact',
+        title: 'Anchored Profiler Config',
+        content: 'VTune sampling configuration in profiler module',
+        target: 'src/utils/profiler.ts',
+        tags: ['performance']
+      }
+    });
+    const connectedText = ((connectedRes as any).content[0] as any).text;
+    expect(connectedText).not.toContain('0 connections (disconnected node)');
+    const connectedId = connectedText.match(/mem_[a-f0-9]+/)?.[0];
+
+    // 2. Add a disconnected guide (0 connections) — should emit type-aware workspace-wide guide note + candidate target suggestion
+    const orphanRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'guide',
+        title: 'VTune Profiler Steps',
+        content: 'Steps to run VTune profiler sampling on Linux',
+        tags: ['performance']
+      }
+    });
+    const orphanText = ((orphanRes as any).content[0] as any).text;
+    expect(orphanText).toContain('0 file/graph connections');
+    expect(orphanText).toContain('Suggested candidate targets in graph');
+    expect(orphanText).toContain(connectedId);
+    const orphanId = orphanText.match(/mem_[a-f0-9]+/)?.[0];
+
+    // 3. List all memories via sd_memory(action="list") — disconnected node should appear first with 0 connections
+    const listRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list'
+      }
+    });
+    const listText = ((listRes as any).content[0] as any).text;
+    expect(listText).toContain('2 memories, 1 disconnected [0 connections]');
+    expect(listText).toContain(`${orphanId} | **0 connections** ⚠️ DISCONNECTED`);
+    expect(listText).toContain(`${connectedId} | **1 connection(s)** (1 out, 0 in, 1 file)`);
+
+    // 4. Filter orphans_only via sd_memory(action="list", orphans_only=true)
+    const orphansOnlyRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list',
+        orphans_only: true
+      }
+    });
+    const orphansOnlyText = ((orphansOnlyRes as any).content[0] as any).text;
+    expect(orphansOnlyText).toContain('VTune Profiler Steps');
+    expect(orphansOnlyText).not.toContain('Anchored Profiler Config');
+
+    // 5. Link the orphan to the connected memory via sd_memory(action="relate")
+    // Also verify Bug #3 fix: passing a MemoryType in `type` ("guide") does NOT overwrite `relation_type` ("related_to")
+    const relateRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'relate',
+        id: orphanId,
+        target: connectedId,
+        type: 'guide',
+        relation_type: 'related_to'
+      }
+    });
+    const relateText = ((relateRes as any).content[0] as any).text;
+    expect(relateText).toContain(`Successfully linked memory ${orphanId} -> ${connectedId} with relation "related_to"`);
+
+    // Attempting a self-loop via sd_memory(action="relate") must return an error
+    const selfLoopRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'relate',
+        id: orphanId,
+        target: orphanId
+      }
+    });
+    expect((selfLoopRes as any).isError).toBe(true);
+    expect(((selfLoopRes as any).content[0] as any).text).toContain('self-loop');
+
+    // 6. Verify connection counts updated (0 disconnected remaining; connectedId now has 1 out + 1 in = 2 connections)
+    const listAfterRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list'
+      }
+    });
+    const listAfterText = ((listAfterRes as any).content[0] as any).text;
+    expect(listAfterText).toContain('2 memories, 1 unanchored island(s) [no file connections]');
+    expect(listAfterText).toContain(`${orphanId} | **1 connection(s)** (1 out, 0 in) ⚠️ UNANCHORED ISLAND`);
+    expect(listAfterText).toContain(`${connectedId} | **2 connection(s)** (1 out, 1 in, 1 file)`);
+  });
+
+  it('should support file-less consolidation of disconnected memories and still report 0 connections until anchored (Consolidation Paradox fix)', async () => {
+    const r1 = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'fact',
+        title: 'SIMD Alignment Note 1',
+        content: 'AVX-512 requires 64-byte alignment for aligned loads.',
+        tags: ['simd', 'performance']
+      }
+    });
+    const r1Text = ((r1 as any).content[0] as any).text;
+    // fact with 0 connections gets the strong disconnected node warning
+    expect(r1Text).toContain('0 connections (disconnected node)');
+    const id1 = r1Text.match(/mem_[a-f0-9]+/)?.[0];
+
+    const r2 = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'add',
+        type: 'guide',
+        title: 'SIMD Profiling Note 2',
+        content: 'Check unaligned load penalties in hardware counters.',
+        tags: ['simd', 'profiling']
+      }
+    });
+    const id2 = ((r2 as any).content[0] as any).text.match(/mem_[a-f0-9]+/)?.[0];
+
+    const consRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'consolidate',
+        memory_ids: [id1, id2],
+        title: 'SIMD Performance & Profiling Guide'
+      }
+    });
+    const consText = ((consRes as any).content[0] as any).text;
+    expect(consText).toContain('Successfully consolidated 2 micro-memories into super-memory');
+    const superId = consText.match(/mem_[a-f0-9]+/)?.[0];
+    expect(superId).toBeDefined();
+
+    // Verify Bug #1 (Consolidation Paradox) fix: superseded part_of children do NOT inflate incoming_count,
+    // so the unanchored consolidated guide still shows 0 connections (DISCONNECTED) until linked
+    const listRes = await client.callTool({
+      name: 'sd_memory',
+      arguments: {
+        action: 'list'
+      }
+    });
+    const listText = ((listRes as any).content[0] as any).text;
+    expect(listText).toContain('SIMD Performance & Profiling Guide');
+    expect(listText).toContain(`${superId} | **0 connections** ⚠️ DISCONNECTED`);
+    expect(listText).not.toContain('SIMD Alignment Note 1');
   });
 });
+
+
 
 

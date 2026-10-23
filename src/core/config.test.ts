@@ -194,15 +194,30 @@ describe('ConfigManager', () => {
     expect(config.bindPathToContext('_global', os.homedir())).toBe(true);
   });
 
-  it('should unbind path from context', () => {
+  it('should prevent duplicate identical path bindings across distinct contexts', () => {
     const config = new ConfigManager();
-    const fakePath = path.join(testDir, 'workspace');
-    config.addContext('proj-unbind', [fakePath]);
+    const sharedPath = path.join(testDir, 'shared-workspace');
+    config.addContext('project-first', [sharedPath]);
+    config.addContext('project-second', []);
 
-    expect(config.getContext('proj-unbind')?.paths).toContain(fakePath);
-    expect(config.unbindPathFromContext('proj-unbind', fakePath)).toBe(true);
-    expect(config.getContext('proj-unbind')?.paths).not.toContain(fakePath);
-    expect(config.unbindPathFromContext('proj-unbind', fakePath)).toBe(false);
+    // Binding the exact same path to project-second should return false
+    const bound = config.bindPathToContext('project-second', sharedPath);
+    expect(bound).toBe(false);
+    expect(config.getContext('project-second')?.paths).not.toContain(sharedPath);
+
+    // Re-binding to the same context should also return false without duplicating
+    const rebind = config.bindPathToContext('project-first', sharedPath);
+    expect(rebind).toBe(false);
+    expect(config.getContext('project-first')?.paths?.filter(p => p === sharedPath).length).toBe(1);
+  });
+
+  it('should atomically write config updates to disk', () => {
+    const config = new ConfigManager();
+    config.addContext('atomic-ctx', ['/path/atomic']);
+    
+    // File exists and is valid JSON
+    const content = JSON.parse(fs.readFileSync(path.join(testDir, 'config.json'), 'utf8'));
+    expect(content.contexts['atomic-ctx']).toBeDefined();
   });
 });
 

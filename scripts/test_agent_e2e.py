@@ -52,7 +52,7 @@ def main():
 
     # 2. Start stormdrain-agent.py pointing to port 3999
     agent_proc = subprocess.Popen(
-        ["python3", "scripts/stormdrain-agent.py", "--server-url", server_url],
+        [sys.executable, "scripts/stormdrain-agent.py", "--server-url", server_url],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -83,13 +83,13 @@ def main():
         assert init_res.get("result", {}).get("capabilities", {}).get("prompts") is not None, "Prompts capability missing"
         assert init_res.get("result", {}).get("capabilities", {}).get("tools") is not None, "Tools capability missing"
 
-        # Step 0b: Test tools/list has all 13 tools
+        # Step 0b: Test tools/list has 3 consolidated tools
         print("Testing tools/list...")
         tools_res = send_rpc({"jsonrpc": "2.0", "id": "tools-1", "method": "tools/list", "params": {}})
         tool_names = [t["name"] for t in tools_res.get("result", {}).get("tools", [])]
         print("Tools returned:", tool_names)
-        assert len(tool_names) == 13, f"Expected 13 tools, got {len(tool_names)}: {tool_names}"
-        for expected in ["sd_read", "sd_recall", "sd_search", "sd_get", "sd_delete", "sd_consolidation_candidates", "sd_add", "sd_update", "sd_relate", "sd_scan", "sd_init", "sd_consolidate", "sd_prune"]:
+        assert len(tool_names) == 3, f"Expected 3 tools, got {len(tool_names)}: {tool_names}"
+        for expected in ["sd_read", "sd_recall", "sd_memory"]:
             assert expected in tool_names, f"Missing tool: {expected}"
 
         # Step 0c: Test prompts/list
@@ -114,11 +114,11 @@ def main():
         # Step A: Add a memory (non-canonical on feature/cuda branch)
         print("Testing sd_add...")
         res = call_tool(1, "sd_add", {
-            "type": "invariant",
+            "type": "fact",
             "title": "Matrix Multiplication Block Size",
             "content": "Tile sizes for GEMM kernels must be multiples of 16 for tensor cores.",
             "target_file": "sim/kernel.cu",
-            "tags": ["gpu", "cuda"],
+            "tags": ["gpu", "cuda", "invariant"],
             "is_canonical": False
         })
         text = res.get("result", {}).get("content", [{}])[0].get("text", "")
@@ -170,6 +170,67 @@ def main():
         assert "Matrix Multiplication Block Size" in read_text_norm
 
         mem_id = [part for part in text.split() if part.startswith("mem_")][0]
+
+        # Step F: Test sd_memory action=add
+        print("Testing sd_memory action=add...")
+        res_mem_add = call_tool(6, "sd_memory", {
+            "action": "add",
+            "type": "warning",
+            "title": "Consolidated Memory Action Test",
+            "content": "Verify that sd_memory routes correctly in thin agent.",
+            "target": "sim/kernel.cu",
+            "tags": ["testing", "sd_memory"]
+        })
+        mem_add_text = res_mem_add.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_memory add result:", mem_add_text)
+        assert "Successfully added memory" in mem_add_text
+        sd_mem_id = [part for part in mem_add_text.split() if part.startswith("mem_")][0]
+
+        # Step G: Test sd_memory action=search
+        print("Testing sd_memory action=search...")
+        res_mem_search = call_tool(7, "sd_memory", {
+            "action": "search",
+            "query": "Consolidated Memory Action Test"
+        })
+        mem_search_text = res_mem_search.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_memory search result:", mem_search_text)
+        assert "Consolidated Memory Action Test" in mem_search_text
+
+        # Step H: Test sd_memory action=get
+        print("Testing sd_memory action=get...")
+        res_mem_get = call_tool(8, "sd_memory", {
+            "action": "get",
+            "id": sd_mem_id
+        })
+        mem_get_text = res_mem_get.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert sd_mem_id in mem_get_text
+
+        # Step H2: Test sd_memory action=delete
+        print("Testing sd_memory action=delete...")
+        res_mem_del = call_tool(81, "sd_memory", {
+            "action": "delete",
+            "id": sd_mem_id
+        })
+        mem_del_text = res_mem_del.get("result", {}).get("content", [{}])[0].get("text", "")
+        assert "Successfully deleted memory" in mem_del_text
+
+        # Step H3: Test sd_memory action=consolidate
+        print("Testing sd_memory action=consolidate...")
+        for i in range(3):
+            call_tool(82 + i, "sd_memory", {
+                "action": "add",
+                "type": "fact",
+                "title": f"Consolidation Item {i}",
+                "content": f"Detail {i} for consolidation verification.",
+                "target": "sim/kernel.cu"
+            })
+        res_mem_cons = call_tool(85, "sd_memory", {
+            "action": "consolidate",
+            "target": "sim/kernel.cu"
+        })
+        mem_cons_text = res_mem_cons.get("result", {}).get("content", [{}])[0].get("text", "")
+        print("sd_memory consolidate result:", mem_cons_text)
+        assert "Successfully consolidated" in mem_cons_text
 
         # Step I: Slashed branch promotion test via HTTP REST API body
         print("Testing slashed branch promote route (POST /api/branches/promote)...")

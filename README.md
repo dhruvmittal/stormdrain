@@ -1,113 +1,197 @@
 # StormDrain 🧠
 
-StormDrain is a persistent memory layer for software engineering agents. It combines the compounding knowledge base of an LLM Wiki with the cross-session memory of Lemma, and the deep code intelligence of TokenSave into a unified Model Context Protocol (MCP) tool.
+StormDrain is a persistent memory layer and architectural invariant tracker for AI software engineering agents. It pairs graph-backed SQLite storage and automated Git versioning with an **Asymmetric Localized PageRank** engine, SHA-256 confidence decay, automated micro-memory consolidation, and a Vite-based React Web UI.
 
-StormDrain acts as the long-term memory for your AI pair programmer. Everything your agent learns (facts, patterns, architectural decisions, mistakes) is saved as Markdown files, tracked in Git, and instantly recalled via a fast SQLite FTS5 index.
+StormDrain supports both terminal and MCP agent workflows:
+- **CLI-First**: Native CLI commands (`read`, `recall`, `add`, `search`, `consolidate`) with pure `--json` flags and stdin/file pipes for terminal agents.
+- **Lean MCP Server**: 3 core tools (`sd_read`, `sd_recall`, `sd_memory`) with backward compatibility for legacy granular calls.
+- **Remote Thin Agent**: Zero-dependency Python client (`scripts/stormdrain-agent.py`, stock Python 3.6+) for remote VMs over SSH tunnels.
 
-## Features
+---
 
-- **Context Isolation:** Keep client projects separate. What an agent learns on Project A won't bleed into Project B.
-- **Auto-Versioning:** Every memory update is debounced and committed to a local Git repository automatically.
-- **Hybrid Injection:** Crucial memories are seamlessly injected into the agent's tool descriptions for zero-effort recall.
-- **Web UI & Graph Visualization:** A local, dark-mode React dashboard to browse your memories and see how they connect via D3.js force-directed graphs.
-- **TokenSave Integration:** Seamlessly delegates to TokenSave when available for deep code graph analysis.
+## Key Features
+
+- **Context Isolation**: Independent namespaces under `~/.stormdrain/contexts/` with workspace directory bindings. What an agent learns in Project A never bleeds into Project B.
+- **Automated Git Versioning**: Every memory update is committed to a local, isolated Git repository automatically with SHA-256 drift detection.
+- **Topological Invariant Injection (`sd_read` / `stormdrain read`)**: Automatically injects architectural invariants, upstream caller constraints, and symbol outlines when viewing source code.
+- **Multi-Hop Pre-Action Recall (`sd_recall` / `stormdrain recall`)**: Andersen-Chung-Lang (ACL) PageRank push traverses repository dependency DAGs to warn agents of breaking contracts and caller risks before edits occur.
+- **Micro-Memory Consolidation**: Merges fragmented micro-memories attached to a file or concept vertex into a consolidated architectural guide.
+- **Interactive Web UI**: Local React dark-mode dashboard with bidirectional sorting, type filtering, confidence decay visualization, and D3 force-directed knowledge graph inspection.
 
 ---
 
 ## Installation
 
 ### Prerequisites
-- Node.js (v24+)
+- Node.js (v20+)
 - SQLite3 build tools (Python 3, GCC/Make)
 
 ### Build from Source
 ```bash
-git clone <your-repo>/stormdrain.git
+git clone https://github.com/dhruvmittal/stormdrain.git
 cd stormdrain
 npm install
 npm run build
 npm link
 ```
-This will install `stormdrain` globally on your system.
+This installs the `stormdrain` CLI globally on your system.
 
 ---
 
-## 🔌 MCP Client Configuration
+## 🖥️ Command Line Interface
 
-StormDrain runs as an MCP server over `stdio`. Below are the configuration snippets to connect StormDrain to your favorite AI agent environments.
+StormDrain provides a first-class CLI designed for human developers and autonomous terminal agents (such as OpenCode, Claude Code, and Aider). Primary querying and mutation commands support pure `--json` output and stdin/file piping.
 
-### OpenCode
+### Quick Start
+```bash
+# Read source code with automatic topological invariant injection
+stormdrain read src/core/context.ts
 
-Add the following to your `opencode.json` configuration file:
+# Multi-hop pre-action recall before modifying code
+stormdrain recall -t src/core/context.ts [--json]
 
-```json
-{
-  "mcpServers": {
-    "stormdrain": {
-      "command": "stormdrain",
-      "args": ["serve"]
-    }
-  }
-}
-```
-*(If you didn't run `npm link`, replace the command with `"node"` and the args with `["/absolute/path/to/stormdrain/dist/index.js", "serve"]`)*
+# Record discoveries, invariants, or ADRs (supports stdin "-" and "--file")
+stormdrain add warning "Lock Contention" "High write concurrency causes BUSY in WAL mode" -t src/core/context.ts
+stormdrain add fact "Architecture Rule" --file ./docs/invariants.md -t src/cli/index.ts --json
+echo "Pipe content directly" | stormdrain add decision "ADR 004" - -t src/core/context.ts --json
 
-### Antigravity
+# Search, inspect, and consolidate
+stormdrain search "WAL lock" [--json]
+stormdrain get mem_83050d448bb2 [--json]
+stormdrain consolidate src/core/context.ts [--json]
 
-For Google's Antigravity, add this server block to your `~/.gemini/antigravity/mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "stormdrain": {
-      "command": "stormdrain",
-      "args": ["serve"]
-    }
-  }
-}
+# Start MCP stdio server or Web UI
+stormdrain serve [dir]   # MCP server over stdio (alias: stormdrain mcp)
+stormdrain web -p 3456   # Web UI dashboard & REST API
 ```
 
-### Claude Code
+<details>
+<summary><b>📖 Full CLI Command Reference & Flags</b></summary>
 
-For Anthropic's Claude Code, you can register the MCP server directly via the CLI:
+<br>
+
+#### 1. File Reader (`read`)
+Read source code from disk with injected architectural invariants, upstream caller constraints, and AST symbol outlines:
+```bash
+# Read entire file with invariant header and symbols
+stormdrain read src/core/context.ts
+
+# Slice line ranges (1-indexed)
+stormdrain read src/core/context.ts -s 10 -e 45
+stormdrain read src/core/context.ts --offset 50 --limit 20
+
+# Disable symbol outline or invariant injection if needed
+stormdrain read src/core/context.ts --no-invariants
+stormdrain read src/core/context.ts --no-symbols
+```
+
+#### 2. Pre-Action Recall (`recall`)
+Traverse the codebase dependency graph to retrieve invariants before modifying code:
+```bash
+# Recall invariants and caller constraints for a target file
+stormdrain recall -t src/core/context.ts
+
+# Limit results count (-l) or hop depth (-d)
+stormdrain recall -t src/core/context.ts -l 5 -d 2
+
+# Output machine-readable JSON for agents
+stormdrain recall -t src/core/context.ts --json
+
+# Recall top memories across the active context without a file anchor
+stormdrain recall -l 10
+```
+
+#### 3. Adding Memories (`add`)
+Persist new architectural discoveries, invariants, gotchas, or decisions:
+```bash
+# Direct arguments: <type> <title> [content]
+stormdrain add warning "Lock Contention" "High concurrency write locks cause BUSY timeout in SQLite WAL mode" -t src/core/context.ts
+
+# Ingest content from a file
+stormdrain add decision "ADR 005 - ACL PageRank" --file ./docs/adr-005.md -t src/core/context.ts
+
+# Pipe content via stdin ("-", buffered up to 256 KB)
+git diff HEAD~1 | stormdrain add fact "Recent Migration Invariants" - -t src/core/context.ts --json
+
+# Machine-readable JSON output returns assigned ID
+stormdrain add fact "Memory Invariant" "Always check null on targetFile" -t src/core/context.ts --json
+```
+
+#### 4. Search & Inspection (`search`, `get`, `delete`)
+```bash
+# Full-text search (FTS5) across titles, tags, and content
+stormdrain search "WAL lock"
+stormdrain search "timeout" -T warning      # Filter by canonical type
+stormdrain search "WAL lock" --json        # Pure JSON output
+
+# Inspect full details, timestamps, scores, and incoming/outgoing edges
+stormdrain get mem_83050d448bb2
+stormdrain get src/core/context.ts          # Inspect a file vertex in the DAG
+stormdrain get mem_83050d448bb2 --json
+
+# Delete a memory and cascade clean its relational links
+stormdrain delete mem_83050d448bb2
+```
+
+#### 5. Consolidation & Curation (`candidates`, `consolidate`, `harvest`, `curate`)
+```bash
+# Find file vertices with clustered micro-memories
+stormdrain candidates
+stormdrain candidates --threshold 5
+stormdrain candidates --json
+
+# Synthesize clustered micro-memories into a consolidated guide
+stormdrain consolidate src/core/context.ts
+stormdrain consolidate src/core/context.ts mem_123 mem_456 --json
+
+# End-of-session guided prompt instructions
+stormdrain harvest   # Prompts agent to extract invariants from recent work
+stormdrain curate    # Holistic memory curation and pruning sweep
+```
+
+</details>
+
+<details>
+<summary><b>📁 Context & Workspace Management</b></summary>
+
+<br>
+
+Contexts isolate project knowledge under `~/.stormdrain/contexts/`:
 
 ```bash
-claude mcp add stormdrain -- stormdrain serve
-```
+# Initialize and bind a project repository
+stormdrain init my-project /path/to/project
 
----
+# Scaffold or refresh AGENTS.md instruction guidelines
+stormdrain agents -f
 
-## 🖥️ Usage
-
-### Command Line Interface
-
-StormDrain comes with a powerful CLI for human interaction:
-
-```bash
-# Manage contexts
+# List registered contexts and bound filesystem paths
 stormdrain context list
-stormdrain context create my-project
+
+# Bind a workspace directory to an existing context
+stormdrain context bind my-project /path/to/project
+
+# Unbind a workspace directory
+stormdrain context unbind my-project /path/to/old
+
+# Set active context for current shell session
 stormdrain context use my-project
-
-# Manage memories
-stormdrain add lesson "NixOS mkDefault" "Always use mkDefault in NixOS module options to prevent priority conflicts."
-stormdrain search "NixOS"
-stormdrain recall
-
-# Start servers
-stormdrain serve   # Starts the MCP stdio server (for agents)
-stormdrain web     # Starts the Web UI on http://localhost:3456 (for humans)
 ```
 
-### Shell Autocompletion
+</details>
 
-StormDrain supports full shell autocompletion for Bash, Zsh, Fish, and PowerShell with dynamic context-aware suggestions (subcommands, memory types, relation types, and registered context names):
+<details>
+<summary><b>⚡ Shell Autocompletion Setup</b></summary>
+
+<br>
+
+StormDrain supports dynamic shell autocompletion for subcommands, context names, memory types, and relation types:
 
 ```bash
-# Bash (add to ~/.bashrc for persistence)
+# Bash (add to ~/.bashrc)
 source <(stormdrain completion bash)
 
-# Zsh (add to ~/.zshrc for persistence)
+# Zsh (add to ~/.zshrc)
 source <(stormdrain completion zsh)
 
 # Fish
@@ -117,34 +201,193 @@ stormdrain completion fish | source
 stormdrain completion powershell | Out-String | Invoke-Expression
 ```
 
-### The Web UI
+</details>
 
-To visualize the knowledge graph or manage memories visually, start the Web UI:
+<details>
+<summary><b>🤖 Agent Scripting Recipes</b></summary>
+
+<br>
+
+#### Capturing Created Memory IDs with `jq`
 ```bash
-stormdrain web
+MEM_ID=$(stormdrain add fact "CI Test Timeout" "Set Vitest testTimeout to 10000ms" -t vitest.config.ts --json | jq -r .id)
+echo "Created memory ID: ${MEM_ID}"
 ```
-Then navigate to [http://localhost:3456](http://localhost:3456) in your browser to view the Dashboard, the Memory Browser, and the Interactive Graph View.
+
+#### Automated Pre-Edit Recall Verification in Bash Loops
+Before modifying a file, check for active caller constraints:
+```bash
+INVARIANTS=$(stormdrain recall -t "$TARGET_FILE" --json)
+if [ "$INVARIANTS" != "[]" ]; then
+  echo "Active constraints found for $TARGET_FILE:"
+  echo "$INVARIANTS" | jq -r '.[] | "- [\(.type | ascii_upcase)] \(.title)"'
+fi
+```
+
+</details>
+
+---
+
+## 🔌 Model Context Protocol (MCP)
+
+StormDrain runs as an MCP server over `stdio` (`stormdrain serve [dir]` or alias `stormdrain mcp [dir]`), automatically routing requests to the correct project context via filesystem path introspection.
+
+It exposes 3 primary tools:
+
+| Tool | Purpose | Key Parameters |
+| :--- | :--- | :--- |
+| **`sd_read`** | **Primary File Reader**: Reads source files with automatic topological invariant injection, AST symbol outlines, and line slicing. | `path`, `start_line`, `end_line`, `limit`, `include_invariants`, `include_symbols` |
+| **`sd_recall`** | **Pre-Action Recall**: Mandatory check before modifying code. Recalls multi-hop invariants, upstream caller constraints, and downstream rules. | `target_file`, `limit`, `max_depth` |
+| **`sd_memory`** | **Consolidated Memory Manager**: Performs add, search, get, delete, or consolidate actions. | `action` (`add` \| `search` \| `get` \| `delete` \| `consolidate`), `type`, `title`, `content`, `target`, `relation_type`, `query`, `id` |
+
+*(Note: Legacy calls to `sd_add`, `sd_search`, `sd_get`, `sd_delete`, `sd_update`, `sd_relate`, `sd_consolidate`, `sd_scan`, `sd_init`, and `sd_prune` remain fully supported via transparent backward-compatible routing).*
+
+<details>
+<summary><b>⚙️ Client Configuration (OpenCode, Antigravity, Claude Code)</b></summary>
+
+<br>
+
+#### 1. OpenCode
+Add to `opencode.json` (global) or `.opencode/opencode.json` (workspace):
+```json
+{
+  "mcpServers": {
+    "stormdrain": {
+      "command": "stormdrain",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+To pin to the current workspace root in project-local configuration:
+```json
+{
+  "mcpServers": {
+    "stormdrain": {
+      "command": "stormdrain",
+      "args": ["serve", "."]
+    }
+  }
+}
+```
+
+#### 2. Antigravity
+Add to `~/.gemini/antigravity/mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "stormdrain": {
+      "command": "stormdrain",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+#### 3. Claude Code
+Register via the CLI:
+```bash
+# Global
+claude mcp add stormdrain -- stormdrain serve
+
+# Pinned to workspace
+claude mcp add stormdrain -- stormdrain serve .
+```
+
+</details>
+
+<details>
+<summary><b>🌐 Remote Hosts Setup (Zero-Dependency Python Thin Client)</b></summary>
+
+<br>
+
+For remote VMs, cloud GPU clusters, or sandboxed environments where Node.js is unavailable, StormDrain includes a standalone, zero-dependency Python 3.6+ client (`scripts/stormdrain-agent.py`):
+
+```bash
+# Export thin agent from central server
+stormdrain export-agent > stormdrain-agent.py
+scp stormdrain-agent.py remote-vm:~/bin/
+chmod +x ~/bin/stormdrain-agent.py
+```
+
+Configure your remote agent (`mcpServers`):
+```json
+{
+  "mcpServers": {
+    "stormdrain": {
+      "command": "python3",
+      "args": ["/path/to/stormdrain-agent.py"],
+      "env": {
+        "STORMDRAIN_SERVER_URL": "http://localhost:3456",
+        "STORMDRAIN_CONTEXT": "my_project"
+      }
+    }
+  }
+}
+```
+See the **[Remote Setup Guide](docs/remote-client-setup.md)** for SSH tunneling and production configuration.
+
+</details>
+
+<details>
+<summary><b>📖 Detailed Tool Schemas & Action Parameters</b></summary>
+
+<br>
+
+#### `sd_read` Parameters
+- `path` *(required)*: Relative or absolute file path to read.
+- `start_line` / `offset`: 1-indexed start line number.
+- `end_line`: 1-indexed end line number.
+- `limit`: Line count limit from start line.
+- `include_invariants`: Whether to inject architectural invariants and caller constraints (default: `true`).
+- `include_symbols`: Whether to extract and prepend AST symbol outlines (default: `true`).
+
+#### `sd_recall` Parameters
+- `target_file`: File path to inspect for multi-hop topological invariants.
+- `limit`: Maximum memories to recall (default: `10`).
+- `max_depth` / `depth`: Maximum graph hop depth (default: `3`).
+
+#### `sd_memory` Actions & Parameters
+- `action` *(required)*:
+  - `"add"`: Requires `title`, `content`. Optional: `type` (`fact`, `decision`, `guide`, `warning`, `concept`), `target`, `relation_type`, `tags`.
+  - `"search"`: Requires `query`. Optional: `type`.
+  - `"get"`: Requires `id` (memory ID or file vertex path).
+  - `"delete"`: Requires `id` (memory ID to remove).
+  - `"consolidate"`: Requires `target` (target file path). Optional: `memory_ids`.
+
+</details>
 
 ---
 
 ## 🏗️ Architecture & Concepts
 
-1. **Memories**: Typed markdown files (`fact`, `pattern`, `lesson`, `warning`, `guide`, `codemap`) with YAML frontmatter containing metadata like confidence scores and relationships.
-2. **Contexts**: Separate namespaces stored under `~/.stormdrain/contexts/`. Each context contains its own Git repository and SQLite index.
-3. **The Engine**: Uses `better-sqlite3` to maintain an instantaneous FTS5 search index alongside the markdown source of truth.
+### Canonical Memory Types
+- **`fact`**: Verified architectural facts, invariants, and hard constraints.
+- **`decision`**: Architectural Decision Records (ADRs) explaining trade-offs.
+- **`guide`**: Workflows, runbooks, and consolidated super-memories.
+- **`warning`**: Critical gotchas, edge cases, and traps.
+- **`concept`**: Domain models and architectural components.
+
+### Storage Sandboxing (CRITICAL INVARIANT)
+The storage engine under `~/.stormdrain/` is managed strictly by StormDrain. AI agents and scripts must **never** directly inspect, edit, or delete files in `~/.stormdrain`. All interactions must occur via the official CLI (`stormdrain <cmd>`) or MCP tools (`sd_*`).
+
+### Multi-Hop Topological Recall (ACL PageRank)
+To retrieve relevant context across interconnected codebases without recursive BFS context explosions, StormDrain models the repository as a directed dependency graph $G = (V, E)$ and applies an **Asymmetric Localized PageRank (Andersen-Chung-Lang / ACL Push)** algorithm:
+- **Asymmetric Weights**: Downstream dependencies ($W = 0.80$) are weighted higher than upstream callers ($W = 0.25$) to prevent broad utility fan-out.
+- **Capacity-Conditioned Pushes**: Pushes require $\frac{r(u)}{W_{\text{total}}(u)} \ge \epsilon$ where $\epsilon = 10^{-4}$, isolating high-degree sinks.
+- **Consolidation Shield & Tiered Output**: Suppresses micro-memories when a consolidated guide exists, partitioning recall into **Direct Invariants** ($h=0$), **Upstream Caller Constraints** ($h \ge 1$), and **Downstream Dependency Invariants** ($h \ge 1$).
 
 ---
 
-## 🧭 Multi-Hop Topological Recall
+## 🎨 Web UI
 
-To retrieve relevant context across interconnected codebases without the context explosion of recursive BFS, StormDrain models the repository as a directed dependency graph $G = (V, E)$ and applies an **Asymmetric Localized PageRank (Andersen-Chung-Lang / ACL Push)** algorithm:
-
-* **Asymmetric Propagation**: Traversal pushes residual mass from a target file with directional weights—prioritizing downstream dependencies ($W = 0.80$) over upstream callers ($W = 0.25$) to avoid repository-wide fan-out.
-* **Capacity-Conditioned Push**: Pushes require $\frac{r(u)}{W_{\text{total}}(u)} \ge \epsilon$ where $W_{\text{total}}(u) = d_{\text{in}}(u) + d_{\text{out}}(u)$ ($\epsilon = 10^{-4}$), preventing high-degree utility sinks (e.g., global loggers) from triggering runaway exploration.
-* **Cumulative Mass Truncation**: Vertices are sorted by PageRank mass $p(v)$ and cut off once cumulative mass reaches a target threshold ($1 - \delta \ge 0.85$), strictly bounding frontier size.
-* **Hop-Layer Normalization**: Nodes are grouped by shortest-path distance $h(v)$. Mass is normalized against the layer's aggregate mass ($\psi(v) = \frac{p(v)}{\text{LayerMass}_{h(v)}}$) to prevent deep-hop starvation caused by exponential damping.
-* **Consolidation Shield & Tiered Briefings**: Suppresses micro-memories when an attached consolidated guide is present, partitioning context into **Direct Invariants** ($h=0$), **Upstream Caller Constraints** ($h \ge 1$), and **Downstream Dependency Invariants** ($h \ge 1$).
+Start the local Web UI:
+```bash
+stormdrain web -p 3456
+```
+Open [http://localhost:3456](http://localhost:3456) to access the interactive dashboard, D3 force-directed dependency graph, and memory browser.
 
 ---
 
-*Built for advanced agentic coding workflows.*
+*Built for robust agentic software engineering.*

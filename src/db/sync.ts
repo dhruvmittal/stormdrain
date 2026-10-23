@@ -29,6 +29,7 @@ function getStatementCache(db: Database.Database): DbStatementCache {
           title=excluded.title,
           context=excluded.context,
           confidence=excluded.confidence,
+          created=excluded.created,
           updated=excluded.updated,
           accessed=excluded.accessed,
           access_count=excluded.access_count,

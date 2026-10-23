@@ -21,9 +21,26 @@ export class StormDrainMcpServer {
   private reader: FileReader;
   private contextCache: Map<string, ContextManager> = new Map();
 
-  constructor() {
+  private sessionWorkspaceDir?: string;
+  private readonly MUTATING_TOOLS = new Set([
+    'sd_add',
+    'sd_update',
+    'sd_relate',
+    'sd_delete',
+    'sd_consolidate',
+    'sd_scan',
+    'sd_prune'
+  ]);
+
+  constructor(workspaceDirectory?: string) {
     this.config = new ConfigManager();
     this.reader = new FileReader(this.config);
+
+    if (workspaceDirectory) {
+      this.sessionWorkspaceDir = path.resolve(workspaceDirectory);
+    } else if (!ConfigManager.isSystemOrHomeRoot(process.cwd())) {
+      this.sessionWorkspaceDir = path.resolve(process.cwd());
+    }
     
     this.server = new Server(
       {
@@ -41,14 +58,143 @@ export class StormDrainMcpServer {
     this.setupHandlers();
   }
 
-  private getContext(explicitContext?: string): { ctx: ContextManager; targetContext: string } {
-    const targetContext = this.config.resolveContext(explicitContext, process.cwd());
+  private getOrCreateContext(targetContext: string): { ctx: ContextManager; targetContext: string } {
     let ctx = this.contextCache.get(targetContext);
     if (!ctx) {
       ctx = new ContextManager(targetContext);
       this.contextCache.set(targetContext, ctx);
     }
     return { ctx, targetContext };
+  }
+
+  public getContext(explicitContext?: string): { ctx: ContextManager; targetContext: string } {
+    const ws = this.sessionWorkspaceDir || process.cwd();
+    const targetContext = this.config.resolveContext(explicitContext, ws);
+    return this.getOrCreateContext(targetContext);
+  }
+
+  private getContextForRequest(request: any): { ctx: ContextManager; targetContext: string } {
+    const toolName = request?.params?.name;
+    const args = request?.params?.arguments || {};
+    let isMutating = this.MUTATING_TOOLS.has(toolName);
+    if (toolName === 'sd_memory') {
+      const action = args.action;
+      isMutating = action === 'add' || action === 'update' || action === 'relate' || action === 'delete' || action === 'consolidate';
+    }
+
+    // Tier 0: Explicit context argument
+    const explicitContext = (args.context || args.contextName) as string | undefined;
+    if (explicitContext) {
+      const resolvedExplicit = explicitContext === 'global' ? '_global' : explicitContext;
+      if (this.config.getContext(resolvedExplicit)) {
+        return this.getOrCreateContext(resolvedExplicit);
+      }
+    }
+
+    // Tier 1: Target path candidate introspection
+    const isVertexId = (s: string) => s.startsWith('mem_') || s.startsWith('file_');
+    const candidatePaths: string[] = [];
+    const collectCandidate = (val: any) => {
+      if (typeof val === 'string' && val.trim() && !isVertexId(val.trim())) {
+        candidatePaths.push(val.trim());
+      } else if (Array.isArray(val)) {
+        for (const item of val) {
+          if (typeof item === 'string' && item.trim() && !isVertexId(item.trim())) {
+            candidatePaths.push(item.trim());
+          }
+        }
+      }
+    };
+
+    collectCandidate(args.path);
+    collectCandidate(args.filePath);
+    collectCandidate(args.target_file);
+    collectCandidate(args.directory);
+    collectCandidate(args.target);
+    collectCandidate(args.targets);
+    collectCandidate(args.add_targets);
+
+    const baseDir = this.sessionWorkspaceDir || (!ConfigManager.isSystemOrHomeRoot(process.cwd()) ? process.cwd() : undefined);
+
+    for (const p of candidatePaths) {
+      if (path.isAbsolute(p)) {
+        const matched = this.config.resolveContextByCwd(p);
+        if (matched) return this.getOrCreateContext(matched);
+      } else {
+        if (baseDir) {
+          const abs = path.resolve(baseDir, p);
+          const matched = this.config.resolveContextByCwd(abs);
+          if (matched) return this.getOrCreateContext(matched);
+        }
+        for (const ctxCfg of Object.values(this.config.getContexts())) {
+          for (const root of ctxCfg.paths || []) {
+            try {
+              if (fs.existsSync(path.resolve(root, p))) {
+                return this.getOrCreateContext(ctxCfg.name);
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    // Tier 1b: Memory/File vertex ID introspection (for sd_get, sd_update, sd_delete, sd_relate, sd_consolidate)
+    const candidateMemIds: string[] = [];
+    const collectMemId = (val: any) => {
+      if (typeof val === 'string' && isVertexId(val.trim())) {
+        candidateMemIds.push(val.trim());
+      } else if (Array.isArray(val)) {
+        for (const item of val) {
+          if (typeof item === 'string' && isVertexId(item.trim())) {
+            candidateMemIds.push(item.trim());
+          }
+        }
+      }
+    };
+    collectMemId(args.id);
+    collectMemId(args.source_id);
+    collectMemId(args.target);
+    collectMemId(args.memory_ids);
+
+    if (candidateMemIds.length > 0) {
+      if (baseDir) {
+        const sessionCtxName = this.config.resolveContextByCwd(baseDir);
+        if (sessionCtxName) {
+          const { ctx: sCtx } = this.getOrCreateContext(sessionCtxName);
+          for (const mid of candidateMemIds) {
+            try {
+              const row = sCtx.getDb().prepare('SELECT 1 FROM memories WHERE id = ?').get(mid);
+              if (row) return this.getOrCreateContext(sessionCtxName);
+            } catch {}
+          }
+        }
+      }
+      for (const ctxCfg of Object.values(this.config.getContexts())) {
+        try {
+          const { ctx: pCtx } = this.getOrCreateContext(ctxCfg.name);
+          for (const mid of candidateMemIds) {
+            const row = pCtx.getDb().prepare('SELECT 1 FROM memories WHERE id = ?').get(mid);
+            if (row) return this.getOrCreateContext(ctxCfg.name);
+          }
+        } catch {}
+      }
+    }
+
+    // Tier 2: Session workspace matching
+    if (baseDir) {
+      const matched = this.config.resolveContextByCwd(baseDir);
+      if (matched) return this.getOrCreateContext(matched);
+    }
+
+    // Tier 3: Fail-closed on mutating operations if project contexts exist, safe fallback to _global on read queries
+    if (isMutating) {
+      const nonGlobalContexts = Object.keys(this.config.getContexts()).filter(k => k !== '_global' && k !== 'global');
+      if (nonGlobalContexts.length > 0) {
+        throw new Error(`Cannot perform mutating operation "${toolName}": workspace path does not belong to any registered StormDrain context. Please provide explicit "context" parameter or initialize with sd_init.`);
+      }
+    }
+
+    return this.getOrCreateContext('_global');
   }
 
   public async close(): Promise<void> {
@@ -147,248 +293,70 @@ export class StormDrainMcpServer {
           }
         },
         {
-          name: 'sd_search',
-          description: 'SEARCH TOOL: Perform SQLite FTS5 full-text and semantic keyword search across memories. Automatically searches both the active workspace context and the global ("_global") context simultaneously, tagging each result with its originating context.',
+          name: 'sd_memory',
+          description: 'Manage memories in the knowledge graph: add invariants/decisions, browse/list all memories with connection counts, search memories, inspect nodes, update memories, link nodes via relate, delete memories, or consolidate micro-memories.',
           inputSchema: {
             type: 'object',
             properties: {
-              query: {
+              action: {
                 type: 'string',
-                description: 'Search query (optional if metadata filters are provided)'
+                enum: ['add', 'search', 'list', 'get', 'update', 'relate', 'delete', 'consolidate'],
+                description: 'Operation: "add" to record knowledge, "list" to browse memories alongside connection counts (sorted disconnected-first), "search" to query, "get" to inspect details, "update" to modify, "relate" to link a memory to a file/memory, "delete" to remove, "consolidate" to merge micro-memories.'
+              },
+              id: {
+                type: 'string',
+                description: 'Memory ID (e.g. mem_123456) for "get", "update", "delete", or source memory ID for "relate"'
               },
               type: {
                 type: 'string',
-                description: 'Optional memory type filter (decision, lesson, pattern, etc.)'
-              },
-              context: contextProp
-            }
-          }
-        },
-        {
-          name: 'sd_get',
-          description: 'NODE INSPECTION TOOL: Retrieve the complete, unabridged record for any graph node—including memories (full markdown content, metadata, confidence, tags, incoming/outgoing relation links) and codemap file vertices (AST symbol outlines, imports, callers, and attached micro-memories). Accepts a memory ID (e.g. "mem_123456"), codemap ID (e.g. "file_src_main_ts"), or file path (e.g. "src/main.ts").',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: {
-                type: 'string',
-                description: 'Memory ID (e.g. "mem_123456"), codemap ID (e.g. "file_src_main_ts"), or file path (e.g. "src/main.ts")'
-              },
-              context: contextProp
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'sd_delete',
-          description: 'DELETION TOOL: Safely delete a memory by ID. Cascades deletion through SQLite indices, FTS table, tags, incoming/outgoing relations, and disk storage with Git history logging.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: {
-                type: 'string',
-                description: 'Memory ID to delete (e.g. "mem_123456")'
-              },
-              context: contextProp
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'sd_consolidation_candidates',
-          description: 'CONSOLIDATION SCANNER: Scan the graph for file vertices or concepts that have accumulated multiple unconsolidated micro-memories (default >=3 or custom threshold). Review returned candidate memories to decide whether to selectively synthesize cohesive subsets into a guide via sd_consolidate.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              threshold: {
-                type: 'number',
-                description: 'Minimum micro-memory count to qualify as a candidate (defaults to user settings threshold, typically 3)'
-              },
-              context: contextProp
-            }
-          }
-        },
-        {
-          name: 'sd_add',
-          description: 'POST-DISCOVERY TOOL: Record architectural invariants, non-obvious bugs, failure modes, design decisions (ADRs), or reusable patterns. To promote or record universal knowledge applicable across all projects, pass context: "_global" (or "global"). EDITORIAL RULE: Record only high-signal knowledge that prevents future errors or explains non-obvious constraints. Do NOT record routine implementation summaries or transient task progress.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              type: {
-                type: 'string',
-                enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
-                description: 'Canonical type: "warning" (hazard/pitfall/anti-pattern), "fact" (verified invariant/caller contract), "decision" (ADR/trade-off), "guide" (workflow/runbook), "concept" (domain model)'
+                enum: USER_CREATABLE_TYPES,
+                description: 'Memory type for "add"/"update", or type filter for "list"/"search": fact, decision, guide, warning, concept'
               },
               title: {
                 type: 'string',
-                description: 'Short, descriptive title capturing the invariant or takeaway'
+                description: 'Title of the memory (for "add", "update", or optional custom guide title for "consolidate")'
               },
               content: {
                 type: 'string',
-                description: 'Markdown content. Focus on non-obvious rationale, root causes, contracts, or reproduction steps. Avoid merely restating what the code does.'
+                description: 'Markdown content (for "add" or "update")'
+              },
+              target: {
+                type: 'string',
+                description: 'Target file path or memory ID to link (for "add", "relate", "update"), inspect (for "get"), or consolidate'
+              },
+              relation_type: {
+                type: 'string',
+                description: 'Semantic relation type for "add" or "relate" (affects, applies_to, supports, related_to, depends_on, part_of)'
               },
               tags: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Categorization tags. Conventions: #decision (ADR), #invariant, #hypothesis (unverified with test criteria), #environment (OS/toolchain quirk), #anti-pattern, #performance'
+                description: 'Categorization tags (for "add"/"update", or tag filter for "list")'
               },
-              target_file: targetFileProp,
-              targets: {
-                type: 'array',
-                items: { type: 'string' },
-                description: 'Multiple target file paths or memory IDs to associate with this memory'
-              },
-              relations: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    target: { type: 'string', description: 'Target memory ID or file path' },
-                    type: { 
-                      type: 'string', 
-                      enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
-                      description: 'Semantic relation type' 
-                    }
-                  },
-                  required: ['target']
-                },
-                description: 'Explicit typed relation edges to other memories or files'
-              },
-              relation_type: {
+              query: {
                 type: 'string',
-                description: 'Default relation type for targets (default: "affects" for files, "related_to" for memories)'
-              },
-              context: contextProp
-            },
-            required: ['type', 'title', 'content']
-          }
-        },
-        {
-          name: 'sd_update',
-          description: 'UPDATE TOOL: Update an existing memory\'s content, confidence, type, tags, or relation links by ID.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Memory ID' },
-              title: { type: 'string' },
-              content: { type: 'string' },
-              tags: { type: 'array', items: { type: 'string' } },
-              type: {
-                type: 'string',
-                enum: ['fact', 'decision', 'guide', 'warning', 'concept'],
-                description: 'Canonical type: "warning" (hazard/pitfall/anti-pattern), "fact" (verified invariant/caller contract), "decision" (ADR/trade-off), "guide" (workflow/runbook), "concept" (domain model)'
-              },
-              add_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to add' },
-              remove_targets: { type: 'array', items: { type: 'string' }, description: 'Target file paths or memory IDs to remove' },
-              relations: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    target: { type: 'string' },
-                    type: { type: 'string' }
-                  },
-                  required: ['target']
-                },
-                description: 'Replace full relations list'
-              },
-              context: contextProp
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'sd_relate',
-          description: 'RELATION TOOL: Connect two memories, or link a memory to a file vertex in the knowledge graph with an explicit semantic relationship (e.g. "supports", "contradicts", "supersedes", "related_to", "references", "depends_on", "part_of", "affects", "applies_to").',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              source_id: { type: 'string', description: 'Source memory ID (e.g. "mem_123456")' },
-              target: { type: 'string', description: 'Target memory ID or file path (e.g. "mem_789012" or "src/index.ts")' },
-              type: { 
-                type: 'string', 
-                enum: ['supports', 'contradicts', 'supersedes', 'related_to', 'references', 'depends_on', 'distilled_from', 'part_of', 'affects', 'applies_to'],
-                description: 'Semantic relation type (default: "related_to" between memories, "affects" for files)'
-              },
-              context: contextProp
-            },
-            required: ['source_id', 'target']
-          }
-        },
-        {
-          name: 'sd_scan',
-          description: 'GRAPH SYNC TOOL: Scan workspace source files (TypeScript, Python, C++, Go, Rust, MATLAB) to synchronize the codebase dependency DAG edges and file vertices in persistent memory.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              directory: {
-                type: 'string',
-                description: 'Optional workspace directory path to scan (defaults to current working directory)'
-              },
-              submodule_policy: {
-                type: 'string',
-                enum: ['dive', 'sum'],
-                description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
-              },
-              context: contextProp
-            }
-          }
-        },
-        {
-          name: 'sd_init',
-          description: 'INITIALIZATION TOOL: Initialize a context namespace, bind workspace directory path, and build the initial codebase file DAG skeleton.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              name: {
-                type: 'string',
-                description: 'Context name (e.g. project name). Note: "global" and "_global" are reserved.'
-              },
-              directory: {
-                type: 'string',
-                description: 'Optional directory path to bind and scan (defaults to current working directory)'
-              },
-              submodule_policy: {
-                type: 'string',
-                enum: ['dive', 'sum'],
-                description: 'How to handle git submodules: dive (index all files) or sum (single codemap). Default: sum'
-              }
-            },
-            required: ['name']
-          }
-        },
-        {
-          name: 'sd_consolidate',
-          description: 'CONSOLIDATION TOOL: Consolidate micro-memories attached to a target file vertex into a unified knowledge guide. Automatically activates the Consolidation Shield. You can pass optional "memory_ids" to selectively merge only cohesive memories, leaving unlike facts separate.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              target_file: {
-                type: 'string',
-                description: 'Target file path (e.g. src/core/config.ts) whose micro-memories should be consolidated'
+                description: 'Search query for "search" action'
               },
               memory_ids: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Optional list of specific memory IDs to consolidate. If omitted, all attached unconsolidated micro-memories are merged.'
+                description: 'Specific memory IDs to merge for "consolidate" (can consolidate disconnected memories without a target file)'
+              },
+              orphans_only: {
+                type: 'boolean',
+                description: 'For "list" action: if true, return only disconnected memories with 0 total connections'
+              },
+              unanchored_only: {
+                type: 'boolean',
+                description: 'For "list" action: if true, return only memories that have no file connections'
+              },
+              limit: {
+                type: 'number',
+                description: 'For "list" action: optional maximum number of memories to return'
               },
               context: contextProp
             },
-            required: ['target_file']
-          }
-        },
-        {
-          name: 'sd_prune',
-          description: 'GRAPH PRUNE TOOL: Prune leaked or orphaned codemap file vertices from the DAG that do not belong to the workspace.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              directory: {
-                type: 'string',
-                description: 'Optional directory path to validate against (defaults to context bound paths)'
-              },
-              context: contextProp
-            }
+            required: ['action']
           }
         }
       );
@@ -399,10 +367,105 @@ export class StormDrainMcpServer {
 
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const explicitContext = request.params.arguments?.context as string | undefined;
-      const { ctx, targetContext } = this.getContext(explicitContext);
-
       try {
+        const { ctx, targetContext } = this.getContextForRequest(request);
+
+        if (request.params.name === 'sd_memory') {
+          const mArgs = (request.params.arguments || {}) as any;
+          const action = mArgs.action;
+          if (!action) {
+            return {
+              content: [{ type: 'text', text: 'Validation Error: "action" parameter is required for sd_memory ("add", "search", "list", "get", "update", "relate", "delete", "consolidate").' }],
+              isError: true
+            };
+          }
+
+          if (action === 'add') {
+            if (!mArgs.title || !mArgs.content) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "title" and "content" are required for action "add".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_add';
+            mArgs.target_file = mArgs.target || mArgs.target_file;
+            mArgs.relation_type = mArgs.relation_type || mArgs.relationType;
+          } else if (action === 'search') {
+            if (mArgs.query === undefined) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "query" is required for action "search".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_search';
+          } else if (action === 'list') {
+            request.params.name = 'sd_list';
+          } else if (action === 'get') {
+            const id = mArgs.id || mArgs.target;
+            if (!id) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" or "target" is required for action "get".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_get';
+            mArgs.id = id;
+          } else if (action === 'update') {
+            if (!mArgs.id) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" is required for action "update".' }],
+                isError: true
+              };
+            }
+            if (mArgs.target && !mArgs.add_targets) {
+              mArgs.add_targets = [mArgs.target];
+            }
+            request.params.name = 'sd_update';
+          } else if (action === 'relate') {
+            const sourceId = mArgs.source_id || mArgs.id;
+            const target = mArgs.target || mArgs.target_file;
+            if (!sourceId || !target) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" (or "source_id") and "target" are required for action "relate".' }],
+                isError: true
+              };
+            }
+            const validRelTypes = new Set(['affects', 'applies_to', 'supports', 'contradicts', 'depends_on', 'supersedes', 'related_to', 'part_of']);
+            const typeAsRel = typeof mArgs.type === 'string' && validRelTypes.has(mArgs.type) ? mArgs.type : undefined;
+            request.params.name = 'sd_relate';
+            mArgs.source_id = sourceId;
+            mArgs.target = target;
+            mArgs.relation_type = mArgs.relation_type || mArgs.relationType || typeAsRel;
+            delete mArgs.type;
+          } else if (action === 'delete') {
+            if (!mArgs.id) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: "id" is required for action "delete".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_delete';
+          } else if (action === 'consolidate') {
+            const target = mArgs.target || mArgs.target_file;
+            const hasMemoryIds = Array.isArray(mArgs.memory_ids) && mArgs.memory_ids.length >= 2;
+            if (!target && !hasMemoryIds) {
+              return {
+                content: [{ type: 'text', text: 'Validation Error: Either "target" or "memory_ids" (>= 2 IDs) is required for action "consolidate".' }],
+                isError: true
+              };
+            }
+            request.params.name = 'sd_consolidate';
+            if (target) {
+              mArgs.target_file = target;
+            }
+          } else {
+            return {
+              content: [{ type: 'text', text: `Unknown action "${action}" for sd_memory. Supported actions: add, search, list, get, update, relate, delete, consolidate.` }],
+              isError: true
+            };
+          }
+        }
+
         if (request.params.name === 'sd_read') {
           const args = request.params.arguments as {
             path?: string;
@@ -436,6 +499,11 @@ export class StormDrainMcpServer {
           const includeInvariants = args.include_invariants !== undefined ? args.include_invariants : args.includeInvariants;
           const includeSymbols = args.include_symbols !== undefined ? args.include_symbols : args.includeSymbols;
 
+          const ctxCfg = this.config.getContext(targetContext);
+          const contextRoot = (ctxCfg?.paths && ctxCfg.paths.length > 0)
+            ? ctxCfg.paths[0]
+            : (this.sessionWorkspaceDir || process.cwd());
+
           const result = await this.reader.readFile({
             filePath: targetPath,
             startLine,
@@ -443,7 +511,7 @@ export class StormDrainMcpServer {
             includeInvariants,
             includeSymbols,
             context: targetContext,
-            cwd: process.cwd()
+            cwd: contextRoot
           });
 
           return {
@@ -617,6 +685,72 @@ export class StormDrainMcpServer {
           return { content: [{ type: 'text', text: sections.join('\n') }] };
         }
 
+        if (request.params.name === 'sd_list') {
+          const args = (request.params.arguments || {}) as {
+            type?: MemoryType;
+            tag?: string;
+            tags?: string[];
+            orphans_only?: boolean;
+            max_connections?: number;
+            sort_by?: 'connections_asc' | 'connections_desc' | 'updated' | 'confidence' | 'accessed';
+            limit?: number;
+            include_consolidated?: boolean;
+          };
+
+          const effectiveTag = args.tag || (Array.isArray(args.tags) && args.tags.length > 0 ? args.tags[0] : undefined);
+          const summaries = ctx.listMemoriesWithStats({
+            type: args.type,
+            tag: effectiveTag,
+            orphansOnly: args.orphans_only,
+            unanchoredOnly: args.unanchored_only,
+            maxConnections: args.max_connections,
+            sortBy: args.sort_by || 'connections_asc',
+            limit: args.limit,
+            includeConsolidated: args.include_consolidated
+          });
+
+          if (summaries.length === 0) {
+            return { content: [{ type: 'text', text: `No memories found matching filters in context "${targetContext}".` }] };
+          }
+
+          const orphanCount = summaries.filter(s => s.total_connections === 0).length;
+          const unanchoredIslandCount = summaries.filter(s => s.total_connections > 0 && !s.is_anchored).length;
+          const notes: string[] = [];
+          if (orphanCount > 0) notes.push(`${orphanCount} disconnected [0 connections]`);
+          if (unanchoredIslandCount > 0) notes.push(`${unanchoredIslandCount} unanchored island(s) [no file connections]`);
+          const notesStr = notes.length > 0 ? `, ${notes.join(', ')}` : '';
+
+          const lines: string[] = [];
+          lines.push(`## 📋 Memory Inventory in Context "${targetContext}" (${summaries.length} memories${notesStr})`);
+          lines.push('');
+
+          for (const s of summaries) {
+            const tagStr = s.tags.length > 0 ? ` [${s.tags.map(t => `#${t}`).join(' ')}]` : '';
+            let connBadge: string;
+            if (s.total_connections === 0) {
+              connBadge = `**0 connections** ⚠️ DISCONNECTED`;
+            } else if (!s.is_anchored) {
+              connBadge = `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in) ⚠️ UNANCHORED ISLAND`;
+            } else {
+              connBadge = `**${s.total_connections} connection(s)** (${s.outgoing_count} out, ${s.incoming_count} in, ${s.file_connections} file)`;
+            }
+            lines.push(`- **[${s.type.toUpperCase()}] ${s.title}** (ID: ${s.id} | ${connBadge} | Conf: ${s.confidence} | Accesses: ${s.access_count})${tagStr}`);
+          }
+
+          if (orphanCount > 0 || unanchoredIslandCount > 0) {
+            lines.push('');
+            lines.push(`*💡 Graph Connectivity Guidance:*`);
+            if (orphanCount > 0) {
+              lines.push(`- *Found ${orphanCount} disconnected node(s) (0 connections). Link to a file via \`sd_memory(action="relate", id="...", target="<file_or_id>")\` or consolidate into a guide.*`);
+            }
+            if (unanchoredIslandCount > 0) {
+              lines.push(`- *Found ${unanchoredIslandCount} unanchored island memory/memories (connected to other memories but not anchored to any source file). Link to a relevant file vertex to surface during file reads.*`);
+            }
+          }
+
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
         if (request.params.name === 'sd_add') {
           const args = request.params.arguments as {
             type: MemoryType;
@@ -650,7 +784,25 @@ export class StormDrainMcpServer {
           } else if (mem && mem.metadata.relations.length > 0) {
             linkMsg = ` (linked to ${mem.metadata.relations.length} target(s): ${mem.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})`;
           }
-          return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"` }] };
+
+          let orphanNudge = '';
+          const relCount = mem ? mem.metadata.relations.length : 0;
+          if (relCount === 0) {
+            const suggestions = ctx.suggestCandidateTargets(id, 3);
+            if (args.type === 'guide' || args.type === 'concept') {
+              orphanNudge = `\n\nℹ️ Note: ${args.type} ${id} was created with 0 file/graph connections. If this is an intentional workspace-wide ${args.type}, it will surface via top-memory recall, search, and \`sd_memory(action="list")\`. If it belongs to specific files or concepts, link it via \`sd_memory(action="relate", id="${id}", target="<file_or_mem_id>")\`.`;
+            } else {
+              orphanNudge = `\n\n⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.\n- Link it to a file or concept via \`sd_memory(action="relate", id="${id}", target="<file_or_mem_id>")\`.`;
+            }
+            if (suggestions.length > 0) {
+              const formattedSug = suggestions
+                .map(s => s.nodeType === 'file' ? `\`${s.displayTarget}\` (file)` : `\`${s.id}\` ("${s.title}", ${s.type})`)
+                .join(', ');
+              orphanNudge += `\n- Suggested candidate targets in graph: ${formattedSug}`;
+            }
+          }
+
+          return { content: [{ type: 'text', text: `Successfully added memory ${id}${linkMsg} to context "${targetContext}"${orphanNudge}` }] };
         }
 
         if (request.params.name === 'sd_update') {
@@ -686,8 +838,13 @@ export class StormDrainMcpServer {
             throw new Error('Arguments "source_id" and "target" are required for sd_relate.');
           }
           const resolvedTarget = ctx.resolveTargetId(args.target);
+          if (args.source_id === resolvedTarget) {
+            throw new Error(`Cannot link memory "${args.source_id}" to itself (self-loop).`);
+          }
+          const validRelTypes = new Set(['affects', 'applies_to', 'supports', 'contradicts', 'depends_on', 'supersedes', 'related_to', 'part_of']);
           const defaultType = resolvedTarget.startsWith('mem_') ? 'related_to' : 'affects';
-          const relType = (args.type || args.relation_type || defaultType) as RelationType;
+          const validTypeFallback = args.type && validRelTypes.has(args.type) ? args.type : undefined;
+          const relType = (args.relation_type || validTypeFallback || defaultType) as RelationType;
           const added = ctx.addRelation(args.source_id, args.target, relType);
           if (added) {
             return { content: [{ type: 'text', text: `Successfully linked memory ${args.source_id} -> ${resolvedTarget} with relation "${relType}" in context "${targetContext}".` }] };
@@ -740,7 +897,7 @@ export class StormDrainMcpServer {
           } else {
             this.config.bindPathToContext(name, dir);
           }
-          this.config.setActiveContext(name);
+          this.sessionWorkspaceDir = path.resolve(dir);
 
           scaffoldAgentsMd(dir);
 
@@ -752,13 +909,15 @@ export class StormDrainMcpServer {
         }
 
         if (request.params.name === 'sd_consolidate') {
-          const targetFile = request.params.arguments?.target_file as string;
+          const targetFile = (request.params.arguments?.target_file || request.params.arguments?.target) as string | undefined;
           const memoryIds = request.params.arguments?.memory_ids as string[] | undefined;
-          const res = ctx.consolidateNeighborhood(targetFile, { memory_ids: memoryIds });
+          const title = request.params.arguments?.title as string | undefined;
+          const res = ctx.consolidateNeighborhood(targetFile, { memory_ids: memoryIds, title });
+          const targetDesc = targetFile ? `for target "${targetFile}"` : `from ${memoryIds?.length || 0} specified memory IDs`;
           if (!res.consolidatedId) {
-            return { content: [{ type: 'text', text: `No micro-memories (>= 2) found to consolidate for "${targetFile}".` }] };
+            return { content: [{ type: 'text', text: `No micro-memories (>= 2) found to consolidate ${targetDesc}.` }] };
           }
-          return { content: [{ type: 'text', text: `Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} for target "${targetFile}".` }] };
+          return { content: [{ type: 'text', text: `Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId} ${targetDesc}.` }] };
         }
 
         if (request.params.name === 'sd_prune') {
@@ -834,8 +993,8 @@ export class StormDrainMcpServer {
 
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      let rawContext = (args?.context as string | undefined)?.trim();
-      const { ctx } = this.getContext(rawContext);
+      const { ctx } = this.getContextForRequest(request);
+      const wsDir = this.sessionWorkspaceDir || (ctx.getWorkspaceRoots()[0] || process.cwd());
 
       if (name === 'sd_curate') {
         const threshold = args?.threshold ? parseInt(args.threshold as string, 10) : 3;
@@ -864,7 +1023,7 @@ export class StormDrainMcpServer {
         const limit = args?.limit ? parseInt(args.limit as string, 10) : 5;
         const harvestResult = await generateHarvestPrompt(ctx, {
           limit: isNaN(limit) ? 5 : limit,
-          workspaceDir: process.cwd(),
+          workspaceDir: wsDir,
         });
 
         return {
@@ -890,15 +1049,21 @@ export class StormDrainMcpServer {
   }
 
   public async run() {
-    const cwd = process.cwd();
-    const resolvedContext = this.config.resolveContext(undefined, cwd);
-    if (!ConfigManager.isSystemOrHomeRoot(cwd)) {
-      this.config.bindPathToContext(resolvedContext, cwd);
-    }
+    const ws = this.sessionWorkspaceDir || process.cwd();
+    const resolvedContext = this.config.resolveContext(undefined, ws);
+
+    const cleanup = async () => {
+      try {
+        await this.close();
+      } catch {}
+      process.exit(0);
+    };
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
 
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error(`StormDrain MCP server running on stdio for workspace "${cwd}" [context: "${resolvedContext}"]`);
+    console.error(`StormDrain MCP server running on stdio for workspace "${ws}" [context: "${resolvedContext}"]`);
   }
 
 }

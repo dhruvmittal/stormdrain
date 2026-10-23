@@ -7,7 +7,7 @@ import { initDb } from '../db/schema';
 import { syncMemoryToDb, deleteMemoryFromDb } from '../db/sync';
 import { parseMemory, serializeMemory, createMemoryMetadata } from './memory';
 import { GitManager } from './git';
-import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow, USER_CREATABLE_TYPES, CANONICAL_MEMORY_TYPES, toCanonicalType } from '../types';
+import { Memory, MemoryRelation, MemoryType, MultiHopMemoryResult, MultiHopRecallResponse, RelationType, FullNodeDetails, ConsolidationCandidate, MemoryListSummary, MemoryDbRow, RelationDbRow, TagDbRow, FtsDbRow, USER_CREATABLE_TYPES, CANONICAL_MEMORY_TYPES, toCanonicalType } from '../types';
 import { getContextDbPath, getContextMemoriesPath, ensureDirectories } from '../utils/paths';
 import { generateWorkspaceFileVertices, makeFileVertexId, ScanOptions } from '../utils/fileGraphScanner';
 import { extractSymbolOutline } from '../utils/symbolExtractor';
@@ -25,9 +25,13 @@ export class ContextManager {
     
     this.memoriesPath = getContextMemoriesPath(name);
     const dbPath = getContextDbPath(name);
-    
     this.db = initDb(dbPath);
-    this.git = new GitManager(name);
+    let debounceMs = 1500;
+    try {
+      const cfg = new ConfigManager();
+      debounceMs = cfg.getSettings().git.debounceMs ?? 1500;
+    } catch {}
+    this.git = new GitManager(name, debounceMs);
   }
 
   public getDb(): Database.Database {
@@ -45,6 +49,10 @@ export class ContextManager {
 
   private cachedWorkspaceRoots?: string[];
 
+  public clearCache(): void {
+    this.cachedWorkspaceRoots = undefined;
+  }
+
   public getWorkspaceRoots(): string[] {
     if (this.cachedWorkspaceRoots) {
       return this.cachedWorkspaceRoots;
@@ -54,11 +62,14 @@ export class ContextManager {
       const ctx = cfg.getContext(this.name);
       const roots = (ctx?.paths || []).map(p => path.resolve(p));
       const cwd = path.resolve(process.cwd());
-      if (!roots.includes(cwd)) roots.push(cwd);
+      if (roots.length === 0 && !ConfigManager.isSystemOrHomeRoot(cwd)) {
+        roots.push(cwd);
+      }
       this.cachedWorkspaceRoots = roots;
       return roots;
     } catch {
-      const roots = [path.resolve(process.cwd())];
+      const cwd = path.resolve(process.cwd());
+      const roots = ConfigManager.isSystemOrHomeRoot(cwd) ? [] : [cwd];
       this.cachedWorkspaceRoots = roots;
       return roots;
     }
@@ -243,6 +254,7 @@ export class ContextManager {
 
     const resolvedTarget = this.resolveTargetId(target);
     if (!resolvedTarget) throw new Error(`Invalid target "${target}".`);
+    if (resolvedTarget === sourceId) return false;
 
     const exists = memory.metadata.relations.some(r => r.target === resolvedTarget && r.type === type);
     if (exists) return false;
@@ -318,21 +330,48 @@ export class ContextManager {
       ORDER BY m.updated DESC
     `).all() as Array<any>;
 
+    const tagsMap = new Map<string, string[]>();
+    const tagRows = this.db.prepare(`
+      SELECT t.memory_id, t.tag
+      FROM tags t
+      JOIN memories m ON m.id = t.memory_id
+      WHERE m.type != 'codemap'
+    `).all() as Array<{ memory_id: string; tag: string }>;
+    for (const tr of tagRows) {
+      const list = tagsMap.get(tr.memory_id);
+      if (list) {
+        list.push(tr.tag);
+      } else {
+        tagsMap.set(tr.memory_id, [tr.tag]);
+      }
+    }
+
+    const relsMap = new Map<string, MemoryRelation[]>();
+    const relRows = this.db.prepare(`
+      SELECT r.source_id, r.target_id as target, r.type
+      FROM relations r
+      JOIN memories m ON m.id = r.source_id
+      WHERE m.type != 'codemap'
+    `).all() as Array<{ source_id: string; target: string; type: string }>;
+    for (const rr of relRows) {
+      const rel: MemoryRelation = { target: rr.target, type: rr.type as RelationType };
+      const list = relsMap.get(rr.source_id);
+      if (list) {
+        list.push(rel);
+      } else {
+        relsMap.set(rr.source_id, [rel]);
+      }
+    }
+
     const results: Memory[] = [];
-    const getTagsStmt = this.db.prepare('SELECT tag FROM tags WHERE memory_id = ?');
-    const getRelsStmt = this.db.prepare('SELECT target_id as target, type FROM relations WHERE source_id = ?');
-
     for (const row of rows) {
-      const tagRows = getTagsStmt.all(row.id) as Array<{ tag: string }>;
-      const relRows = getRelsStmt.all(row.id) as Array<{ target: string; type: string }>;
-
       results.push({
         metadata: {
           id: row.id,
           type: row.type,
           title: row.title,
           context: row.context || this.name,
-          tags: tagRows.map(t => t.tag),
+          tags: tagsMap.get(row.id) || [],
           confidence: row.confidence ?? 1.0,
           created: row.created || new Date().toISOString(),
           updated: row.updated || new Date().toISOString(),
@@ -341,7 +380,7 @@ export class ContextManager {
           source: row.source || 'manual',
           expires: row.expires || null,
           superseded_by: row.superseded_by || null,
-          relations: relRows.map(r => ({ target: r.target, type: r.type as RelationType })),
+          relations: relsMap.get(row.id) || [],
           git_branch: row.git_branch || null,
           is_canonical: Boolean(row.is_canonical)
         },
@@ -350,6 +389,248 @@ export class ContextManager {
     }
     return results;
   }
+
+  public listMemoriesWithStats(options?: {
+    type?: MemoryType;
+    tag?: string;
+    orphansOnly?: boolean;
+    unanchoredOnly?: boolean;
+    maxConnections?: number;
+    sortBy?: 'connections_asc' | 'connections_desc' | 'updated' | 'confidence' | 'accessed';
+    limit?: number;
+    includeConsolidated?: boolean;
+  }): MemoryListSummary[] {
+    const filterType = options?.type ? toCanonicalType(options.type) : undefined;
+    const filterTag = options?.tag ? options.tag.replace(/^#/, '').trim().toLowerCase() : undefined;
+    const includeConsolidated = options?.includeConsolidated ?? false;
+
+    const supersededFilter = includeConsolidated ? '' : "AND (m.superseded_by IS NULL OR m.superseded_by = '')";
+    const rows = this.db.prepare(`
+      SELECT
+        m.*,
+        (SELECT COUNT(*)
+         FROM relations r
+         LEFT JOIN memories tgt ON tgt.id = r.target_id
+         WHERE r.source_id = m.id
+           AND (
+             r.target_id LIKE 'file_%'
+             OR (tgt.id IS NOT NULL AND (tgt.superseded_by IS NULL OR tgt.superseded_by = '')
+                 AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.target_id AND tc.tag = 'consolidated'))
+           )
+        ) as outgoing_count,
+        (SELECT COUNT(*)
+         FROM relations r
+         LEFT JOIN memories src ON src.id = r.source_id
+         WHERE r.target_id = m.id
+           AND (
+             r.source_id LIKE 'file_%'
+             OR (src.id IS NOT NULL AND (src.superseded_by IS NULL OR src.superseded_by = '')
+                 AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated'))
+           )
+        ) as incoming_count,
+        (SELECT COUNT(*)
+         FROM relations r
+         WHERE (r.source_id = m.id AND r.target_id LIKE 'file_%')
+            OR (r.target_id = m.id AND r.source_id LIKE 'file_%')
+        ) as file_connections,
+        (SELECT GROUP_CONCAT(tag) FROM tags t WHERE t.memory_id = m.id) as tags_str
+      FROM memories m
+      WHERE m.type != 'codemap'
+        ${supersededFilter}
+    `).all() as Array<any>;
+
+    let summaries: MemoryListSummary[] = [];
+
+    for (const row of rows) {
+      const tags = (row.tags_str || '').split(',').filter(Boolean);
+      if (!includeConsolidated && (row.superseded_by || tags.includes('consolidated'))) {
+        continue;
+      }
+      const canonicalType = toCanonicalType(row.type);
+      if (filterType && canonicalType !== filterType && row.type !== options?.type) {
+        continue;
+      }
+      if (filterTag && !tags.some((t: string) => t.toLowerCase() === filterTag)) {
+        continue;
+      }
+
+      const outgoingCount = Number(row.outgoing_count ?? 0);
+      const incomingCount = Number(row.incoming_count ?? 0);
+      const fileConnections = Number(row.file_connections ?? 0);
+      const isAnchored = fileConnections > 0;
+      const totalConnections = outgoingCount + incomingCount;
+
+      if (options?.orphansOnly && totalConnections > 0) {
+        continue;
+      }
+      if (options?.unanchoredOnly && isAnchored) {
+        continue;
+      }
+      if (options?.maxConnections !== undefined && totalConnections > options.maxConnections) {
+        continue;
+      }
+
+      summaries.push({
+        id: row.id,
+        type: row.type,
+        title: row.title,
+        context: row.context || this.name,
+        confidence: row.confidence ?? 1.0,
+        tags,
+        created: row.created || new Date().toISOString(),
+        updated: row.updated || new Date().toISOString(),
+        accessed: row.accessed || new Date().toISOString(),
+        access_count: row.access_count ?? 0,
+        outgoing_count: outgoingCount,
+        incoming_count: incomingCount,
+        total_connections: totalConnections,
+        file_connections: fileConnections,
+        is_anchored: isAnchored,
+        superseded_by: row.superseded_by || null,
+      });
+    }
+
+    const sortBy = options?.sortBy || 'connections_asc';
+    summaries.sort((a, b) => {
+      if (sortBy === 'connections_asc') {
+        if (a.total_connections !== b.total_connections) {
+          return a.total_connections - b.total_connections;
+        }
+        return b.updated.localeCompare(a.updated);
+      }
+      if (sortBy === 'connections_desc') {
+        if (b.total_connections !== a.total_connections) {
+          return b.total_connections - a.total_connections;
+        }
+        return b.updated.localeCompare(a.updated);
+      }
+      if (sortBy === 'confidence') {
+        if (b.confidence !== a.confidence) {
+          return b.confidence - a.confidence;
+        }
+        return b.updated.localeCompare(a.updated);
+      }
+      if (sortBy === 'accessed') {
+        if (b.access_count !== a.access_count) {
+          return b.access_count - a.access_count;
+        }
+        return b.accessed.localeCompare(a.accessed);
+      }
+      // default 'updated'
+      return b.updated.localeCompare(a.updated);
+    });
+
+    if (options?.limit && options.limit > 0) {
+      summaries = summaries.slice(0, options.limit);
+    }
+
+    return summaries;
+  }
+
+  public suggestCandidateTargets(
+    memoryId: string,
+    limit = 3
+  ): Array<{ id: string; title: string; displayTarget: string; nodeType: 'file' | 'memory'; type: string }> {
+    const mem = this.getMemory(memoryId);
+    if (!mem) return [];
+
+    const stopwords = new Set([
+      'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'when', 'where',
+      'what', 'which', 'how', 'why', 'should', 'must', 'can', 'will', 'not', 'are',
+      'was', 'were', 'has', 'have', 'had', 'use', 'using', 'used', 'via', 'all', 'any',
+      'src', 'lib', 'dist', 'test', 'tests', 'index'
+    ]);
+
+    const rawText = `${mem.metadata.title} ${(mem.metadata.tags || []).join(' ')} ${mem.content.slice(0, 400)}`;
+    const pathTokens = Array.from(
+      new Set(
+        rawText
+          .split(/[^a-zA-Z0-9_\-\.\/]+/)
+          .map(t => t.replace(/^\.+|\.+$/g, '').trim())
+          .filter(t => t.length >= 3 && !stopwords.has(t.toLowerCase()))
+      )
+    );
+
+    if (pathTokens.length === 0) return [];
+
+    const candidates: Array<{ id: string; title: string; displayTarget: string; nodeType: 'file' | 'memory'; type: string }> = [];
+    const seen = new Set<string>([memoryId]);
+
+    // 1. Check if any token looks like a file path or filename matching a codemap vertex
+    const codemaps = this.db.prepare(`
+      SELECT id, title, type FROM memories WHERE type = 'codemap'
+    `).all() as Array<{ id: string; title: string; type: string }>;
+
+    for (const cm of codemaps) {
+      const relPath = cm.title.replace(/^\[(File|Submodule|Codemap)\]\s*/, '').trim();
+      const baseName = path.basename(relPath);
+      const baseNoExt = baseName.replace(/\.[^.]+$/, '');
+      if (
+        pathTokens.some(
+          tok =>
+            tok === relPath ||
+            tok === baseName ||
+            (baseNoExt.length >= 4 && tok.toLowerCase() === baseNoExt.toLowerCase())
+        )
+      ) {
+        if (!seen.has(cm.id)) {
+          seen.add(cm.id);
+          candidates.push({
+            id: cm.id,
+            title: relPath,
+            displayTarget: relPath,
+            nodeType: 'file',
+            type: 'codemap'
+          });
+        }
+      }
+      if (candidates.length >= limit) return candidates;
+    }
+
+    // 2. Split on non-identifier characters (including '/', '.', '-') so path segments become valid FTS trigram words
+    const wordTokens = Array.from(
+      new Set(
+        rawText
+          .split(/[^a-zA-Z0-9_]+/)
+          .map(t => t.trim())
+          .filter(t => t.length >= 3 && !stopwords.has(t.toLowerCase()))
+      )
+    )
+      .slice(0, 8)
+      .map(t => `"${t}"`);
+
+    if (wordTokens.length > 0) {
+      try {
+        const ftsQuery = wordTokens.join(' OR ');
+        const rows = this.db.prepare(`
+          SELECT m.id, m.title, m.type, m.superseded_by
+          FROM memories_fts fts
+          JOIN memories m ON m.id = fts.id
+          WHERE memories_fts MATCH ? AND m.id != ?
+          ORDER BY rank
+          LIMIT ?
+        `).all(ftsQuery, memoryId, limit * 2) as Array<{ id: string; title: string; type: string; superseded_by: string | null }>;
+
+        for (const r of rows) {
+          if (seen.has(r.id) || r.superseded_by) continue;
+          seen.add(r.id);
+          const isFile = r.type === 'codemap';
+          const cleanTitle = isFile ? r.title.replace(/^\[(File|Submodule|Codemap)\]\s*/, '').trim() : r.title;
+          candidates.push({
+            id: r.id,
+            title: cleanTitle,
+            displayTarget: isFile ? cleanTitle : r.id,
+            nodeType: isFile ? 'file' : 'memory',
+            type: r.type
+          });
+          if (candidates.length >= limit) break;
+        }
+      } catch {}
+    }
+
+    return candidates;
+  }
+
 
   public getNodeDetails(idOrPath: string): FullNodeDetails | null {
     const trimmed = idOrPath.trim();
@@ -440,7 +721,7 @@ export class ContextManager {
           try {
             return globalCtx.getNodeDetails(idOrPath);
           } finally {
-            globalCtx.close();
+            globalCtx.getDb().close();
           }
         } catch {}
       }
@@ -492,7 +773,7 @@ export class ContextManager {
 
       // 2. Try extracting from source file on disk if available
       const targetRelPath = mem.metadata.title.replace(/^\[(File|Submodule|Codemap)\]\s*/, '');
-      const candidateRoots = [process.cwd(), ...(process.env.STORMDRAIN_TEST_DIR ? [process.env.STORMDRAIN_TEST_DIR] : [])];
+      const candidateRoots = [...this.getWorkspaceRoots(), process.cwd(), ...(process.env.STORMDRAIN_TEST_DIR ? [process.env.STORMDRAIN_TEST_DIR] : [])];
       for (const root of candidateRoots) {
         const fullP = path.join(root, targetRelPath);
         if (fs.existsSync(fullP) && fs.statSync(fullP).isFile()) {
@@ -572,7 +853,7 @@ export class ContextManager {
     this.git.scheduleCommit(`[stormdrain] delete: memory ${id} "${memory?.metadata.title || ''}"`);
   }
 
-  private saveMemory(memory: Memory, commitMsg: string) {
+  public saveMemory(memory: Memory, commitMsg: string) {
     const memPath = this.getSafeMemPath(memory.metadata.id);
     fs.writeFileSync(memPath, serializeMemory(memory));
     syncMemoryToDb(this.db, memory);
@@ -586,11 +867,7 @@ export class ContextManager {
     this.git.scheduleCommit(commitMsg);
   }
 
-  public autoPromoteMergedBranches(_cwd: string = process.cwd()): string[] {
-    return [];
-  }
-
-  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number; autoPromotedBranches?: string[] } {
+  public syncFileGraph(workspaceDir: string, scanOptions?: ScanOptions): { createdCount: number; decayedCount: number } {
     const vertices = generateWorkspaceFileVertices(workspaceDir, scanOptions);
     let createdCount = 0;
     let decayedCount = 0;
@@ -728,29 +1005,58 @@ export class ContextManager {
   }
 
   public consolidateNeighborhood(
-    targetFileOrId: string,
-    options?: { memory_ids?: string[] } | string[]
+    targetFileOrId?: string,
+    options?: { memory_ids?: string[]; title?: string } | string[]
   ): { consolidatedId: string; mergedCount: number } {
-    const targetId = this.resolveTargetId(targetFileOrId);
-
-    // Find non-codemap memories attached to this target vertex
-    const relations = this.db.prepare(`
-      SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
-    `).all(targetId) as Array<{ source_id: string }>;
+    let effectiveTarget = (targetFileOrId || '').trim();
+    let effectiveTargetId = effectiveTarget ? this.resolveTargetId(effectiveTarget) : '';
 
     const memoryIds = Array.isArray(options) ? options : options?.memory_ids;
-    const filterIds = memoryIds && memoryIds.length > 0
-      ? new Set(memoryIds)
+    const customTitle = !Array.isArray(options) ? options?.title?.trim() : undefined;
+    let filterIds = memoryIds && memoryIds.length > 0
+      ? new Set(memoryIds.map(id => id.trim()).filter(Boolean))
       : null;
 
     const memories: Memory[] = [];
-    for (const rel of relations) {
-      if (filterIds && !filterIds.has(rel.source_id)) {
-        continue;
+    const seenIds = new Set<string>();
+
+    if (effectiveTargetId) {
+      // Find non-codemap memories attached to this target vertex
+      const relations = this.db.prepare(`
+        SELECT source_id FROM relations WHERE target_id = ? AND type IN ('affects', 'applies_to')
+      `).all(effectiveTargetId) as Array<{ source_id: string }>;
+
+      for (const rel of relations) {
+        if (filterIds && !filterIds.has(rel.source_id)) {
+          continue;
+        }
+        const mem = this.getMemory(rel.source_id);
+        if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
+          seenIds.add(mem.metadata.id);
+          memories.push(mem);
+        }
       }
-      const mem = this.getMemory(rel.source_id);
-      if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
-        memories.push(mem);
+
+      // If target itself is a memory ID with < 2 attached memories and additional memory_ids were passed,
+      // treat [target, ...memory_ids] as a file-less memory_ids batch
+      if (effectiveTarget.startsWith('mem_') && memories.length < 2 && filterIds && filterIds.size >= 1) {
+        filterIds = new Set([effectiveTarget, ...filterIds]);
+        effectiveTarget = '';
+        effectiveTargetId = '';
+        memories.length = 0;
+        seenIds.clear();
+      }
+    }
+
+    // Load any remaining explicit memory_ids (supports file-less consolidation and mixed attached + orphan consolidation)
+    if (filterIds && filterIds.size >= 2) {
+      for (const id of filterIds) {
+        if (seenIds.has(id)) continue;
+        const mem = this.getMemory(id);
+        if (mem && mem.metadata.type !== 'codemap' && !mem.metadata.tags.includes('consolidated')) {
+          seenIds.add(mem.metadata.id);
+          memories.push(mem);
+        }
       }
     }
 
@@ -758,11 +1064,16 @@ export class ContextManager {
       return { consolidatedId: '', mergedCount: 0 };
     }
 
-    const title = targetFileOrId;
+    const title = customTitle || effectiveTarget || `Consolidated Guide: ${memories[0].metadata.title}`;
+    const heading = customTitle || (effectiveTarget ? `Consolidated Guide for ${effectiveTarget}` : title);
     const allTags = new Set<string>(['consolidated-guide', 'super-memory']);
     
-    let combinedContent = `# Consolidated Guide for ${targetFileOrId}\n\n`;
-    combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${targetFileOrId}\`.\n\n---\n\n`;
+    let combinedContent = `# ${heading}\n\n`;
+    if (effectiveTarget) {
+      combinedContent += `This super-memory consolidates ${memories.length} domain micro-memories attached to \`${effectiveTarget}\`.\n\n---\n\n`;
+    } else {
+      combinedContent += `This super-memory consolidates ${memories.length} related domain memories.\n\n---\n\n`;
+    }
 
     for (const mem of memories) {
       mem.metadata.tags.forEach(t => allTags.add(t));
@@ -778,7 +1089,7 @@ export class ContextManager {
       Array.from(allTags),
       'consolidator',
       undefined,
-      targetFileOrId
+      effectiveTarget || undefined
     );
 
     // Mark source micro-memories as consolidated & superseded, transfer their relations, and link part_of
@@ -789,9 +1100,13 @@ export class ContextManager {
       mem.metadata.superseded_by = consolidatedId;
       mem.metadata.confidence = Math.max(0.4, Math.round(mem.metadata.confidence * 0.7 * 100) / 100);
 
-      // 1. Transfer outgoing relations (except the target file itself) to the new guide
+      // 1. Transfer outgoing relations (except target vertex and memories in the same batch) to the new guide
       for (const rel of mem.metadata.relations) {
-        if (rel.target !== targetId) {
+        if (
+          (!effectiveTargetId || rel.target !== effectiveTargetId) &&
+          !seenIds.has(rel.target) &&
+          rel.target !== consolidatedId
+        ) {
           this.addRelation(consolidatedId, rel.target, rel.type);
         }
       }
@@ -802,7 +1117,7 @@ export class ContextManager {
       `).all(mem.metadata.id) as Array<{ source_id: string; type: string }>;
 
       for (const inc of incoming) {
-        if (inc.source_id === consolidatedId || memories.some(m => m.metadata.id === inc.source_id)) {
+        if (inc.source_id === consolidatedId || seenIds.has(inc.source_id)) {
           continue;
         }
         const srcMem = this.getMemory(inc.source_id);
@@ -821,6 +1136,7 @@ export class ContextManager {
 
       // 3. Set the micro-memory's outgoing relations to strictly point to the guide via 'part_of'
       mem.metadata.relations = [{ target: consolidatedId, type: 'part_of' }];
+      mem.metadata.updated = new Date().toISOString();
       this.saveMemory(mem, `[stormdrain] consolidate: marked ${mem.metadata.id} as consolidated (superseded by ${consolidatedId})`);
     }
 
@@ -1223,10 +1539,11 @@ export class ContextManager {
         direct,
         upstream,
         downstream,
-        all: finalMemories
+        all: finalMemories,
+        memories: finalMemories
       };
     } catch {
-      return { direct: [], upstream: [], downstream: [], all: [] };
+      return { direct: [], upstream: [], downstream: [], all: [], memories: [] };
     }
   }
 
@@ -1256,7 +1573,7 @@ export class ContextManager {
           if (!filterType) {
             return [];
           }
-          let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap'";
+          let sql = "SELECT m.*, '' as content_snippet FROM memories m WHERE m.type != 'codemap' AND (m.superseded_by IS NULL OR m.superseded_by = '')";
           const params: any[] = [];
           if (filterType) {
             sql += ' AND m.type = ?';
@@ -1272,6 +1589,8 @@ export class ContextManager {
           FROM memories_fts fts
           JOIN memories m ON m.id = fts.id
           WHERE memories_fts MATCH ?
+            AND m.type != 'codemap'
+            AND (m.superseded_by IS NULL OR m.superseded_by = '')
         `;
         const params: any[] = [safeQuery];
         if (filterType) {
@@ -1336,13 +1655,14 @@ export class ContextManager {
       }
     }
 
-    // Find all target vertices with >= effectiveThreshold unconsolidated micro-memories
+    // 1. Find all target vertices with >= effectiveThreshold unconsolidated micro-memories
     const candidateTargets = this.db.prepare(`
       SELECT r.target_id, COUNT(DISTINCT r.source_id) as count
       FROM relations r
       JOIN memories m ON m.id = r.source_id
       WHERE r.type IN ('affects', 'applies_to')
         AND m.type != 'codemap'
+        AND (m.superseded_by IS NULL OR m.superseded_by = '')
         AND m.id NOT IN (
           SELECT memory_id FROM tags WHERE tag = 'consolidated'
         )
@@ -1385,6 +1705,7 @@ export class ContextManager {
         WHERE r.target_id = ?
           AND r.type IN ('affects', 'applies_to')
           AND m.type != 'codemap'
+          AND (m.superseded_by IS NULL OR m.superseded_by = '')
           AND m.id NOT IN (
             SELECT memory_id FROM tags WHERE tag = 'consolidated'
           )
@@ -1408,17 +1729,90 @@ export class ContextManager {
       });
     }
 
+    // 2. Also find clusters of disconnected (0-connection) memories sharing a semantic tag (>= effectiveThreshold)
+    const tagClusters = this.db.prepare(`
+      SELECT t.tag, COUNT(DISTINCT m.id) as count
+      FROM tags t
+      JOIN memories m ON m.id = t.memory_id
+      WHERE m.type != 'codemap'
+        AND (m.superseded_by IS NULL OR m.superseded_by = '')
+        AND t.tag NOT IN ('consolidated', 'consolidated-guide', 'super-memory', 'invariant')
+        AND m.id NOT IN (SELECT memory_id FROM tags WHERE tag = 'consolidated')
+        AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.source_id = m.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM relations r
+          LEFT JOIN memories src ON src.id = r.source_id
+          WHERE r.target_id = m.id
+            AND (
+              r.source_id LIKE 'file_%'
+              OR (src.id IS NOT NULL AND (src.superseded_by IS NULL OR src.superseded_by = '')
+                  AND NOT EXISTS (SELECT 1 FROM tags tc WHERE tc.memory_id = r.source_id AND tc.tag = 'consolidated'))
+            )
+        )
+      GROUP BY t.tag
+      HAVING count >= ?
+      ORDER BY count DESC
+    `).all(effectiveThreshold) as Array<{ tag: string; count: number }>;
+
+    for (const tc of tagClusters) {
+      const clusterRows = this.db.prepare(`
+        SELECT m.*, fts.content as content_snippet,
+          (SELECT GROUP_CONCAT(tag) FROM tags WHERE memory_id = m.id) as tags_str
+        FROM tags t
+        JOIN memories m ON m.id = t.memory_id
+        LEFT JOIN memories_fts fts ON fts.id = m.id
+        WHERE t.tag = ?
+          AND m.type != 'codemap'
+          AND (m.superseded_by IS NULL OR m.superseded_by = '')
+          AND m.id NOT IN (SELECT memory_id FROM tags WHERE tag = 'consolidated')
+          AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.source_id = m.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM relations r
+            LEFT JOIN memories src ON src.id = r.source_id
+            WHERE r.target_id = m.id
+              AND (
+                r.source_id LIKE 'file_%'
+                OR (src.id IS NOT NULL AND (src.superseded_by IS NULL OR src.superseded_by = '')
+                    AND NOT EXISTS (SELECT 1 FROM tags tc2 WHERE tc2.memory_id = r.source_id AND tc2.tag = 'consolidated'))
+              )
+          )
+      `).all(tc.tag) as Array<any>;
+
+      if (clusterRows.length >= effectiveThreshold) {
+        const memories = clusterRows.map(r => ({
+          id: r.id,
+          type: r.type as MemoryType,
+          title: r.title,
+          confidence: r.confidence ?? 1.0,
+          tags: (r.tags_str || '').split(',').filter(Boolean),
+          summarySnippet: (r.content_snippet || '').slice(0, 150).trim()
+        }));
+
+        candidates.push({
+          target: `#${tc.tag}`,
+          targetType: 'concept',
+          targetTitle: `Tag Cluster: #${tc.tag} (disconnected)`,
+          memoryCount: memories.length,
+          memories
+        });
+      }
+    }
+
     return candidates;
   }
 
-  public recallTopMemories(limit = 10): MemoryDbRow[] {
+  public recallTopMemories(limit = 10): Array<MemoryDbRow & { content_snippet?: string }> {
     const stmt = this.db.prepare(`
-      SELECT * FROM memories 
-      WHERE expires IS NULL OR expires > datetime('now')
-      ORDER BY confidence DESC, accessed DESC
+      SELECT m.*, fts.content as content_snippet
+      FROM memories m
+      LEFT JOIN memories_fts fts ON fts.id = m.id
+      WHERE m.type != 'codemap'
+        AND (m.superseded_by IS NULL OR m.superseded_by = '')
+        AND (m.expires IS NULL OR m.expires > datetime('now'))
+      ORDER BY m.confidence DESC, m.accessed DESC
       LIMIT ?
     `);
-    return stmt.all(limit) as MemoryDbRow[];
+    return stmt.all(limit) as Array<MemoryDbRow & { content_snippet?: string }>;
   }
 
   public markAccessed(id: string) {

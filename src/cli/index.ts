@@ -13,6 +13,7 @@ import { scaffoldAgentsMd } from '../utils/agentsScaffolder';
 import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
+import { exportBundle, importBundle, serializeBundleBuffer, parseBundleBuffer, ImportStrategy } from '../core/transfer';
 import { MemoryType } from '../types';
 
 
@@ -398,13 +399,45 @@ program
   .description('Add a new memory to the context knowledge graph')
   .argument('<type>', 'Type of memory (fact, lesson, pattern, warning, guide, sequence, concept)')
   .argument('<title>', 'Title of the memory')
-  .argument('<content>', 'Markdown content of the memory')
+  .argument('[content]', 'Markdown content of the memory, or "-" to read from stdin')
+  .option('--file <path>', 'Path to file containing memory content, or "-" to read from stdin')
   .option('-c, --context <name>', 'Target context override')
   .option('-t, --target <targets...>', 'Target file(s) or memory ID(s) to link memory onto')
   .option('-r, --relation <relations...>', 'Explicit typed relation(s) in target:type format (e.g. mem_123:supports, src/b.ts:affects)')
   .option('--relation-type <type>', 'Default relation type for targets (default: affects for files, related_to for memories)')
   .option('--tags <tags...>', 'Tags for categorization')
+  .option('--json', 'Output added memory details as JSON')
   .action(async (type, title, content, options) => {
+    const MAX_CONTENT_SIZE = 256 * 1024; // 256 KB limit
+    let resolvedContent = '';
+
+    if (options.file) {
+      if (options.file === '-') {
+        resolvedContent = fs.readFileSync(0, 'utf8');
+      } else {
+        if (!fs.existsSync(options.file)) {
+          console.error(`Error: Content file "${options.file}" does not exist.`);
+          process.exitCode = 1;
+          return;
+        }
+        resolvedContent = fs.readFileSync(options.file, 'utf8');
+      }
+    } else if (content === '-') {
+      resolvedContent = fs.readFileSync(0, 'utf8');
+    } else if (content) {
+      resolvedContent = content;
+    } else {
+      console.error('Error: Memory content is required. Provide content argument, pass "-" for stdin, or use --file <path>.');
+      process.exitCode = 1;
+      return;
+    }
+
+    if (Buffer.byteLength(resolvedContent, 'utf8') > MAX_CONTENT_SIZE) {
+      console.error(`Error: Memory content exceeds maximum allowable size (${MAX_CONTENT_SIZE / 1024} KB).`);
+      process.exitCode = 1;
+      return;
+    }
+
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
@@ -422,7 +455,7 @@ program
       const id = ctx.addMemory(
         type as MemoryType,
         title,
-        content,
+        resolvedContent,
         tags,
         'manual',
         undefined,
@@ -432,10 +465,110 @@ program
       );
       const mem = ctx.getMemory(id);
       const linkCount = mem?.metadata.relations.length || 0;
-      const linkMsg = linkCount > 0 
-        ? ` (linked to ${linkCount} target(s): ${mem?.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})` 
-        : '';
-      console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
+      const suggestions = linkCount === 0 ? ctx.suggestCandidateTargets(id, 3) : [];
+      const isWorkspaceLevelType = type === 'guide' || type === 'concept';
+
+      if (options.json) {
+        console.log(JSON.stringify({
+          id,
+          title,
+          type,
+          context: targetCtxName,
+          status: 'added',
+          relations: mem?.metadata.relations || [],
+          ...(linkCount === 0 ? {
+            warning: isWorkspaceLevelType
+              ? `Created with 0 file/graph connections (workspace-wide ${type})`
+              : 'Created with 0 connections (disconnected node)',
+            suggested_targets: suggestions
+          } : {})
+        }, null, 2));
+      } else {
+        const linkMsg = linkCount > 0 
+          ? ` (linked to ${linkCount} target(s): ${mem?.metadata.relations.map(r => `${r.target}[${r.type}]`).join(', ')})` 
+          : '';
+        console.log(`Added memory ${id}${linkMsg} to context "${targetCtxName}"`);
+        if (linkCount === 0) {
+          if (isWorkspaceLevelType) {
+            console.log(`ℹ️ Note: ${type} ${id} was created with 0 file/graph connections. If it belongs to specific files or concepts, link it via: stormdrain relate ${id} <file_or_mem_id>`);
+          } else {
+            console.log(`⚠️ Note: Memory ${id} was created with 0 connections (disconnected node) and will not be surfaced during file reads or topological recall.`);
+            console.log(`  - Link it to a file or concept: stormdrain relate ${id} <file_or_mem_id>`);
+          }
+          if (suggestions.length > 0) {
+            const formattedSug = suggestions
+              .map(s => s.nodeType === 'file' ? `${s.displayTarget} (file)` : `${s.id} ("${s.title}", ${s.type})`)
+              .join(', ');
+            console.log(`  - Suggested candidate targets: ${formattedSug}`);
+          }
+        }
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('list')
+  .alias('ls')
+  .description('Browse all memories in the context alongside connection counts to rapidly identify disconnected nodes')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--type <type>', 'Filter by memory type (fact, decision, guide, warning, concept)')
+  .option('--tag <tag>', 'Filter by tag')
+  .option('--orphans', 'Show only disconnected memories with 0 connections')
+  .option('--unanchored', 'Filter for memories without any file-vertex connections (unanchored memory islands)')
+  .option('--max-connections <number>', 'Filter memories with at most N total connections')
+  .option('--sort <field>', 'Sort order: connections_asc, connections_desc, updated, confidence, accessed (default: connections_asc)')
+  .option('-l, --limit <number>', 'Maximum number of memories to display')
+  .option('--include-consolidated', 'Include superseded micro-memories that were already consolidated')
+  .option('--json', 'Output memory list with connection stats as JSON')
+  .action(async (options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const maxConnections = options.maxConnections !== undefined ? parseInt(options.maxConnections, 10) : undefined;
+      const limit = options.limit !== undefined ? parseInt(options.limit, 10) : undefined;
+      const summaries = ctx.listMemoriesWithStats({
+        type: options.type as MemoryType | undefined,
+        tag: options.tag,
+        orphansOnly: Boolean(options.orphans),
+        unanchoredOnly: Boolean(options.unanchored),
+        maxConnections: maxConnections !== undefined && !isNaN(maxConnections) ? maxConnections : undefined,
+        sortBy: options.sort || 'connections_asc',
+        limit: limit !== undefined && !isNaN(limit) ? limit : undefined,
+        includeConsolidated: Boolean(options.includeConsolidated)
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(summaries, null, 2));
+        return;
+      }
+
+      if (summaries.length === 0) {
+        console.log(`No memories found matching filters in context "${targetCtxName}".`);
+        return;
+      }
+
+      const orphanCount = summaries.filter(s => s.total_connections === 0).length;
+      const unanchoredIslandCount = summaries.filter(s => s.total_connections > 0 && !s.is_anchored).length;
+      const notes: string[] = [];
+      if (orphanCount > 0) notes.push(`${orphanCount} disconnected [0 connections]`);
+      if (unanchoredIslandCount > 0) notes.push(`${unanchoredIslandCount} unanchored island(s) [no file connections]`);
+      const notesStr = notes.length > 0 ? `, ${notes.join(', ')}` : '';
+
+      console.log(`Memory Inventory in context "${targetCtxName}" (${summaries.length} memories${notesStr}):\n`);
+      for (const s of summaries) {
+        const tagStr = s.tags.length > 0 ? ` [${s.tags.map(t => `#${t}`).join(' ')}]` : '';
+        let connLabel: string;
+        if (s.total_connections === 0) {
+          connLabel = `0 connections ⚠️ DISCONNECTED`;
+        } else if (!s.is_anchored) {
+          connLabel = `${s.total_connections} conn (${s.outgoing_count} out, ${s.incoming_count} in) ⚠️ UNANCHORED ISLAND`;
+        } else {
+          connLabel = `${s.total_connections} conn (${s.outgoing_count} out, ${s.incoming_count} in, ${s.file_connections} file)`;
+        }
+        console.log(`- [${s.type.toUpperCase()}] ${s.title} (${s.id}) | ${connLabel} | conf: ${s.confidence} | accesses: ${s.access_count}${tagStr}`);
+      }
     } finally {
       await ctx.close();
     }
@@ -493,11 +626,16 @@ program
   .description('Search memories across active and global contexts')
   .argument('<query>', 'Search query')
   .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output search results as JSON')
   .action(async (query, options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
       const results = ctx.searchMemories(query, true) as Array<{ type: string; title: string; id: string; confidence: number; content_snippet: string; context?: string }>;
+      if (options.json) {
+        console.log(JSON.stringify(results, null, 2));
+        return;
+      }
       if (results.length === 0) {
         console.log(`No memories found matching "${query}".`);
       } else {
@@ -525,7 +663,8 @@ program
       const details = ctx.getNodeDetails(id);
       if (!details) {
         console.error(`Node "${id}" not found in context "${targetCtxName}" or global context.`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       if (options.json) {
         console.log(JSON.stringify(details, null, 2));
@@ -597,7 +736,8 @@ program
       const existing = ctx.getMemory(id);
       if (!existing) {
         console.error(`Memory "${id}" not found in context "${targetCtxName}".`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       if (!options.force && process.stdin.isTTY) {
@@ -625,12 +765,17 @@ program
   .description('Find target files/concepts with high micro-memory density ready for consolidation')
   .option('-t, --threshold <number>', 'Minimum micro-memories threshold')
   .option('-c, --context <name>', 'Target context override')
+  .option('--json', 'Output consolidation candidates as JSON')
   .action(async (options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
     try {
       const threshold = options.threshold ? parseInt(options.threshold, 10) : undefined;
       const candidates = ctx.findConsolidationCandidates(threshold);
+      if (options.json) {
+        console.log(JSON.stringify(candidates, null, 2));
+        return;
+      }
       if (candidates.length === 0) {
         console.log(`No consolidation candidates found in context "${targetCtxName}".`);
         return;
@@ -643,6 +788,37 @@ program
           console.log(`   - [${m.type.toUpperCase()}] ${m.title} (${m.id}, conf: ${m.confidence})${tags}`);
         }
         console.log('');
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+program
+  .command('consolidate')
+  .description('Consolidate micro-memories attached to a target file vertex (or a list of memory IDs) into a unified guide')
+  .argument('<target>', 'Target file path (e.g. src/core/config.ts) or first memory ID when consolidating file-less memories')
+  .argument('[memory_ids...]', 'Specific memory IDs to consolidate')
+  .option('-c, --context <name>', 'Target context override')
+  .option('--title <title>', 'Custom title for the consolidated guide')
+  .option('--json', 'Output consolidation result as JSON')
+  .action(async (target, memoryIds, options) => {
+    const targetCtxName = config.resolveContext(options.context, process.cwd());
+    const ctx = new ContextManager(targetCtxName);
+    try {
+      const effectiveIds = (memoryIds && memoryIds.length > 0) ? memoryIds : undefined;
+      const res = ctx.consolidateNeighborhood(target, {
+        memory_ids: effectiveIds,
+        title: options.title
+      });
+      if (options.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      if (!res.consolidatedId) {
+        console.log(`No micro-memories (>= 2) found to consolidate for "${target}".`);
+      } else {
+        console.log(`Successfully consolidated ${res.mergedCount} micro-memories into super-memory ${res.consolidatedId}.`);
       }
     } finally {
       await ctx.close();
@@ -672,31 +848,83 @@ program
       console.log(result.content);
     } catch (err: any) {
       console.error(`Error reading file: ${err.message}`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   });
 
 program
   .command('recall')
   .description('Recall top memories for current context or graph-connected memories for a target file')
-
   .option('-c, --context <name>', 'Target context override')
   .option('-t, --target <file>', 'Target file to traverse graph from')
+  .option('-l, --limit <number>', 'Maximum number of results (default: 10)')
+  .option('--json', 'Output recall results as JSON')
   .action(async (options) => {
     const targetCtxName = config.resolveContext(options.context, process.cwd());
     const ctx = new ContextManager(targetCtxName);
+    const limit = options.limit ? parseInt(options.limit, 10) : 10;
     try {
       if (options.target) {
-        const results = ctx.recallGraph(options.target, 2);
-        console.log(`Graph memories for target "${options.target}" in context "${targetCtxName}":`);
-        for (const r of results) {
-          console.log(`- [Depth ${r.depth}] [${r.type}] ${r.title} (${r.id})`);
+        const multiHop = ctx.recallMultiHop(options.target, { maxDepth: 3, maxResults: limit, cumulativeThreshold: 0.98 });
+        if (options.json) {
+          console.log(JSON.stringify(multiHop, null, 2));
+          return;
+        }
+        if (multiHop.all.length === 0) {
+          console.log(`No memories found for target file "${options.target}" or its topological neighborhood in context "${targetCtxName}".`);
+          return;
+        }
+
+        console.log(`Graph memories for target "${options.target}" in context "${targetCtxName}":\n`);
+        if (multiHop.direct.length > 0) {
+          console.log(`### 🎯 Direct File Invariants (${options.target})`);
+          for (const r of multiHop.direct) {
+            const mem = ctx.getMemory(r.id);
+            console.log(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`, Score: ${r.relevanceScore})`);
+            if (mem?.content) console.log(`${mem.content}\n`);
+          }
+        }
+        if (multiHop.upstream.length > 0) {
+          console.log(`### ⚠️ Upstream Consumer Constraints (Callers at Risk)`);
+          for (const r of multiHop.upstream) {
+            const mem = ctx.getMemory(r.id);
+            const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+            console.log(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})`);
+            if (mem?.content) console.log(`${mem.content}\n`);
+          }
+        }
+        if (multiHop.downstream.length > 0) {
+          console.log(`### 📦 Downstream Dependency Invariants (Foundations)`);
+          for (const r of multiHop.downstream) {
+            const mem = ctx.getMemory(r.id);
+            const fileLabel = r.targetFile ? ` [via ${r.targetFile}, Hop ${r.depth}]` : '';
+            console.log(`- **[${r.type.toUpperCase()}] ${r.title}** (ID: \`${r.id}\`${fileLabel}, Score: ${r.relevanceScore})`);
+            if (mem?.content) console.log(`${mem.content}\n`);
+          }
         }
       } else {
-        const results = ctx.recallTopMemories(5);
-        console.log(`Top memories for context "${targetCtxName}":`);
+        const results = ctx.recallTopMemories(limit) as Array<{ type: string; title: string; id: string; confidence: number }>;
+        if (options.json) {
+          const detailed = results.map(r => {
+            const mem = ctx.getMemory(r.id);
+            return { ...r, content: mem?.content || '' };
+          });
+          console.log(JSON.stringify(detailed, null, 2));
+          return;
+        }
+        if (results.length === 0) {
+          console.log(`No memories found in context "${targetCtxName}".`);
+          return;
+        }
+        console.log(`Top memories for context "${targetCtxName}":\n`);
         for (const r of results) {
-          console.log(`- [${r.type}] ${r.title} (Confidence: ${r.confidence})`);
+          const mem = ctx.getMemory(r.id);
+          console.log(`## [${r.type.toUpperCase()}] ${r.title} (ID: ${r.id}, Confidence: ${r.confidence})`);
+          if (mem?.content) {
+            console.log(`${mem.content}`);
+          }
+          console.log('---\n');
         }
       }
     } finally {
@@ -705,10 +933,11 @@ program
   });
 
 program
-  .command('serve')
+  .command('serve [directory]')
+  .alias('mcp')
   .description('Start the StormDrain MCP server (stdio)')
-  .action(async () => {
-    const server = new StormDrainMcpServer();
+  .action(async (directory) => {
+    const server = new StormDrainMcpServer(directory);
     await server.run();
   });
 
@@ -821,6 +1050,149 @@ program
     }
   });
 
+program
+  .command('export')
+  .description('Export specific context(s) or the entire StormDrain instance to a portable bundle (.json / .json.gz or stdout)')
+  .argument('[contexts...]', 'Context name(s) to export (defaults to current resolved context unless --all is set)')
+  .option('-c, --context <names...>', 'Specific context(s) to export')
+  .option('-a, --all', 'Export all contexts, global settings, and active context state')
+  .option('-o, --output <file>', 'Output bundle file path (.json or .json.gz), or "-" to write directly to stdout')
+  .option('-z, --gzip', 'Compress bundle with Gzip (enabled automatically if output file ends with .gz)')
+  .option('--no-codemaps', 'Exclude auto-scanned codemap file vertices (export only domain memories)')
+  .option('--json', 'Output export status summary as JSON')
+  .action((positionalContexts: string[], options) => {
+    try {
+      const requestedContexts: string[] = [
+        ...(Array.isArray(positionalContexts) ? positionalContexts : []),
+        ...(Array.isArray(options.context) ? options.context : options.context ? [options.context] : []),
+      ];
+
+      const isAll = Boolean(options.all);
+      if (!isAll && requestedContexts.length === 0) {
+        requestedContexts.push(config.resolveContext(undefined, process.cwd()));
+      }
+
+      const includeCodemaps = options.codemaps !== false;
+      const bundle = exportBundle({
+        all: isAll,
+        contexts: isAll ? undefined : requestedContexts,
+        includeCodemaps,
+      });
+
+      const outTarget = options.output ? String(options.output).trim() : '';
+      const useGzip = Boolean(options.gzip) || outTarget.endsWith('.gz');
+
+      if (outTarget === '-') {
+        const buf = serializeBundleBuffer(bundle, useGzip);
+        fs.writeFileSync(1, buf);
+        if (!useGzip) fs.writeFileSync(1, '\n');
+        return;
+      }
+
+      const exportedCtxNames = Object.keys(bundle.contexts);
+      const dateTag = new Date().toISOString().slice(0, 10);
+      const rawLabel = isAll
+        ? 'all'
+        : exportedCtxNames.length > 3
+          ? `${exportedCtxNames.slice(0, 2).join('-')}-plus-${exportedCtxNames.length - 2}`
+          : exportedCtxNames.join('-');
+      const label = rawLabel.slice(0, 80);
+      const ext = useGzip ? '.sd.json.gz' : '.sd.json';
+      const filePath = path.resolve(outTarget || `stormdrain-export-${label}-${dateTag}${ext}`);
+
+      const buf = serializeBundleBuffer(bundle, useGzip);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, buf);
+
+      const totalMemories = exportedCtxNames.reduce((acc, k) => acc + bundle.contexts[k].memories.length, 0);
+
+      if (options.json) {
+        console.log(JSON.stringify({
+          status: 'exported',
+          scope: bundle.scope,
+          file: filePath,
+          gzip: useGzip,
+          includeCodemaps,
+          contexts: exportedCtxNames,
+          totalMemories,
+          bytes: buf.length,
+        }, null, 2));
+      } else {
+        console.log(`Exported ${totalMemories} memories across ${exportedCtxNames.length} context(s) [${exportedCtxNames.join(', ')}] to ${filePath} (${buf.length} bytes${useGzip ? ', gzipped' : ''}).`);
+      }
+    } catch (err: any) {
+      console.error(`Error exporting bundle: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('import')
+  .description('Import a StormDrain bundle (.json / .json.gz or "-" for stdin) into local storage')
+  .argument('<file>', 'Path to bundle file (.json or .json.gz) or "-" to read from stdin')
+  .option('-c, --context <names...>', 'Only import specific context(s) from the bundle')
+  .option('--as <name>', 'Import a single context under a new context name on this machine')
+  .option('-b, --bind <paths...>', 'Bind the imported context to workspace directory path(s) on this machine and auto-scan codemaps')
+  .option('-s, --strategy <mode>', 'Conflict resolution strategy: merge (default, newest timestamp + union tags/relations), overwrite, or skip', 'merge')
+  .option('--no-codemaps', 'Skip importing codemap file vertices')
+  .option('--no-settings', 'Do not import global settings from a full bundle')
+  .option('--no-scan', 'Skip auto-scanning workspace files when --bind is provided')
+  .option('--json', 'Output import report as JSON')
+  .action(async (file: string, options) => {
+    try {
+      const targetFile = String(file).trim();
+      let rawBuf: Buffer;
+      if (targetFile === '-') {
+        rawBuf = fs.readFileSync(0);
+      } else {
+        const resolvedPath = path.resolve(targetFile);
+        if (!fs.existsSync(resolvedPath)) {
+          throw new Error(`Bundle file not found: ${resolvedPath}`);
+        }
+        rawBuf = fs.readFileSync(resolvedPath);
+      }
+
+      const bundle = parseBundleBuffer(rawBuf);
+      const filterContexts = Array.isArray(options.context)
+        ? options.context
+        : options.context
+          ? [options.context]
+          : undefined;
+      const bindPaths = Array.isArray(options.bind)
+        ? options.bind
+        : options.bind
+          ? [options.bind]
+          : undefined;
+
+      const res = await importBundle(bundle, {
+        strategy: (options.strategy || 'merge') as ImportStrategy,
+        contexts: filterContexts,
+        targetContextName: options.as,
+        bindPaths,
+        includeCodemaps: options.codemaps !== false,
+        importSettings: options.settings !== false ? undefined : false,
+        syncBoundWorkspaces: options.scan !== false ? undefined : false,
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+
+      console.log(`Imported StormDrain bundle (scope: ${res.scope}, strategy: ${res.strategy}${res.settingsImported ? ', settings updated' : ''}):`);
+      for (const c of res.contexts) {
+        const renameNote = c.context !== c.sourceContext ? ` (from "${c.sourceContext}")` : '';
+        const bindNote = c.boundPaths.length > 0 ? ` | paths: ${c.boundPaths.join(', ')}` : '';
+        const scanNote = c.scannedFiles > 0 ? ` | scanned ${c.scannedFiles} file(s)` : '';
+        console.log(`  - Context "${c.context}"${renameNote}: +${c.added} added, ~${c.updated} updated, =${c.skipped} unchanged/skipped${bindNote}${scanNote}`);
+      }
+      console.log(`Total: +${res.totalAdded} added, ~${res.totalUpdated} updated, =${res.totalSkipped} unchanged/skipped.`);
+    } catch (err: any) {
+      console.error(`Error importing bundle: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
 // Setup tab autocompletion via @bomb.sh/tab
 const completeContexts = (complete: any) => {
   try {
@@ -858,6 +1230,12 @@ const completeSubmodulePolicies = (complete: any) => {
   complete('ask', 'Prompt interactively when submodules are detected');
 };
 
+const completeImportStrategies = (complete: any) => {
+  complete('merge', 'Merge with newest timestamp and union tags/relations (default)');
+  complete('overwrite', 'Always overwrite local memory with imported version');
+  complete('skip', 'Skip importing any memory that already exists locally');
+};
+
 const completeMemoryIds = (complete: any) => {
   try {
     const targetCtx = config.resolveContext(undefined, process.cwd());
@@ -889,9 +1267,18 @@ for (const [, cmd] of completion.commands) {
   if (relOpt) {
     relOpt.handler = (complete) => completeRelationTypes(complete);
   }
+  const stratOpt = cmd.options.get('strategy');
+  if (stratOpt) {
+    stratOpt.handler = (complete) => completeImportStrategies(complete);
+  }
 }
 
 // Dynamic handlers for positional arguments
+const exportCmd = completion.commands.get('export');
+const exportContextsArg = exportCmd?.arguments.get('contexts');
+if (exportContextsArg) {
+  exportContextsArg.handler = (complete) => completeContexts(complete);
+}
 const addCmd = completion.commands.get('add');
 const addTypeArg = addCmd?.arguments.get('type');
 if (addTypeArg) {
