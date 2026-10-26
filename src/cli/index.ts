@@ -14,6 +14,7 @@ import { getSubmodules, SubmoduleInfo } from '../utils/gitUtils';
 import { SubmodulePolicy } from '../utils/fileGraphScanner';
 import { generateCuratePrompt, generateHarvestPrompt } from '../utils/promptTemplates';
 import { exportBundle, importBundle, serializeBundleBuffer, parseBundleBuffer, ImportStrategy } from '../core/transfer';
+import { getBasePath } from '../utils/paths';
 import { MemoryType } from '../types';
 
 
@@ -23,7 +24,15 @@ program
   .description('A persistent memory layer for software engineering agents')
   .version('1.0.0');
 
-const config = new ConfigManager();
+let _configInstance: ConfigManager | undefined;
+export const getConfig = (): ConfigManager => (_configInstance ??= new ConfigManager());
+const config = new Proxy({} as ConfigManager, {
+  get(_, prop) {
+    const target = getConfig() as any;
+    const value = target[prop];
+    return typeof value === 'function' ? value.bind(target) : value;
+  }
+});
 
 /**
  * Prompt user interactively for submodule policy.
@@ -1196,6 +1205,7 @@ program
 // Setup tab autocompletion via @bomb.sh/tab
 const completeContexts = (complete: any) => {
   try {
+    if (!fs.existsSync(getBasePath())) return;
     const contexts = config.getContexts();
     for (const name of Object.keys(contexts)) {
       complete(name, `Context: ${name}`);
@@ -1238,6 +1248,7 @@ const completeImportStrategies = (complete: any) => {
 
 const completeMemoryIds = (complete: any) => {
   try {
+    if (!fs.existsSync(getBasePath())) return;
     const targetCtx = config.resolveContext(undefined, process.cwd());
     const ctx = new ContextManager(targetCtx);
     try {
