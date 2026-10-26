@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { api, MEMORY_TYPES } from '../api';
 import MemoryEditor from './MemoryEditor';
+import { copyToClipboard } from '../utils/clipboard';
 import { Search, Plus, ArrowUp, ArrowDown, ArrowUpDown, X } from 'lucide-react';
 
 interface MemoryBrowserProps {
@@ -23,9 +24,11 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [excludedTypes, setExcludedTypes] = useState<string[]>([]);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Virtualized Scroll State
-  const containerRef = React.useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
 
@@ -36,6 +39,32 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
     }, 200);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Global Keyboard Shortcut: '/' or Cmd/Ctrl + K to focus search when not editing
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (editingId) return;
+      const target = e.target as HTMLElement;
+      const isTyping = target && (
+        target.tagName === 'INPUT' || 
+        target.tagName === 'TEXTAREA' || 
+        target.tagName === 'SELECT' || 
+        target.isContentEditable
+      );
+
+      if (!isTyping && e.key === '/') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [editingId]);
 
   const formatDateHelper = (isoStr?: string) => {
     if (!isoStr) return '';
@@ -259,8 +288,9 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
         <div className="table-search-wrapper">
           <Search size={15} className="table-search-icon" />
           <input 
+            ref={searchInputRef}
             type="text"
-            placeholder="Search memories..."
+            placeholder="Search memories... (Press '/' or Cmd+K)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -316,7 +346,25 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ activeContext, dataVersio
                   <td>
                     <span className={`badge badge-${m.type}`}>{m.type}</span>
                   </td>
-                  <td className="table-title-cell">{m.title}</td>
+                  <td className="table-title-cell">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</span>
+                      <button
+                        type="button"
+                        className="table-id-chip"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          await copyToClipboard(m.id);
+                          setCopiedId(m.id);
+                          setTimeout(() => setCopiedId(null), 1500);
+                        }}
+                        title={`Click to copy Memory ID: ${m.id}`}
+                      >
+                        {copiedId === m.id ? 'Copied!' : m.id}
+                      </button>
+                    </div>
+                  </td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div style={{ width: '80px', backgroundColor: 'var(--bg-surface-hover)', borderRadius: '4px', height: '6px' }}>

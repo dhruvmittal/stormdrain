@@ -22,6 +22,19 @@ type Tab = 'dashboard' | 'browser' | 'graph' | 'settings';
 
 const VALID_TABS: Tab[] = ['dashboard', 'browser', 'graph', 'settings'];
 
+const parseHash = (): { tab: Tab; focusNodeId: string | null } => {
+  const rawHash = window.location.hash.replace('#', '');
+  const [tabPart, queryPart] = rawHash.split('?');
+  const tab = tabPart.toLowerCase();
+  const validTab = (VALID_TABS.includes(tab as Tab) ? tab : 'dashboard') as Tab;
+  let focusNodeId: string | null = null;
+  if (queryPart) {
+    const params = new URLSearchParams(queryPart);
+    focusNodeId = params.get('focus') || params.get('target') || null;
+  }
+  return { tab: validTab, focusNodeId };
+};
+
 const LIVE_OPTIONS = [
   { value: 0, label: 'Off (Manual only)', shortLabel: 'Live: Off' },
   { value: 5000, label: 'Every 5 seconds', shortLabel: 'Live: 5s' },
@@ -31,10 +44,8 @@ const LIVE_OPTIONS = [
 ];
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>(() => {
-    const hash = window.location.hash.replace('#', '').toLowerCase();
-    return (VALID_TABS.includes(hash as Tab) ? hash : 'dashboard') as Tab;
-  });
+  const [activeTab, setActiveTab] = useState<Tab>(() => parseHash().tab);
+  const [graphFocusNodeId, setGraphFocusNodeId] = useState<string | null>(() => parseHash().focusNodeId);
 
   const [contexts, setContexts] = useState<string[]>([]);
   const [activeContext, setActiveContext] = useState<string>('');
@@ -57,9 +68,10 @@ function App() {
   // Sync tab with URL hash on popstate / hashchange (Browser Back / Forward / Refresh)
   useEffect(() => {
     const handleHashChange = () => {
-      const hash = window.location.hash.replace('#', '').toLowerCase();
-      if (VALID_TABS.includes(hash as Tab)) {
-        setActiveTab(hash as Tab);
+      const { tab, focusNodeId } = parseHash();
+      setActiveTab(tab);
+      if (focusNodeId) {
+        setGraphFocusNodeId(focusNodeId);
       }
     };
     window.addEventListener('hashchange', handleHashChange);
@@ -360,9 +372,21 @@ function App() {
         </div>
 
         {/* View Routing with Shared dataVersion */}
-        {activeTab === 'dashboard' && <Dashboard activeContext={activeContext} dataVersion={dataVersion} />}
+        {activeTab === 'dashboard' && (
+          <Dashboard 
+            activeContext={activeContext} 
+            dataVersion={dataVersion} 
+            onDataChange={() => setDataVersion(v => v + 1)} 
+          />
+        )}
         {activeTab === 'browser' && <MemoryBrowser activeContext={activeContext} dataVersion={dataVersion} />}
-        {activeTab === 'graph' && <GraphView activeContext={activeContext} dataVersion={dataVersion} />}
+        {activeTab === 'graph' && (
+          <GraphView 
+            activeContext={activeContext} 
+            dataVersion={dataVersion} 
+            initialFocusNodeId={graphFocusNodeId} 
+          />
+        )}
         {activeTab === 'settings' && <ConfigView dataVersion={dataVersion} onConfigSaved={refreshData} />}
       </div>
     </div>

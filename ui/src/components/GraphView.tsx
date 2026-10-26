@@ -8,6 +8,7 @@ import { Search, X, Crosshair, Layers, ChevronUp, ChevronDown, SlidersHorizontal
 interface GraphViewProps {
   activeContext: string;
   dataVersion?: number;
+  initialFocusNodeId?: string | null;
 }
 
 type ScopeDepth = 0 | 1 | 2;
@@ -81,7 +82,7 @@ function getModuleName(node: any): string {
   return '_memories';
 }
 
-export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion = 0 }) => {
+export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion = 0, initialFocusNodeId }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   
@@ -127,6 +128,20 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
   const [showConsolidated, setShowConsolidated] = useState<boolean>(() => {
     return localStorage.getItem('stormdrain_graph_show_consolidated') === 'true';
   });
+
+  // Sync initialFocusNodeId when navigated from deep links (e.g. Dashboard Hotspots)
+  useEffect(() => {
+    if (!initialFocusNodeId) return;
+    const allNodes = rawGraphDataRef.current.nodes || apiGraphDataRef.current?.nodes || [];
+    const match = allNodes.find((n: any) => n.id === initialFocusNodeId || n.title === initialFocusNodeId);
+    if (match) {
+      setFocusAnchorId(match.id);
+      setFocusAnchorTitle(match.title || match.id);
+    } else {
+      setFocusAnchorId(initialFocusNodeId);
+      setFocusAnchorTitle(initialFocusNodeId);
+    }
+  }, [initialFocusNodeId]);
   
   const [matchStats, setMatchStats] = useState<{
     matchCount: number;
@@ -1148,6 +1163,14 @@ export const GraphView: React.FC<GraphViewProps> = ({ activeContext, dataVersion
       let nodes = showConsolidated
         ? [...rawData.nodes]
         : rawData.nodes.filter((n: any) => !n.superseded_by);
+
+      if (initialFocusNodeId) {
+        const match = nodes.find((n: any) => n.id === initialFocusNodeId || n.title === initialFocusNodeId);
+        if (match) {
+          setFocusAnchorId(match.id);
+          setFocusAnchorTitle(match.title || match.id);
+        }
+      }
 
       const nodeIds = new Set(nodes.map((n: any) => n.id));
       const validLinks = rawData.links.filter((l: any) => {

@@ -14,17 +14,20 @@ import {
   FolderGit2
 } from 'lucide-react';
 import { api, type DashboardStats } from '../api';
+import MemoryEditor from './MemoryEditor';
 
 interface DashboardProps {
   activeContext: string;
   dataVersion?: number;
+  onDataChange?: () => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0 }) => {
+const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0, onDataChange }) => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [consolidatingFile, setConsolidatingFile] = useState<string | null>(null);
   const [consolidationSuccess, setConsolidationSuccess] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const fetchStats = async () => {
     if (!activeContext) return;
@@ -240,7 +243,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0 })
                       </div>
                       <button 
                         className="hotspot-action-btn"
-                        onClick={() => window.location.hash = 'graph'}
+                        onClick={() => {
+                          window.location.hash = `graph?focus=${encodeURIComponent(h.id)}`;
+                        }}
                         title="View file neighborhood in Graph View"
                       >
                         <span>Graph</span>
@@ -321,7 +326,12 @@ const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0 })
                 {stats.decayWatchlist.map(item => {
                   const confPct = Math.round((item.confidence || 0) * 100);
                   return (
-                    <div key={item.id} className="decay-item">
+                    <div 
+                      key={item.id} 
+                      className="decay-item clickable"
+                      onClick={() => setEditingId(item.id)}
+                      title="Click to inspect/edit this at-risk memory"
+                    >
                       <span className={`badge badge-${item.type}`}>{item.type}</span>
                       <div className="decay-details">
                         <div className="decay-title">{item.title}</div>
@@ -368,7 +378,12 @@ const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0 })
             ) : (
               <div className="timeline-list">
                 {stats.recentActivity.map(act => (
-                  <div key={act.id} className="timeline-item">
+                  <div 
+                    key={act.id} 
+                    className="timeline-item clickable"
+                    onClick={() => setEditingId(act.id)}
+                    title="Click to inspect/edit this memory"
+                  >
                     <div className="timeline-bullet" />
                     <div className="timeline-content">
                       <div className="timeline-header-row">
@@ -387,6 +402,19 @@ const Dashboard: React.FC<DashboardProps> = ({ activeContext, dataVersion = 0 })
           </div>
         </div>
       </div>
+
+      {editingId && (
+        <MemoryEditor
+          activeContext={activeContext}
+          memoryId={editingId}
+          onClose={() => setEditingId(null)}
+          onSave={() => {
+            setEditingId(null);
+            fetchStats();
+            onDataChange?.();
+          }}
+        />
+      )}
     </div>
   );
 };

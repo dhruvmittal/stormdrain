@@ -2595,6 +2595,60 @@ input:checked + .slider.round:before {
   box-shadow: 0 14px 34px rgba(59, 130, 246, 0.5);
 }
 
+/* Memory ID Chip and Badge */
+.table-id-chip {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.table-id-chip:hover {
+  background: var(--border-color);
+  color: var(--text-main);
+  border-color: var(--accent-color);
+}
+
+.memory-id-badge {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-color);
+  color: var(--accent-color);
+  cursor: pointer;
+  margin-left: 10px;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.memory-id-badge:hover {
+  background: var(--border-color);
+  color: var(--accent-hover);
+}
+
+/* Dashboard clickable cards */
+.decay-item.clickable,
+.timeline-item.clickable {
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+  border-radius: 6px;
+}
+
+.decay-item.clickable:hover,
+.timeline-item.clickable:hover {
+  background-color: var(--bg-surface-hover);
+}
+
+
 
 
 
